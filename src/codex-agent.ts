@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import {
   Codex,
@@ -9,6 +8,7 @@ import {
   type ThreadOptions,
 } from "@openai/codex-sdk";
 import type { AppConfig } from "./config.js";
+import { readBokPlaybook } from "./bok-knowledge.js";
 import {
   applyDraftReview,
   buildDraftReviewPrompt,
@@ -38,7 +38,7 @@ export class BokCodexAgent {
     private readonly store: AgentStore,
     private readonly masterlink?: MasterLinkReportClient,
   ) {
-    this.bokPlaybook = readPlaybook(config.workspacePath);
+    this.bokPlaybook = readBokPlaybook(config.workspacePath);
     const masterlinkStarter = path.join(
       config.masterlinkMcpProjectDir,
       "bin/start-masterlink-mcp",
@@ -1136,13 +1136,4 @@ export function buildReviewerBusinessContext(
     bokPlaybook.slice(0, 12_000) || "Brak zweryfikowanego playbooka BOK.",
     "</verified_bok_playbook>",
   ].join("\n");
-}
-
-function readPlaybook(workspacePath: string): string {
-  const file = path.join(workspacePath, "memory", "BOK_PLAYBOOK.md");
-  try {
-    return fs.readFileSync(file, "utf8").slice(0, 20_000);
-  } catch {
-    return "Brak dodatkowego playbooka BOK.";
-  }
 }

@@ -3,10 +3,12 @@ import path from "node:path";
 import process from "node:process";
 import "dotenv/config";
 import { BokCodexAgent } from "./codex-agent.js";
-import { assertLiveConfig, loadConfig } from "./config.js";
+import { assertLiveConfig, assertNativeBokApiConfig, loadConfig } from "./config.js";
 import { DiscordGateway } from "./discord.js";
 import { DaktelaMonitor } from "./daktela-monitor.js";
 import { MasterLinkReportClient } from "./masterlink.js";
+import { NativeBokInference } from "./native-bok-inference.js";
+import { createNativeBokHttpServer } from "./native-bok-server.js";
 import { AgentStore } from "./store.js";
 import type { ClaimedJob, IncomingMessage } from "./types.js";
 import { JobWorker, type ReplySink } from "./worker.js";
@@ -58,6 +60,31 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (command === "native-api") {
+      assertNativeBokApiConfig(config);
+      const inference = new NativeBokInference(config, store);
+      const server = createNativeBokHttpServer(config, inference);
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(config.nativeApiPort, config.nativeApiHost, () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      console.log(
+        `Natywne API BOK działa na ${config.nativeApiHost}:${config.nativeApiPort} (loopback).`,
+      );
+      await new Promise<void>((resolve) => {
+        process.once("SIGINT", resolve);
+        process.once("SIGTERM", resolve);
+      });
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeIdleConnections();
+      });
+      return;
+    }
+
     if (command === "run") {
       assertLiveConfig(config);
       const discord = new DiscordGateway(config, store);
@@ -99,6 +126,7 @@ Paryskie BOK Agent
   npm run dev -- local "pytanie"   lokalna rozmowa przez zalogowany Codex
   npm run dev -- status             stan trwałej kolejki
   npm run dev -- run                uruchom gateway Discord + worker 24/7
+  npm run dev -- native-api         prywatne generate+judge dla natywnego BOK MasterLink
 `.trim());
   } finally {
     store.close();

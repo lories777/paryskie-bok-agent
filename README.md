@@ -16,20 +16,23 @@ obserwowane kanały od kanału poleceń i zapisuje proponowane działania do oso
   dopiero wtedy, gdy brakuje decyzji, której nie da się uczciwie wywnioskować;
 - analiza, pytanie lub gotowy draft pojawiają się bezpośrednio na wspólnym kanale;
 - draft jest pokazany w całości w czytelnej karcie i ma proste przyciski `Gotowe`
-  oraz `Do poprawy`; kliknięcie zapisuje decyzję, ale niczego nie wysyła;
+  oraz `Do poprawy`; decyzję może zapisać wyłącznie użytkownik wpisany jawnie w
+  `BOK_AGENT_APPROVER_USER_IDS`, a kliknięcie niczego nie wysyła;
 - każdy draft przechodzi osobny, read-only przebieg kontroli jakości; niepotwierdzony fakt blokuje
   draft, a błąd czysto redakcyjny może zostać poprawiony automatycznie;
 - poprawki przekazuje się zwykłym zdaniem, np. „napisz to krócej” albo „zmień ton na cieplejszy”;
 - raporty publikowane przez inne boty na obserwowanych kanałach są częścią wspólnego kontekstu;
 - SQLite zachowuje rozmowę, stan i pamięć po restartach;
-- bezpośredni connector MasterLink znajduje się w `connectors/masterlink`; jego dziewięć odczytów
-  i cztery wąskie operacje zapisu działa live. PostgreSQL pozostaje wymuszony jako read-only;
+- bezpośredni connector MasterLink znajduje się w `connectors/masterlink`; główny runtime udostępnia
+  wyłącznie dziewięć narzędzi odczytu. Kod connectora zawiera cztery wąskie operacje zapisu, ale nie są
+  one obecnie wystawione agentowi, a `ML_MUTATIONS_ENABLED` pozostaje wyłączone. PostgreSQL jest
+  bezwarunkowo read-only;
 - lokalna baza wiedzy jest budowana z aktualnej strony i WooCommerce (`npm run knowledge:refresh`):
   agent może wyszukiwać produkty, odpowiedniki, nuty, ceny, dostępność, regulamin i procedury;
 - Chrome DevTools jest aktywne dla bieżącego researchu i zalogowanych Arkuszy Google; odczyty są
   autonomiczne, a zapis w arkuszu ma być wąski i weryfikowany ponownym odczytem;
-- operacje MasterLink przechodzą dry-run, kontrolę stanu, idempotencję i ponowny odczyt. Flaga
-  zapisu jest włączona; test odbiorczy nie zmienił żadnego rekordu produkcyjnego;
+- przyszłe uruchomienie operacji zapisu MasterLink wymaga osobnego kontrolowanego preflightu,
+  dry-runu, idempotencji i weryfikacji ponownym odczytem; nie jest częścią bieżącego runtime;
 - obecny etap obejmuje analizę, drafty i ręczne zatwierdzanie. Wysyłka z Dakteli czeka na konto
   Contact Centre z licencją Email.
 
@@ -53,6 +56,8 @@ jest sekretem: nie kopiuj go do repo ani na Discord.
 2. Skopiuj `.env.example` do chronionego pliku poza repo, np.
    `/home/oliwer/.config/paryskie-bok-agent/env` z prawami `0600`.
 3. Ustaw osobno kanały rozmowy, kanały obserwowane oraz allowlistę osób lub roli zespołu BOK.
+   Użytkowników uprawnionych do przycisków `Gotowe` i `Do poprawy` wpisz jawnie w
+   `BOK_AGENT_APPROVER_USER_IDS`; pusta lista blokuje wszystkie decyzje.
 4. Uruchom `npm run start -- run` albo zainstaluj unit z `deploy/` jako usługę użytkownika.
 
 Na kanale używa się zwykłego języka. Jedyna pomocnicza komenda techniczna to:
@@ -67,9 +72,10 @@ subskrypcji, nie wywołania rozliczane kluczem OpenAI API.
 
 ## Granice
 
-Odczyt i wąskie działania MasterLink są aktywne. Odpowiedzi Daktela nadal są draftami: zatwierdzenie
-na Discordzie nie wysyła wiadomości. Wysyłkę podłączymy dopiero po dostarczeniu stanowiska Daktela
-Contact Centre i osobnym teście bezpiecznego wykonania.
+Odczyt MasterLink jest aktywny, natomiast narzędzia zapisu pozostają wyłączone. Odpowiedzi Daktela
+nadal są draftami: zatwierdzenie na Discordzie zapisuje wyłącznie decyzję i nie kolejkuje ani nie
+wysyła wiadomości. Wysyłkę podłączymy dopiero po dostarczeniu stanowiska Daktela Contact Centre i
+osobnym teście bezpiecznego wykonania.
 
 ## Connector MasterLink
 

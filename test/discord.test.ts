@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  canDecideDraft,
   directRequestConversationKey,
   isStatusCommand,
   shouldRespondToAuthorizedMessage,
@@ -23,6 +24,12 @@ test("komenda statusu jest rozpoznawana bez uruchamiania agenta", () => {
   assert.equal(isStatusCommand("!bok status"), true);
   assert.equal(isStatusCommand("  !BOK   status  "), true);
   assert.equal(isStatusCommand("jaki jest status?"), false);
+});
+
+test("decyzja draftu wymaga jawnej allowlisty approverów i bez niej jest blokowana", () => {
+  assert.equal(canDecideDraft("allowed-bok-user", new Set()), false);
+  assert.equal(canDecideDraft("allowed-bok-user", new Set(["explicit-approver"])), false);
+  assert.equal(canDecideDraft("explicit-approver", new Set(["explicit-approver"])), true);
 });
 
 test("agent nie wtrąca się do wiadomości skierowanej do innych pracowników", () => {
