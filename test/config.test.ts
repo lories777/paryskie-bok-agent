@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { assertLiveConfig, loadConfig } from "../src/config.js";
+import { assertLiveConfig, assertNativeBokApiConfig, loadConfig } from "../src/config.js";
 
 test("konfiguracja rozdziela listy i domyślnie blokuje działania zewnętrzne", () => {
   const config = loadConfig(
@@ -9,12 +11,14 @@ test("konfiguracja rozdziela listy i domyślnie blokuje działania zewnętrzne",
       BOK_AGENT_OBSERVE_CHANNEL_IDS: "2,3",
       BOK_AGENT_ALLOWED_USER_IDS: "10",
       BOK_AGENT_ALLOWED_ROLE_IDS: "20,21",
+      BOK_AGENT_APPROVER_USER_IDS: "30",
     },
     "/tmp/project",
   );
   assert.deepEqual([...config.commandChannelIds], ["1", "2"]);
   assert.deepEqual([...config.observeChannelIds], ["2", "3"]);
   assert.deepEqual([...config.allowedRoleIds], ["20", "21"]);
+  assert.deepEqual([...config.approverUserIds], ["30"]);
   assert.equal(config.externalActionsEnabled, false);
   assert.equal(config.workspacePath, "/tmp/project/agent-workspace");
   assert.equal(config.masterlinkMcpProjectDir, "/tmp/project/connectors/masterlink");
@@ -62,4 +66,29 @@ test("włączony monitor Dakteli wymaga widoku i kanału eskalacji", () => {
     "/tmp/project",
   );
   assert.throws(() => assertLiveConfig(withView), /DAKTELA_ESCALATION_CHANNEL_ID/);
+});
+
+test("natywne API jest loopback-only i wymaga sekretu oraz osobnego CODEX_HOME", () => {
+  const defaults = loadConfig({}, "/tmp/project");
+  assert.equal(defaults.nativeApiHost, "127.0.0.1");
+  assert.equal(defaults.nativeApiPort, 8787);
+  assert.throws(() => assertNativeBokApiConfig(defaults), /BOK_NATIVE_API_TOKEN/);
+  assert.throws(() => assertNativeBokApiConfig(defaults), /BOK_NATIVE_CODEX_HOME/);
+  assert.throws(() => loadConfig({ BOK_NATIVE_API_HOST: "0.0.0.0" }, "/tmp/project"));
+  assert.throws(() => loadConfig({ BOK_NATIVE_API_TOKEN: "too-short" }, "/tmp/project"));
+
+  const ready = loadConfig({
+    BOK_NATIVE_API_HOST: "::1",
+    BOK_NATIVE_API_TOKEN: "native-api-token-with-at-least-32-characters",
+    BOK_NATIVE_CODEX_HOME: "/tmp/.codex-native-bok",
+  }, "/tmp/project");
+  assert.doesNotThrow(() => assertNativeBokApiConfig(ready));
+  assert.equal(ready.nativeApiHost, "::1");
+  assert.equal(ready.nativeCodexHome, "/tmp/.codex-native-bok");
+
+  const shared = loadConfig({
+    BOK_NATIVE_API_TOKEN: "native-api-token-with-at-least-32-characters",
+    BOK_NATIVE_CODEX_HOME: path.join(os.homedir(), ".codex"),
+  }, "/tmp/project");
+  assert.throws(() => assertNativeBokApiConfig(shared), /odseparowany od ~\/\.codex/);
 });

@@ -275,10 +275,7 @@ export class DiscordGateway implements ReplySink {
     if (!interaction.isButton() || !interaction.inGuild()) return;
     const match = interaction.customId.match(DRAFT_BUTTON_PATTERN);
     if (!match) return;
-    if (
-      !this.config.allowedUserIds.has(interaction.user.id) &&
-      !interactionHasAllowedRole(interaction, this.config.allowedRoleIds)
-    ) {
+    if (!canDecideDraft(interaction.user.id, this.config.approverUserIds)) {
       await interaction.reply({ content: "Nie masz uprawnienia do decyzji o tym drafcie.", ephemeral: true });
       return;
     }
@@ -385,14 +382,11 @@ export function directRequestConversationKey(messageId: string): string {
   return `discord-request:${messageId}`;
 }
 
-function interactionHasAllowedRole(
-  interaction: Interaction,
-  allowedRoleIds: Set<string>,
+export function canDecideDraft(
+  userId: string,
+  approverUserIds: ReadonlySet<string>,
 ): boolean {
-  const roles = interaction.member?.roles;
-  if (!roles) return false;
-  if (Array.isArray(roles)) return roles.some((roleId) => allowedRoleIds.has(roleId));
-  return roles.cache.some((role) => allowedRoleIds.has(role.id));
+  return approverUserIds.has(userId);
 }
 
 function conversationKey(message: Message): string {

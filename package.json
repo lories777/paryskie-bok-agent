@@ -15,6 +15,7 @@
     "knowledge:search": "node agent-workspace/tools/paryskie-knowledge.mjs",
     "e2e:latest": "npm run build --silent && node dist/scripts/queue-latest-daktela-e2e.js",
     "start": "node dist/src/cli.js",
+    "start:native-api": "node dist/src/cli.js native-api",
     "test": "node --import tsx --test test/**/*.test.ts",
     "verify": "npm run check && npm test && npm run build"
   },
