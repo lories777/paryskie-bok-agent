@@ -1,0 +1,33 @@
+{
+  "name": "paryskie-bok-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "24/7 BOK employee runtime backed by a ChatGPT-authenticated Codex session.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/cli.ts",
+    "knowledge:refresh": "node scripts/refresh-paryskie-knowledge.mjs",
+    "knowledge:search": "node agent-workspace/tools/paryskie-knowledge.mjs",
+    "e2e:latest": "npm run build --silent && node dist/scripts/queue-latest-daktela-e2e.js",
+    "start": "node dist/src/cli.js",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "verify": "npm run check && npm test && npm run build"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "0.149.1",
+    "discord.js": "14.27.0",
+    "dotenv": "17.4.2",
+    "playwright-core": "^1.62.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.3.0",
+    "tsx": "4.23.12",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+api_port="${ML_LOCAL_API_PORT:-18787}"
+db_port="${ML_LOCAL_DB_PORT:-15432}"
+
+if ! nc -z -w 3 127.0.0.1 "$api_port"; then
+  echo "ERROR: lokalny port API $api_port nie odpowiada; sprawdź tunel SSH." >&2
+  exit 1
+fi
+if ! nc -z -w 3 127.0.0.1 "$db_port"; then
+  echo "ERROR: lokalny port DB $db_port nie odpowiada; sprawdź tunel SSH." >&2
+  exit 1
+fi
+
+echo 'OK: oba forwardy VPS1 -> VPS2 odpowiadają. Nie wykonano zapisu.'

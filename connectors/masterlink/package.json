@@ -1,0 +1,34 @@
+{
+  "name": "paryskie-bok-masterlink-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lokalny connector MCP pomiędzy agentem BOK Paryskie Perfumy a MasterLinkiem",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --disable-warning=ExperimentalWarning dist/server.js",
+    "dev": "tsx src/server.ts",
+    "smoke": "tsx src/smoke.ts",
+    "link:check": "./bin/check-masterlink-link",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "dotenv": "17.2.3",
+    "pg": "8.16.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.7",
+    "@types/pg": "8.15.5",
+    "tsx": "4.20.6",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  }
+}

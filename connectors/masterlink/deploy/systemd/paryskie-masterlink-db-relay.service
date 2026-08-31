@@ -1,0 +1,18 @@
+[Unit]
+Description=Paryskie BOK local TLS relay to Railway PostgreSQL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /home/oliwer/workspace/paryskie-bok-agent/connectors/masterlink/bin/railway-db-relay.mjs
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=default.target

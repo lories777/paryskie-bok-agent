@@ -1,0 +1,21 @@
+[Unit]
+Description=Prywatny tunel VPS1 -> MasterLink VPS2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -NT masterlink-vps2
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+
+# Tunel nie potrzebuje dodatkowych uprawnień ani zapisu poza katalogiem użytkownika.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Paryskie BOK knowledge every six hours
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=6h
+Persistent=true
+Unit=paryskie-bok-knowledge.service
+
+[Install]
+WantedBy=timers.target

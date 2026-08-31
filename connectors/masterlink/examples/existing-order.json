@@ -1,0 +1,106 @@
+{
+  "found": true,
+  "market": "PL",
+  "facts": {
+    "order": {
+      "order_number": "EXAMPLE-PL-10001",
+      "external_id": "10001",
+      "source_code": "wc_pl",
+      "status": "shipped",
+      "payment_status": "paid",
+      "payment_method": "paynow",
+      "currency": "PLN",
+      "total_gross": "129.90",
+      "cod": false,
+      "priority": 0,
+      "flags": [],
+      "special_queue": null,
+      "total_items": 1,
+      "items": [
+        {
+          "sku": "PP-001",
+          "name": "Perfumy 001",
+          "quantity": 1,
+          "unit_price": 129.9,
+          "gift": false
+        }
+      ],
+      "items_truncated": false,
+      "missing_fields": []
+    },
+    "payment": {
+      "order_number": "EXAMPLE-PL-10001",
+      "status": "paid",
+      "method": "paynow",
+      "currency": "PLN",
+      "amount": "129.90",
+      "cod": false,
+      "source_payment_refunded": false,
+      "source_payment_failed": false,
+      "refunds": [],
+      "erp_corrections": [],
+      "missing_fields": []
+    },
+    "fulfillment": {
+      "order_number": "EXAMPLE-PL-10001",
+      "order_status": "shipped",
+      "blocked": false,
+      "block_reason_code": null,
+      "erp_order_reference": "ZOP/10001",
+      "wz_number": "WZ/10001",
+      "invoice_number": "FV/10001"
+    },
+    "shipments": {
+      "order_number": "EXAMPLE-PL-10001",
+      "current_tracking_number": "EXAMPLE-TRACK-10001",
+      "current_shipment_status": "in_transit",
+      "shipments": [
+        {
+          "carrier_code": "inpost",
+          "tracking_number": "EXAMPLE-TRACK-10001",
+          "status": "in_transit",
+          "canonical": true,
+          "invalidated_at": null,
+          "created_at": "2026-08-21T10:30:00.000Z",
+          "scans": []
+        }
+      ],
+      "missing_fields": []
+    },
+    "returns_and_refunds": {
+      "order_number": "EXAMPLE-PL-10001",
+      "returns": [],
+      "return_count": 0,
+      "missing_fields": []
+    }
+  },
+  "timestamps": {
+    "placed_at": "2026-08-20T10:00:00.000Z",
+    "imported_at": "2026-08-20T10:01:00.000Z",
+    "updated_at": "2026-08-22T12:00:00.000Z",
+    "current_status_since": "2026-08-22T11:00:00.000Z",
+    "status_history": [
+      {
+        "from": "labeled",
+        "to": "shipped",
+        "changed_at": "2026-08-22T11:00:00.000Z",
+        "reason_present": true
+      }
+    ]
+  },
+  "source": {
+    "system": "MasterLink",
+    "access": "read_only_database_and_authenticated_api",
+    "resources": [
+      "orders",
+      "order_status_history",
+      "payments",
+      "shipments",
+      "tracking_events",
+      "returns",
+      "erp_corrections"
+    ]
+  },
+  "checked_at": "2026-08-26T12:00:00.000Z",
+  "error": null
+}

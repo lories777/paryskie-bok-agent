@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh public Paryskie product and policy knowledge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/paryskie-bok-agent
+ExecStart=/usr/bin/node %h/workspace/paryskie-bok-agent/scripts/refresh-paryskie-knowledge.mjs
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/workspace/paryskie-bok-agent/agent-workspace/knowledge

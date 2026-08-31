@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROJECT_DIR="${ML_MCP_PROJECT_DIR:-$(dirname -- "$SCRIPT_DIR")}"
+ENV_FILE="${ML_ENV_FILE:-${HOME}/.config/paryskie-bok-agent/masterlink.env}"
+
+export ML_ENV_FILE="$ENV_FILE"
+exec node --disable-warning=ExperimentalWarning "$PROJECT_DIR/dist/server.js"

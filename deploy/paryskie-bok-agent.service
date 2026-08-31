@@ -1,0 +1,23 @@
+[Unit]
+Description=Paryskie BOK Agent (Codex subscription runtime)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/paryskie-bok-agent
+EnvironmentFile=%h/.config/paryskie-bok-agent/env
+ExecStart=/usr/bin/node %h/workspace/paryskie-bok-agent/dist/src/cli.js run
+Restart=always
+RestartSec=5
+# SIGTERM trafia najpierw tylko do runtime. Trwająca tura Codexa może dokończyć się i zapisać
+# wynik; po limicie systemd ubije całą grupę procesów.
+KillMode=mixed
+TimeoutStopSec=180
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/workspace/paryskie-bok-agent/agent-workspace %h/workspace/paryskie-bok-agent/state %h/.codex %h/.npm
+
+[Install]
+WantedBy=default.target

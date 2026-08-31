@@ -1,0 +1,28 @@
+# Wklej do ~/.codex/config.toml użytkownika uruchamiającego agenta BOK.
+# Sekrety NIE trafiają do TOML-a; proces czyta plik env 600.
+
+[mcp_servers.masterlink]
+command = "/home/oliwer/workspace/paryskie-bok-agent/connectors/masterlink/bin/start-masterlink-mcp"
+cwd = "/home/oliwer/workspace/paryskie-bok-agent/connectors/masterlink"
+startup_timeout_sec = 15
+tool_timeout_sec = 20
+required = true
+enabled = true
+default_tools_approval_mode = "approve"
+
+[mcp_servers.masterlink.env]
+ML_MCP_PROJECT_DIR = "/home/oliwer/workspace/paryskie-bok-agent/connectors/masterlink"
+ML_ENV_FILE = "/home/oliwer/.config/paryskie-bok-agent/masterlink.env"
+
+# Agent może wykonywać wąskie mutacje autonomicznie po poprawnym dry-runie.
+[mcp_servers.masterlink.tools.ml_cancel_order]
+approval_mode = "approve"
+
+[mcp_servers.masterlink.tools.ml_add_internal_note]
+approval_mode = "approve"
+
+[mcp_servers.masterlink.tools.ml_start_return]
+approval_mode = "approve"
+
+[mcp_servers.masterlink.tools.ml_correct_delivery_data]
+approval_mode = "approve"

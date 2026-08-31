@@ -1,0 +1,16 @@
+# VPS1: skopiuj do ~/.ssh/config.d/masterlink-vps2 i uzupełnij pola UZUPELNIJ.
+# API i PostgreSQL pozostają prywatne na VPS2; na VPS1 są widoczne tylko na loopback.
+Host masterlink-vps2
+  HostName UZUPELNIJ_VPS2_HOST_LUB_IP
+  User masterlink-tunnel
+  Port 22
+  IdentityFile ~/.ssh/paryskie_bok_to_masterlink
+  IdentitiesOnly yes
+  StrictHostKeyChecking yes
+  UserKnownHostsFile ~/.ssh/known_hosts
+  ExitOnForwardFailure yes
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
+  TCPKeepAlive yes
+  LocalForward 127.0.0.1:18787 127.0.0.1:UZUPELNIJ_PORT_API_ML_NA_VPS2
+  LocalForward 127.0.0.1:15432 127.0.0.1:UZUPELNIJ_PORT_POSTGRES_NA_VPS2

@@ -1,0 +1,27 @@
+{
+  "found": false,
+  "market": null,
+  "facts": {
+    "identifier_type": "order_number"
+  },
+  "timestamps": {},
+  "source": {
+    "system": "MasterLink",
+    "access": "read_only_database_and_authenticated_api",
+    "resources": [
+      "orders",
+      "order_status_history",
+      "payments",
+      "shipments",
+      "tracking_events",
+      "returns",
+      "erp_corrections"
+    ]
+  },
+  "checked_at": "2026-08-26T12:00:00.000Z",
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Nie znaleziono pasujących danych w MasterLinku.",
+    "retryable": false
+  }
+}
