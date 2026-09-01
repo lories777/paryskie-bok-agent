@@ -12,6 +12,8 @@ import {
   formatActionCard,
   formatAgentDelivery,
   formatTerminalDaktelaFailureAlert,
+  formatTerminalJobFailureAlert,
+  isRetryableJobError,
   JobWorker,
   shouldDiscardSupersededDaktelaCard,
   shouldDeliverAgentOutput,
@@ -448,6 +450,135 @@ test("terminalne wyczerpanie retry Dakteli publikuje bezpieczny alert bez PII", 
   }
 });
 
+test("trwały outbox nie porzuca karty po wielu chwilowych błędach Discorda", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-delivery-outbox-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:100029",
+      externalMessageId: "daktela:v7:100029:fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Przeanalizuj Daktela #100029",
+      createdAt: "2026-09-01T09:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    let agentCalls = 0;
+    const agent = {
+      async run() {
+        agentCalls += 1;
+        return {
+          reply: "DAKTELA #100029 — odpowiedź gotowa.",
+          caseState: "action_proposed",
+          proposedActions: [{
+            kind: "reply_customer",
+            summary: "Odpowiedź klientowi",
+            target: "Daktela ticket #100029",
+            payload: "Treść draftu",
+            reason: "Test outbox",
+            risk: "medium",
+          }],
+          learnedRules: [],
+          actionExecution: null,
+        } satisfies import("../src/types.js").AgentTurnOutput;
+      },
+    } as unknown as BokCodexAgent;
+    let deliveryCalls = 0;
+    const delivered: string[] = [];
+    const transientFailures = [
+      "Discord 502 Bad Gateway",
+      "Discord 504 Gateway Timeout",
+      "fetch failed: EAI_AGAIN",
+      "UND_ERR_CONNECT_TIMEOUT",
+      "socket hang up",
+    ];
+    const worker = new JobWorker(store, agent, {
+      async deliver(_job, content) {
+        deliveryCalls += 1;
+        const failure = transientFailures[deliveryCalls - 1];
+        if (failure) throw new Error(failure);
+        delivered.push(content);
+      },
+    }, { retryDelayMs: 0, maxTransientAttempts: 1 });
+
+    assert.equal(await worker.runOne(), true);
+    assert.equal(agentCalls, 1);
+    assert.equal(store.status().jobs_completed, 1);
+    assert.equal(store.status().deliveries_pending, 1);
+    assert.equal(store.status().actions_proposed, 1);
+    assert.deepEqual(delivered, []);
+
+    for (let attempt = 1; attempt < transientFailures.length; attempt += 1) {
+      assert.equal(await worker.runOne(), true);
+      assert.equal(store.status().deliveries_pending, 1);
+      assert.equal(store.status().deliveries_failed ?? 0, 0);
+    }
+    assert.equal(store.status().deliveries_pending, 1);
+    assert.equal(store.status().deliveries_failed ?? 0, 0);
+    assert.equal(await worker.runOne(), true);
+    assert.equal(agentCalls, 1);
+    assert.equal(deliveryCalls, transientFailures.length + 1);
+    assert.equal(store.status().deliveries_completed, 1);
+    assert.equal(store.status().deliveries_pending ?? 0, 0);
+    assert.match(delivered[0] ?? "", /Daktela #100029/);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("terminalny alert pozostaje w outboxie i jest retryowany po awarii Discorda", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-alert-outbox-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:100030",
+      externalMessageId: "daktela:v7:100030:fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Przeanalizuj Daktela #100030",
+      createdAt: "2026-09-01T09:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    let agentCalls = 0;
+    const agent = {
+      async run() {
+        agentCalls += 1;
+        throw new Error("generator failed terminally");
+      },
+    } as unknown as BokCodexAgent;
+    let deliveryCalls = 0;
+    const delivered: string[] = [];
+    const worker = new JobWorker(store, agent, {
+      async deliver(_job, content) {
+        deliveryCalls += 1;
+        if (deliveryCalls === 1) throw new Error("Discord 429 rate limit");
+        delivered.push(content);
+      },
+    }, { retryDelayMs: 0, maxTransientAttempts: 2 });
+
+    assert.equal(await worker.runOne(), true);
+    assert.equal(store.status().jobs_failed, 1);
+    assert.equal(store.status().deliveries_pending, 1);
+    assert.equal(agentCalls, 1);
+
+    assert.equal(await worker.runOne(), true);
+    assert.equal(agentCalls, 1);
+    assert.equal(deliveryCalls, 2);
+    assert.equal(store.status().deliveries_completed, 1);
+    assert.match(delivered[0] ?? "", /Daktela #100030 · wymaga przejęcia/);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("alert terminalny ostrzega przed double-send i nie ujawnia surowego błędu", () => {
   const alert = formatTerminalDaktelaFailureAlert({
     id: 7,
@@ -462,6 +593,35 @@ test("alert terminalny ostrzega przed double-send i nie ujawnia surowego błędu
   assert.match(alert, /ticket_integrity_failed/);
   assert.match(alert, /nie wysłać odpowiedzi drugi raz/);
   assert.doesNotMatch(alert, /customer@example\.com/);
+});
+
+test("zwykły alert terminalny nie publikuje surowego błędu ani danych rozmowy", () => {
+  const alert = formatTerminalJobFailureAlert({
+    id: 8,
+    publicId: "BOK-000008",
+    conversationId: 3,
+    triggerMessageId: 4,
+    platform: "discord",
+    channelId: "channel-1",
+    externalMessageId: "message-1",
+    attempts: 1,
+  }, new Error("model output customer@example.com secret-token"));
+  assert.match(alert, /agent_runtime_failed/);
+  assert.match(alert, /BOK-000008/);
+  assert.doesNotMatch(alert, /customer@example\.com|secret-token|model output/);
+});
+
+test("classifier obejmuje typowe chwilowe błędy sieci i Discord 5xx", () => {
+  for (const detail of [
+    "502 Bad Gateway",
+    "504 Gateway Timeout",
+    "getaddrinfo EAI_AGAIN discord.com",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "fetch failed: ECONNREFUSED",
+  ]) {
+    assert.equal(isRetryableJobError(new Error(detail)), true, detail);
+  }
+  assert.equal(isRetryableJobError(new Error("Discord 401 unauthorized")), false);
 });
 
 test("sama techniczna akcja bez draftu ani pytania nie jest publikowana", () => {
@@ -734,6 +894,75 @@ test("obcy target zatwierdzonej akcji jest blokowany przed wywołaniem executora
     assert.equal(store.status().actions_failed, 1);
     assert.match(delivered[0] ?? "", /ticket_integrity_failed/);
     assert.doesNotMatch(delivered[0] ?? "", /99571/);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("nowy inbound po akceptacji blokuje stary job jeszcze przed executorem", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-execution-stale-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:99572",
+      externalMessageId: "daktela:v6:99572:fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Przeanalizuj Daktela #99572",
+      createdAt: "2026-09-01T10:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    const proposal = store.claimNextJob();
+    assert.ok(proposal);
+    store.completeJob(proposal.id, {
+      reply: "DAKTELA #99572 — draft gotowy.",
+      caseState: "action_proposed",
+      actionExecution: null,
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Stara odpowiedź",
+        target: "Daktela ticket #99572",
+        payload: "OLD",
+        reason: "Test race",
+        risk: "medium",
+      }],
+    });
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000001", "approver", "approval-old", "channel-1"),
+      { status: "queued", jobPublicId: "BOK-000002" },
+    );
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:99572",
+      externalMessageId: "daktela:v6:99572:new-fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "DAKTELA #99572 — nowsza wiadomość klienta",
+      createdAt: "2026-09-01T10:01:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+
+    let executorCalls = 0;
+    const delivered: string[] = [];
+    const worker = new JobWorker(store, {} as BokCodexAgent, {
+      async executeApprovedAction() {
+        executorCalls += 1;
+        return { status: "executed", result: "nie wolno" };
+      },
+      async deliver(_job, content) { delivered.push(content); },
+    });
+    assert.equal(await worker.runOne(), true);
+    assert.equal(executorCalls, 0);
+    assert.equal(store.status().actions_failed, 1);
+    assert.equal(store.status().jobs_failed, 1);
+    assert.equal(store.status().jobs_pending, 1);
+    assert.match(delivered[0] ?? "", /wymaga przejęcia/);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });

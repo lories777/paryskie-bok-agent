@@ -4,7 +4,7 @@ import {
   expectedDaktelaTicketId,
   type BokCodexAgent,
 } from "./codex-agent.js";
-import type { AgentStore } from "./store.js";
+import type { AgentStore, ClaimedDelivery, JobCompletionDelivery } from "./store.js";
 import type { AgentTurnOutput, ClaimedJob, StoredAction } from "./types.js";
 
 export type ActionExecution = NonNullable<AgentTurnOutput["actionExecution"]>;
@@ -31,10 +31,12 @@ export class JobWorker {
   ) {}
 
   async runOne(signal?: AbortSignal): Promise<boolean> {
+    const pendingDelivery = this.store.claimNextDelivery();
+    if (pendingDelivery) return this.processDelivery(pendingDelivery, signal);
+
     const job = this.store.claimNextJob();
     if (!job) return false;
     const conversationExternalId = this.store.getConversation(job.conversationId).externalId;
-    const browserBaseline = await this.agent.captureBrowserPageIds?.();
 
     try {
       let directExecution: ActionExecution | undefined;
@@ -47,6 +49,7 @@ export class JobWorker {
           job.approvedAction,
           conversationExternalId,
         );
+        this.store.assertApprovedActionFresh(job.id);
         directExecution = (await this.sink.executeApprovedAction?.(job)) ?? {
           status: "failed",
           result:
@@ -73,20 +76,43 @@ export class JobWorker {
         };
         this.store.finishAction(job.approvedAction.id, execution.status, execution.result);
       }
-      const actionIds = this.store.completeJob(job.id, output);
-      const actions = this.store.getActions(actionIds);
-      const reply = formatAgentDelivery(output.reply, actions);
-      this.store.recordAgentReply(job.conversationId, job, reply);
-      if (shouldDeliverAgentOutput(job, output, actions, conversationExternalId)) {
-        await this.sink.deliver(job, reply, actions);
+      const previewActions = output.proposedActions
+        .filter((action) => action.qualityReview?.verdict !== "blocked")
+        .map((action, index): StoredAction => ({
+          id: -(index + 1),
+          publicId: `PREVIEW-${index + 1}`,
+          kind: action.kind,
+          summary: action.summary,
+          target: action.target,
+          payload: action.payload,
+          reason: action.reason,
+          risk: action.risk,
+          ...(action.qualityReview
+            ? {
+                qualityReview: {
+                  verdict: action.qualityReview.verdict,
+                  issues: action.qualityReview.issues,
+                  confidence: action.qualityReview.confidence,
+                  ...(action.qualityReview.polishTranslation
+                    ? { polishTranslation: action.qualityReview.polishTranslation }
+                    : {}),
+                },
+              }
+            : {}),
+        }));
+      const reply = formatAgentDelivery(output.reply, previewActions);
+      let delivery: JobCompletionDelivery | undefined;
+      if (shouldDeliverAgentOutput(job, output, previewActions, conversationExternalId)) {
+        delivery = { kind: "message", message: reply };
       } else if (
         isDaktelaConversation(job, conversationExternalId) &&
-        shouldDiscardSupersededDaktelaCard(output, actions)
+        shouldDiscardSupersededDaktelaCard(output, previewActions)
       ) {
-        // Cichy, nowszy wynik nadal zastępuje starą kartę tej samej sprawy. Inaczej na kanale
-        // zostaje nieaktualne pytanie lub draft mimo że ticket został już obsłużony.
-        await this.sink.discardSuperseded?.(job);
+        delivery = { kind: "discard", message: "" };
       }
+      this.store.completeJob(job.id, output, { agentReply: reply, ...(delivery ? { delivery } : {}) });
+      const queuedDelivery = delivery ? this.store.claimNextDelivery() : null;
+      if (queuedDelivery) await this.processDelivery(queuedDelivery, signal);
       return true;
     } catch (error) {
       if (signal?.aborted) {
@@ -99,31 +125,47 @@ export class JobWorker {
         if (retryDelayMs > 0) await wait(retryDelayMs, signal ?? new AbortController().signal);
         return true;
       }
-      this.store.failJob(job.id, error);
       const detail = error instanceof Error ? error.message : String(error);
       if (job.approvedAction) this.store.finishAction(job.approvedAction.id, "failed", detail);
-      if (isDaktelaConversation(job, conversationExternalId)) {
-        // Terminalny błąd Dakteli nie może znikać tylko w lokalnym SQLite/journalu. Nie pokazujemy
-        // surowego wyjątku (może zawierać dane klienta), ale zostawiamy BOK jednoznaczną kartę do
-        // przejęcia. Dla błędu chwilowego ta ścieżka uruchamia się dopiero po wyczerpaniu retry.
-        try {
-          await this.sink.deliver(
-            job,
-            formatTerminalDaktelaFailureAlert(job, conversationExternalId, error),
-          );
-        } catch {
-          // Nie zapętlamy błędu kanału alertowego. Job oraz pełny detail są już trwale zapisane.
-          console.error(`Nie udało się opublikować alertu terminalnego dla ${job.publicId}.`);
-        }
-      } else {
-        await this.sink.deliver(
-          job,
-          `Nie domknąłem sprawy: ${detail.slice(0, 800)}.`,
-        );
-      }
+      const terminalMessage = isDaktelaConversation(job, conversationExternalId)
+        ? formatTerminalDaktelaFailureAlert(job, conversationExternalId, error)
+        : formatTerminalJobFailureAlert(job, error);
+      this.store.failJobWithDelivery(job.id, error, { kind: "message", message: terminalMessage });
+      const alertDelivery = this.store.claimNextDelivery();
+      if (alertDelivery) await this.processDelivery(alertDelivery, signal);
       return true;
-    } finally {
-      await this.agent.cleanupBrowserPages?.(browserBaseline);
+    }
+  }
+
+  private async processDelivery(
+    delivery: ClaimedDelivery,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    try {
+      if (delivery.kind === "discard") {
+        await this.sink.discardSuperseded?.(delivery.job);
+      } else {
+        await this.sink.deliver(delivery.job, delivery.message, delivery.actions);
+      }
+      this.store.completeDelivery(delivery.id);
+      return true;
+    } catch (error) {
+      if (signal?.aborted) {
+        this.store.requeueRunningDelivery(delivery.id);
+        return false;
+      }
+      if (isRetryableJobError(error)) {
+        // Dostawy i alerty są trwałym outboxem, nie kolejną pracą modelu. Chwilowa awaria
+        // Discorda nigdy nie przechodzi w terminalne `failed`; zapisujemy termin następnej próby,
+        // aby worker mógł w międzyczasie obsługiwać pozostałe joby i wznowić po restarcie.
+        const retryDelayMs = this.options.retryDelayMs ?? transientRetryDelayMs(delivery.attempts);
+        const nextAttemptAt = new Date(Date.now() + retryDelayMs).toISOString();
+        this.store.requeueRunningDelivery(delivery.id, nextAttemptAt);
+        return true;
+      }
+      this.store.failDelivery(delivery.id, error);
+      console.error(`Trwale nie dostarczono komunikatu dla ${delivery.job.publicId}.`);
+      return true;
     }
   }
 
@@ -160,6 +202,15 @@ export function formatTerminalDaktelaFailureAlert(
   ].join("\n");
 }
 
+export function formatTerminalJobFailureAlert(job: ClaimedJob, error: unknown): string {
+  return [
+    "**BOK Agent · wymaga przejęcia**",
+    "Nie potwierdziłem bezpiecznego domknięcia zadania.",
+    `Kod: \`${terminalDaktelaFailureCode(error)}\` · zadanie \`${job.publicId}\``,
+    "Sprawdź historię rozmowy przed ponowieniem działania.",
+  ].join("\n");
+}
+
 export function formatApprovedActionExecutionReply(
   job: ClaimedJob,
   execution: ActionExecution,
@@ -181,6 +232,9 @@ function terminalDaktelaFailureCode(error: unknown): string {
     )
   ) {
     return "ticket_integrity_failed";
+  }
+  if (/nieaktualn|nowsz(?:y|a|e)\s+(?:inbound|wiadomość|kontekst|job|rewizj)|stale/i.test(detail)) {
+    return "stale_approval";
   }
   if (/contract|schema|json|structured output|parse/i.test(detail)) {
     return "agent_contract_failed";
@@ -315,7 +369,7 @@ export function isConcreteOperationalInstruction(value: string): boolean {
 
 export function isRetryableJobError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /(?:selected model is at capacity|rate limit|too many requests|\b429\b|service unavailable|\b503\b|overloaded|temporarily unavailable|ECONNRESET|ETIMEDOUT)/i.test(message);
+  return /(?:selected model is at capacity|rate limit|too many requests|\b(?:408|425|429|500|502|503|504)\b|bad gateway|gateway timeout|internal server error|service unavailable|overloaded|temporarily unavailable|fetch failed|network error|socket hang up|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_(?:CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT|SOCKET))/i.test(message);
 }
 
 function transientRetryDelayMs(attempt: number): number {

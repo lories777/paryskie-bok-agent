@@ -209,6 +209,14 @@ export class DaktelaMonitor {
 
   runtimeStatus(): string {
     const profile = this.sessionCapabilities;
+    const storeStatus = this.store.status();
+    const pendingDeliveries = storeStatus.deliveries_pending ?? 0;
+    const failedDeliveries = storeStatus.deliveries_failed ?? 0;
+    const outboxStatus = failedDeliveries > 0
+      ? `BŁĄD — ${failedDeliveries} niedostarczonych komunikatów`
+      : pendingDeliveries > 0
+        ? `OCZEKUJE — ${pendingDeliveries}`
+        : "OK";
     const daktelaSession = profile
       ? `${profile.profileTitle || profile.userType || "nieznany profil"} (${profile.profileType || profile.userType || "?"})`
       : "jeszcze niezweryfikowana";
@@ -228,6 +236,7 @@ export class DaktelaMonitor {
       `Ostatni poprawny skan: ${this.lastSuccessfulScanAt ?? "brak"}`,
       `Sesja Dakteli: ${daktelaSession}`,
       `Odpowiedź do klienta: ${customerReply}`,
+      `Outbox Discord: ${outboxStatus}`,
       "Tryb pracy: analiza i drafty na wspólnym kanale",
     ].join("\n");
   }

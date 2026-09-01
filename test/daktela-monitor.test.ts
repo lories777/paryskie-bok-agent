@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { loadConfig } from "../src/config.js";
 import {
   buildTicketTask,
+  DaktelaMonitor,
   extractDaktelaTicketId,
   isAutomaticAcknowledgementActivity,
   isObviousNoReplyTicket,
 } from "../src/daktela-monitor.js";
-import type { DaktelaTicketObservation } from "../src/store.js";
+import { AgentStore, type DaktelaTicketObservation } from "../src/store.js";
 
 test("zadanie Dakteli przekazuje historię jako nieufne dane i zachowuje numer zamówienia", () => {
   const ticket: DaktelaTicketObservation = {
@@ -75,4 +80,39 @@ test("estoński autoresponder jest rozpoznawany po treści mimo kierunku incomin
     isAutomaticAcknowledgementActivity("Direction: Incoming Soovin tagastada ebasobivad tooted."),
     false,
   );
+});
+
+test("status runtime pokazuje trwale niedostarczony alert bez danych klienta", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-runtime-status-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:100033",
+      externalMessageId: "daktela:v7:100033:fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Nieufna treść klienta",
+      createdAt: "2026-09-01T10:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    const job = store.claimNextJob();
+    assert.ok(job);
+    store.failJobWithDelivery(job.id, new Error("private customer detail"), {
+      kind: "message",
+      message: "Bezpieczny alert",
+    });
+    const delivery = store.claimNextDelivery();
+    assert.ok(delivery);
+    store.failDelivery(delivery.id, new Error("Discord unavailable"));
+
+    const status = new DaktelaMonitor(loadConfig({}, "/tmp/project"), store).runtimeStatus();
+    assert.match(status, /Outbox Discord: BŁĄD — 1 niedostarczonych komunikatów/);
+    assert.doesNotMatch(status, /private customer detail|Nieufna treść klienta/);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

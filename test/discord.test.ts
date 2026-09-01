@@ -7,6 +7,7 @@ import {
   canDecideDraft,
   directRequestConversationKey,
   DiscordGateway,
+  isDiscordUnknownMessage,
   isStatusCommand,
   persistDraftDecision,
   publishThenRemoveSuperseded,
@@ -82,6 +83,7 @@ test("Gotowe atomowo zatwierdza draft i kolejkuje dokładnie jedno wykonanie", (
       interactionId: "interaction-1",
       channelId: "channel-1",
       externalActionsEnabled: true,
+      customerReplySenderReady: true,
     }), { status: "execution_queued", jobPublicId: "BOK-000002" });
     assert.deepEqual(persistDraftDecision(store, {
       publicId: draftId,
@@ -90,6 +92,7 @@ test("Gotowe atomowo zatwierdza draft i kolejkuje dokładnie jedno wykonanie", (
       interactionId: "interaction-1-retry",
       channelId: "channel-1",
       externalActionsEnabled: true,
+      customerReplySenderReady: true,
     }), { status: "already_decided" });
 
     const execution = store.claimNextJob();
@@ -102,7 +105,7 @@ test("Gotowe atomowo zatwierdza draft i kolejkuje dokładnie jedno wykonanie", (
   }
 });
 
-test("Gotowe przy external actions OFF nie zatwierdza draftu ani nie tworzy joba", () => {
+test("brak mutacji lub gotowego sendera zapisuje tylko review i nie tworzy joba", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-discord-off-"));
   const store = new AgentStore(dir);
   try {
@@ -143,9 +146,54 @@ test("Gotowe przy external actions OFF nie zatwierdza draftu ani nie tworzy joba
       interactionId: "interaction-off",
       channelId: "channel-1",
       externalActionsEnabled: false,
-    }), { status: "execution_disabled" });
+      customerReplySenderReady: false,
+    }), { status: "review_recorded" });
     assert.equal(store.status().actions_proposed, 1);
     assert.equal(store.status().actions_approved ?? 0, 0);
+    assert.equal(store.status().draft_reviews, 1);
+    assert.equal(store.claimNextJob(), null);
+
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:100032",
+      externalMessageId: "daktela:v7:100032:fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Przeanalizuj Daktela #100032",
+      createdAt: "2026-09-01T08:01:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    const secondSourceJob = store.claimNextJob();
+    assert.ok(secondSourceJob);
+    const [secondDraftId] = store.completeJob(secondSourceJob.id, {
+      reply: "DAKTELA #100032 — odpowiedź gotowa.",
+      caseState: "action_proposed",
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Odpowiedź klientowi",
+        target: "Daktela ticket #100032",
+        payload: "Draft przy niegotowym senderze.",
+        reason: "Test sender gate",
+        risk: "medium",
+      }],
+      learnedRules: [],
+      actionExecution: null,
+    });
+    assert.equal(secondDraftId, "AKCJA-000002");
+    assert.deepEqual(persistDraftDecision(store, {
+      publicId: secondDraftId,
+      decision: "ready",
+      decidedBy: "approver-1",
+      interactionId: "interaction-sender-off",
+      channelId: "channel-1",
+      externalActionsEnabled: true,
+      customerReplySenderReady: false,
+    }), { status: "review_recorded" });
+    assert.equal(store.status().actions_proposed, 2);
+    assert.equal(store.status().actions_approved ?? 0, 0);
+    assert.equal(store.status().draft_reviews, 2);
     assert.equal(store.claimNextJob(), null);
   } finally {
     store.close();
@@ -203,6 +251,16 @@ test("DiscordGateway blokuje wykonanie także po zmianie konfiguracji i nie dele
     const result = await on.executeApprovedAction(job);
     assert.equal(result?.status, "failed");
     assert.match(result?.result ?? "", /fail-closed/);
+    const notifyResult = await on.executeApprovedAction({
+      ...job,
+      approvedAction: {
+        ...action,
+        kind: "discord_notify",
+        target: "channel-1",
+      },
+    });
+    assert.equal(notifyResult?.status, "failed");
+    assert.match(notifyResult?.result ?? "", /fail-closed|idempotentnego executora/);
     assert.equal(delegated, 0);
   } finally {
     store.close();
@@ -227,6 +285,145 @@ test("nowa karta jest potwierdzana przed usunięciem poprzedniej", async () => {
     async () => { failedEvents.push("removed-old"); },
   ));
   assert.deepEqual(failedEvents, ["publish-failed"]);
+});
+
+test("receipt jest zapisany przed fetch i retry nie publikuje drugiej karty", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-discord-receipt-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:100031",
+      externalMessageId: "daktela:v7:100031:fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Przeanalizuj Daktela #100031",
+      createdAt: "2026-09-01T10:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    const job = store.claimNextJob();
+    assert.ok(job);
+    const gateway = new DiscordGateway({
+      ...loadConfig({}, "/tmp/project"),
+      discordToken: "test-token",
+    }, store);
+    gateway.client.user = { id: "bot-1" } as typeof gateway.client.user;
+
+    let sendCalls = 0;
+    let confirmationCalls = 0;
+    const channel = {
+      isTextBased: () => true,
+      isDMBased: () => false,
+      messages: {
+        async fetch(messageId: string) {
+          if (messageId === job.externalMessageId) throw new Error("source not found");
+          assert.equal(messageId, "discord-card-1");
+          return { id: messageId, channelId: "channel-1", content: "Nowa karta", author: { id: "bot-1" } };
+        },
+        async delete() {},
+      },
+      async send(options: { content: string; nonce?: string; enforceNonce?: boolean }) {
+        sendCalls += 1;
+        assert.equal(options.nonce, `bok-${job.id.toString(36)}-0`);
+        assert.equal(options.enforceNonce, true);
+        return {
+          id: "discord-card-1",
+          channelId: "channel-1",
+          async fetch() {
+            confirmationCalls += 1;
+            throw new Error("Discord 429 during confirmation");
+          },
+        };
+      },
+    };
+    gateway.client.channels.fetch = async () => channel as never;
+
+    await assert.rejects(() => gateway.deliver(job, "Nowa karta"), /429/);
+    assert.deepEqual(store.currentDiscordDeliveryRoutes(job.id), [{
+      botMessageId: "discord-card-1",
+      channelId: "channel-1",
+    }]);
+    await gateway.deliver(job, "Nowa karta");
+    assert.equal(sendCalls, 1);
+    assert.equal(confirmationCalls, 1);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("błąd kasowania starej karty zachowuje receipt do retry", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-discord-delete-retry-"));
+  const store = new AgentStore(dir);
+  try {
+    const first = store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:100034",
+      externalMessageId: "daktela:v7:100034:old",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Stara analiza",
+      createdAt: "2026-09-01T10:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    const oldJob = store.claimNextJob();
+    assert.ok(oldJob);
+    store.completeJob(oldJob.id, {
+      reply: "Stara karta",
+      caseState: "waiting_for_human",
+      proposedActions: [],
+      actionExecution: null,
+    });
+    store.recordDiscordDeliveryRoute("old-card", first.conversationId, oldJob.id, "channel-1");
+
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:100034",
+      externalMessageId: "daktela:v7:100034:new",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Nowa analiza",
+      createdAt: "2026-09-01T10:01:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    const newJob = store.claimNextJob();
+    assert.ok(newJob);
+    const gateway = new DiscordGateway({
+      ...loadConfig({}, "/tmp/project"),
+      discordToken: "test-token",
+    }, store);
+    let deleteCalls = 0;
+    const channel = {
+      isTextBased: () => true,
+      isDMBased: () => false,
+      messages: {
+        async delete(messageId: string) {
+          deleteCalls += 1;
+          assert.equal(messageId, "old-card");
+          if (deleteCalls === 1) throw new Error("Discord 502 Bad Gateway");
+        },
+      },
+    };
+    gateway.client.channels.fetch = async () => channel as never;
+
+    await assert.rejects(() => gateway.discardSuperseded(newJob), /502/);
+    assert.equal(store.previousDiscordDeliveryRoutes(first.conversationId, newJob.id).length, 1);
+    await gateway.discardSuperseded(newJob);
+    assert.equal(deleteCalls, 2);
+    assert.deepEqual(store.previousDiscordDeliveryRoutes(first.conversationId, newJob.id), []);
+    assert.equal(isDiscordUnknownMessage({ code: 10008 }), true);
+    assert.equal(isDiscordUnknownMessage({ status: 404 }), true);
+    assert.equal(isDiscordUnknownMessage({ status: 429 }), false);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("agent nie wtrąca się do wiadomości skierowanej do innych pracowników", () => {

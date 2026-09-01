@@ -3,6 +3,8 @@ import test from "node:test";
 import type { ThreadItem } from "@openai/codex-sdk";
 import {
   buildCodexConfigOverrides,
+  buildPrimaryThreadOptions,
+  CHROME_READ_ONLY_TOOLS,
   buildReviewerBusinessContext,
   attachMissingDaktelaIdentity,
   catalogSelectionIntegrityIssues,
@@ -20,7 +22,6 @@ import {
   hasRequiredMasterlinkRead,
   holdingReplyIntegrityIssues,
   latestDaktelaActivityWasSubstantiveOutgoing,
-  newlyCreatedBrowserPageIds,
   requireAllegroClaimDetailsBeforeDecision,
   requireFulfillmentResolutionBeforeCustomerPromise,
   requireStandardReshipmentForConfirmedMissingProduct,
@@ -54,17 +55,6 @@ const output: AgentTurnOutput = {
   actionExecution: null,
 };
 
-test("sprzątanie Chrome obejmuje tylko karty utworzone podczas bieżącej tury", () => {
-  const baseline = new Set(["monitor", "existing"]);
-  assert.deepEqual(newlyCreatedBrowserPageIds(baseline, [
-    { id: "monitor", type: "page" },
-    { id: "existing", type: "page" },
-    { id: "research-1", type: "page" },
-    { id: "service-worker", type: "service_worker" },
-    { id: "research-2", type: "page" },
-  ]), ["research-1", "research-2"]);
-});
-
 const daktelaJob: ClaimedJob = {
   id: 130,
   publicId: "BOK-000130",
@@ -96,10 +86,34 @@ test("reviewer zawsze dostaje wydzielony katalog nawet za długim snapshotem Mas
   assert.match(context, /NAMED_CATALOG_MATCH number=652 terms=prada/);
 });
 
-test("Chrome jest autonomicznym narzędziem w trybie live bez niemożliwej interaktywnej zgody", () => {
-  const overrides = buildCodexConfigOverrides({ externalActionsEnabled: true });
+test("Chrome udostępnia wyłącznie techniczną allowlistę inspekcji read-only", () => {
+  const overrides = buildCodexConfigOverrides({ browserResearchEnabled: true });
   assert.ok(overrides.includes("mcp_servers.chrome-devtools.required=true"));
   assert.ok(overrides.includes('mcp_servers.chrome-devtools.default_tools_approval_mode="approve"'));
+  assert.ok(overrides.includes(
+    `mcp_servers.chrome-devtools.enabled_tools=${JSON.stringify(CHROME_READ_ONLY_TOOLS)}`,
+  ));
+  for (const forbidden of [
+    "click",
+    "fill",
+    "fill_form",
+    "press_key",
+    "evaluate_script",
+    "new_page",
+    "navigate_page",
+    "upload_file",
+    "get_network_request",
+    "list_network_requests",
+    "get_console_message",
+    "list_console_messages",
+  ]) {
+    assert.equal(CHROME_READ_ONLY_TOOLS.includes(forbidden as never), false);
+  }
+  assert.equal(buildPrimaryThreadOptions({
+    workspacePath: "/tmp/project",
+    reasoningEffort: "medium",
+    browserResearchEnabled: true,
+  }).networkAccessEnabled, false);
 });
 
 test("udany odczyt lokalnego katalogu trafia do dowodów reviewera", () => {
@@ -115,7 +129,7 @@ test("udany odczyt lokalnego katalogu trafia do dowodów reviewera", () => {
   assert.match(evidence ?? "", /340/);
 });
 
-test("odczyt Chrome przez orchestrator trafia do reviewera bez pola exit_code", () => {
+test("tekst komendy udający Chrome nie jest uznawany za zweryfikowany dowód", () => {
   const evidence = formatVerifiedToolEvidence([{
     id: "chrome-1",
     type: "command_execution",
@@ -123,9 +137,7 @@ test("odczyt Chrome przez orchestrator trafia do reviewera bez pola exit_code", 
     aggregated_output: "kod 7LAT: cztery zapachy, najtańszy za 1 grosz",
     status: "completed",
   }]);
-  assert.match(evidence ?? "", /authenticated_chrome_read/);
-  assert.match(evidence ?? "", /7LAT/);
-  assert.match(evidence ?? "", /1 grosz/);
+  assert.equal(evidence, undefined);
 });
 
 test("tekstowy wynik MCP Chrome trafia do reviewera, gdy structured_content jest null", () => {
@@ -133,8 +145,8 @@ test("tekstowy wynik MCP Chrome trafia do reviewera, gdy structured_content jest
     id: "chrome-mcp-1",
     type: "mcp_tool_call",
     server: "chrome-devtools",
-    tool: "evaluate_script",
-    arguments: { function: "() => document.body.innerText" },
+    tool: "take_snapshot",
+    arguments: { verbose: false },
     result: {
       structured_content: null,
       content: [{ type: "text", text: "7LAT: cztery zapachy, najtańszy za 1 grosz" }],
@@ -144,6 +156,19 @@ test("tekstowy wynik MCP Chrome trafia do reviewera, gdy structured_content jest
   assert.match(evidence ?? "", /authenticated_chrome_read/);
   assert.match(evidence ?? "", /cztery zapachy/);
   assert.match(evidence ?? "", /1 grosz/);
+});
+
+test("wynik mutującego narzędzia Chrome nie może zostać dowodem reviewera", () => {
+  const evidence = formatVerifiedToolEvidence([{
+    id: "chrome-mcp-unsafe",
+    type: "mcp_tool_call",
+    server: "chrome-devtools",
+    tool: "evaluate_script",
+    arguments: { function: "() => fetch('/send', {method: 'POST'})" },
+    result: { structured_content: { ok: true }, content: [] },
+    status: "completed",
+  }]);
+  assert.equal(evidence, undefined);
 });
 
 test("integrity gate blokuje obcy bestseller przy nazwanej marce", () => {
