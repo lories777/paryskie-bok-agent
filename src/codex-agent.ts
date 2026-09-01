@@ -26,6 +26,7 @@ import {
   type AgentTurnOutput,
   type ClaimedJob,
   type ProposedAction,
+  type StoredAction,
 } from "./types.js";
 
 export class BokCodexAgent {
@@ -67,37 +68,6 @@ export class BokCodexAgent {
         "mcp_servers.openaiDeveloperDocs.enabled=false",
       ],
     });
-  }
-
-  async captureBrowserPageIds(): Promise<Set<string> | undefined> {
-    if (!this.config.externalActionsEnabled) return undefined;
-    try {
-      const response = await fetch(new URL("/json/list", this.config.daktelaBrowserCdpUrl));
-      if (!response.ok) return undefined;
-      const targets = await response.json() as Array<{ id?: unknown; type?: unknown }>;
-      return new Set(
-        targets
-          .filter((target) => target.type === "page" && typeof target.id === "string")
-          .map((target) => target.id as string),
-      );
-    } catch {
-      return undefined;
-    }
-  }
-
-  async cleanupBrowserPages(baseline: Set<string> | undefined): Promise<void> {
-    if (!baseline) return;
-    try {
-      const response = await fetch(new URL("/json/list", this.config.daktelaBrowserCdpUrl));
-      if (!response.ok) return;
-      const targets = await response.json() as Array<{ id?: unknown; type?: unknown }>;
-      const createdPageIds = newlyCreatedBrowserPageIds(baseline, targets);
-      await Promise.allSettled(createdPageIds.map((id) =>
-        fetch(new URL(`/json/close/${encodeURIComponent(id)}`, this.config.daktelaBrowserCdpUrl)),
-      ));
-    } catch {
-      // Sprzątanie kart nie może zmienić wyniku obsługi ticketu.
-    }
   }
 
   async run(job: ClaimedJob, signal?: AbortSignal): Promise<AgentTurnOutput> {
@@ -419,16 +389,7 @@ export class BokCodexAgent {
   }
 
   private threadOptions(): ThreadOptions {
-    return {
-      workingDirectory: this.config.workspacePath,
-      sandboxMode: "workspace-write",
-      approvalPolicy: "never",
-      networkAccessEnabled: this.config.externalActionsEnabled,
-      webSearchMode: "disabled",
-      modelReasoningEffort: this.config.reasoningEffort as ModelReasoningEffort,
-      threadSource: "paryskie-bok-agent",
-      ...(this.config.model ? { model: this.config.model } : {}),
-    };
+    return buildPrimaryThreadOptions(this.config);
   }
 
   private reviewThreadOptions(): ThreadOptions {
@@ -445,15 +406,36 @@ export class BokCodexAgent {
   }
 }
 
+export function buildPrimaryThreadOptions(
+  config: Pick<
+    AppConfig,
+    "workspacePath" | "reasoningEffort" | "model" | "browserResearchEnabled"
+  >,
+): ThreadOptions {
+  return {
+    workingDirectory: config.workspacePath,
+    sandboxMode: "workspace-write",
+    approvalPolicy: "never",
+    // Research przeglądarki idzie wyłącznie przez poniższą allowlistę MCP. Ogólny dostęp
+    // sieciowy Codexa pozostaje wyłączony, aby flaga odczytu nie umożliwiała curl/fetch POST.
+    networkAccessEnabled: false,
+    webSearchMode: "disabled",
+    modelReasoningEffort: config.reasoningEffort as ModelReasoningEffort,
+    threadSource: "paryskie-bok-agent",
+    ...(config.model ? { model: config.model } : {}),
+  };
+}
+
 export function buildCodexConfigOverrides(
-  config: Pick<AppConfig, "externalActionsEnabled">,
+  config: Pick<AppConfig, "browserResearchEnabled">,
   masterlinkMcpOverrides: string[] = [],
 ): string[] {
   return [
-    `mcp_servers.chrome-devtools.enabled=${config.externalActionsEnabled ? "true" : "false"}`,
-    ...(config.externalActionsEnabled
+    `mcp_servers.chrome-devtools.enabled=${config.browserResearchEnabled ? "true" : "false"}`,
+    ...(config.browserResearchEnabled
       ? [
           "mcp_servers.chrome-devtools.required=true",
+          `mcp_servers.chrome-devtools.enabled_tools=${JSON.stringify(CHROME_READ_ONLY_TOOLS)}`,
           'mcp_servers.chrome-devtools.default_tools_approval_mode="approve"',
         ]
       : []),
@@ -465,16 +447,15 @@ export function buildCodexConfigOverrides(
   ];
 }
 
-export function newlyCreatedBrowserPageIds(
-  baseline: Set<string>,
-  targets: Array<{ id?: unknown; type?: unknown }>,
-): string[] {
-  return targets
-    .filter((target): target is { id: string; type?: unknown } =>
-      target.type === "page" && typeof target.id === "string" && !baseline.has(target.id)
-    )
-    .map((target) => target.id);
-}
+// Oficjalne narzędzia Chrome DevTools MCP ograniczone do inspekcji już otwartych stron.
+// Celowo brak navigate/new_page, click/fill/press_key, evaluate_script, upload i rozszerzeń.
+export const CHROME_READ_ONLY_TOOLS = [
+  "list_pages",
+  "select_page",
+  "take_snapshot",
+  "take_screenshot",
+  "wait_for",
+] as const;
 
 interface MasterlinkResearchRequirement {
   orderNumbers: string[];
@@ -584,6 +565,32 @@ export function daktelaTicketIntegrityIssues(
     }
   }
   return [...new Set(issues)];
+}
+
+/**
+ * Bramka wykonywana przed narzędziem mutującym. Walidacja wyniku agenta po fakcie nie wystarcza:
+ * błędny target mógłby już zostać wysłany do obcego ticketu.
+ */
+export function assertApprovedActionDaktelaTicketIntegrity(
+  job: ClaimedJob,
+  action: StoredAction,
+  conversationExternalId?: string,
+): void {
+  const expected = expectedDaktelaTicketId(job, conversationExternalId);
+  if (!expected || !["reply_customer", "update_daktela"].includes(action.kind)) return;
+  const targetRefs = extractDaktelaTicketReferences(action.target);
+  const issues: string[] = [];
+  if (!targetRefs.includes(expected)) {
+    issues.push(`target zatwierdzonej akcji nie wskazuje bieżącego ticketu #${expected}`);
+  }
+  for (const ticketId of targetRefs) {
+    if (ticketId !== expected) {
+      issues.push(`target zatwierdzonej akcji wskazuje obcy ticket #${ticketId}`);
+    }
+  }
+  if (issues.length > 0) {
+    throw new Error(`Zablokowano pomieszanie ticketów: ${[...new Set(issues)].join("; ")}`);
+  }
 }
 
 export function attachMissingDaktelaIdentity(
@@ -969,7 +976,7 @@ export function formatVerifiedToolEvidence(items: ThreadItem[]): string | undefi
       item.type === "mcp_tool_call" && item.server === "chrome-devtools"
     )
     .filter((item) => item.status === "completed" && !item.error)
-    .filter((item) => /^(?:take_snapshot|evaluate_script|get_network_request|list_network_requests)$/.test(item.tool))
+    .filter((item) => item.tool === "take_snapshot" || item.tool === "take_screenshot")
     .map((item) => ({
       source: "authenticated_chrome_read",
       tool: item.tool,
@@ -978,20 +985,7 @@ export function formatVerifiedToolEvidence(items: ThreadItem[]): string | undefi
       // `result:null`, causing the reviewer to erase facts the agent had just verified.
       result: item.result?.structured_content ?? item.result?.content ?? null,
     }));
-  const browserCommands = items
-    .filter((item) => item.type === "command_execution")
-    .filter((item) =>
-      item.status === "completed" && (item.exit_code === 0 || item.exit_code === undefined)
-    )
-    .filter((item) =>
-      /mcp__chrome_devtools__(?:take_snapshot|evaluate_script|get_network_request|list_network_requests)/.test(item.command)
-    )
-    .map((item) => ({
-      source: "authenticated_chrome_read",
-      command: item.command.slice(0, 500),
-      result: item.aggregated_output.slice(0, 8_000),
-    }));
-  const evidence = [...mcpEvidence, ...catalogCommands, ...browserEvidence, ...browserCommands];
+  const evidence = [...mcpEvidence, ...catalogCommands, ...browserEvidence];
   return evidence.length > 0 ? JSON.stringify(evidence).slice(0, 30_000) : undefined;
 }
 

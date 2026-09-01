@@ -45,6 +45,7 @@ const envSchema = z.object({
   BOK_AGENT_ALLOWED_USER_IDS: csvFromEnv,
   BOK_AGENT_ALLOWED_ROLE_IDS: csvFromEnv,
   BOK_AGENT_APPROVER_USER_IDS: csvFromEnv,
+  BOK_AGENT_BROWSER_RESEARCH: booleanFromEnv,
   BOK_AGENT_EXTERNAL_ACTIONS: booleanFromEnv,
   BOK_AGENT_MODEL: z.string().optional(),
   BOK_AGENT_REASONING_EFFORT: z
@@ -84,6 +85,7 @@ export interface AppConfig {
   allowedUserIds: Set<string>;
   allowedRoleIds: Set<string>;
   approverUserIds: Set<string>;
+  browserResearchEnabled: boolean;
   externalActionsEnabled: boolean;
   model?: string;
   reasoningEffort: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -126,6 +128,7 @@ export function loadConfig(
     allowedUserIds: parsed.BOK_AGENT_ALLOWED_USER_IDS,
     allowedRoleIds: parsed.BOK_AGENT_ALLOWED_ROLE_IDS,
     approverUserIds: parsed.BOK_AGENT_APPROVER_USER_IDS,
+    browserResearchEnabled: parsed.BOK_AGENT_BROWSER_RESEARCH,
     externalActionsEnabled: parsed.BOK_AGENT_EXTERNAL_ACTIONS,
     ...(parsed.BOK_AGENT_MODEL?.trim() ? { model: parsed.BOK_AGENT_MODEL.trim() } : {}),
     reasoningEffort: parsed.BOK_AGENT_REASONING_EFFORT,

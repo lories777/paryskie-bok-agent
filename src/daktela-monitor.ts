@@ -27,7 +27,6 @@ export interface DaktelaActivitySnapshot {
 }
 
 const MONITOR_PAGE_NAME = "paryskie-bok-daktela-monitor";
-const ACTION_PAGE_NAME = "paryskie-bok-daktela-action";
 const ANALYSIS_VERSION = "v6";
 const OBVIOUS_NO_REPLY_TITLES = [
   /^delivery status notification \((?:delay|failure)\)$/i,
@@ -210,14 +209,20 @@ export class DaktelaMonitor {
 
   runtimeStatus(): string {
     const profile = this.sessionCapabilities;
+    const storeStatus = this.store.status();
+    const pendingDeliveries = storeStatus.deliveries_pending ?? 0;
+    const failedDeliveries = storeStatus.deliveries_failed ?? 0;
+    const outboxStatus = failedDeliveries > 0
+      ? `BŁĄD — ${failedDeliveries} niedostarczonych komunikatów`
+      : pendingDeliveries > 0
+        ? `OCZEKUJE — ${pendingDeliveries}`
+        : "OK";
     const daktelaSession = profile
       ? `${profile.profileTitle || profile.userType || "nieznany profil"} (${profile.profileType || profile.userType || "?"})`
       : "jeszcze niezweryfikowana";
-    const customerReply = !profile
-      ? "ZABLOKOWANA do czasu potwierdzenia zalogowanej sesji"
-      : profile.profileType === "CC" || profile.userType === "CC"
-        ? "preflight przy konkretnym tickecie"
-        : "ZABLOKOWANA — bieżąca sesja jest back-office; potrzebna sesja Contact Centre z licencją Email";
+    const customerReply = this.config.externalActionsEnabled
+      ? "ZABLOKOWANA fail-closed — brak idempotentnego writebacku/readbacku Dakteli"
+      : "OFF — BOK_AGENT_EXTERNAL_ACTIONS=false";
     const monitorState = !this.config.daktelaMonitorEnabled
       ? "OFF"
       : this.lastReportedError
@@ -231,6 +236,7 @@ export class DaktelaMonitor {
       `Ostatni poprawny skan: ${this.lastSuccessfulScanAt ?? "brak"}`,
       `Sesja Dakteli: ${daktelaSession}`,
       `Odpowiedź do klienta: ${customerReply}`,
+      `Outbox Discord: ${outboxStatus}`,
       "Tryb pracy: analiza i drafty na wspólnym kanale",
     ].join("\n");
   }
@@ -238,56 +244,15 @@ export class DaktelaMonitor {
   async executeApprovedAction(job: ClaimedJob): Promise<ActionExecution | null> {
     const action = job.approvedAction;
     if (!action || action.kind !== "reply_customer") return null;
-    const ticketId = extractDaktelaTicketId(action.target);
-    if (!ticketId) {
-      return {
-        status: "failed",
-        result: "Cel zatwierdzonej odpowiedzi nie zawiera jednoznacznego numeru ticketu Dakteli.",
-      };
-    }
-    if (!action.payload.trim()) {
-      return { status: "failed", result: "Zatwierdzona odpowiedź nie ma treści do wysłania." };
-    }
-
-    try {
-      const page = await this.namedPage(ACTION_PAGE_NAME);
-      const url = new URL(`/tickets/update/${ticketId}`, this.config.daktelaViewUrl).toString();
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
-      if (/\/login\/?(?:#.*)?$/.test(new URL(page.url()).pathname)) {
-        return { status: "failed", result: "Daktela wymaga ponownego zalogowania." };
-      }
-      await page.waitForSelector("text=Ticket detail", { state: "attached", timeout: 20_000 });
-      const session = await readSessionCapabilities(page);
-      this.sessionCapabilities = session;
-      if (session.profileType !== "CC" && session.userType !== "CC") {
-        return {
-          status: "failed",
-          result:
-            "Daktela odrzuca wysyłkę z bieżącej sesji back-office. Potrzebna jest aktywna sesja użytkownika Contact Centre z licencją Email; ticket ani klient nie zostały zmienione.",
-        };
-      }
-      const newEmail = page.locator('button[title="New email"]');
-      if ((await newEmail.count()) === 0 || !(await newEmail.first().isEnabled())) {
-        return {
-          status: "failed",
-          result:
-            "Na tickecie nie ma aktywnej akcji „New email” (brak gotowej kolejki lub uprawnień). Niczego nie wysłano i nie zmieniono.",
-        };
-      }
-
-      // Po przejściu preflightu wykonanie pozostaje w turze narzędziowej Codexa. Runtime nigdy
-      // nie próbuje omijać interfejsu ani wysyłać z konta, które nie ma prawa do kolejki Email.
-      return null;
-    } catch (error) {
-      return {
-        status: "failed",
-        result: `Preflight Dakteli nie powiódł się: ${error instanceof Error ? error.message : String(error)}`.slice(
-          0,
-          1_900,
-        ),
-      };
-    }
+    // Chrome/Daktela nie oferuje tu ani klucza idempotencji, ani wiarygodnego readbacku treści
+    // wysłanej wiadomości. Crash pomiędzy kliknięciem „Wyślij” a zapisem SQLite mógłby po restarcie
+    // ponowić odpowiedź. Dopóki connector nie potrafi odczytać i jednoznacznie potwierdzić tej samej
+    // wiadomości, jedynym bezpiecznym zachowaniem jest brak dotknięcia strony akcji.
+    return {
+      status: "failed",
+      result:
+        "Wysyłka do klienta jest zablokowana fail-closed: Daktela nie ma jeszcze idempotentnego writebacku i potwierdzonego readbacku.",
+    };
   }
 
   private async scanSafely(): Promise<void> {

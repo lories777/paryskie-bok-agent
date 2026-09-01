@@ -26,6 +26,26 @@ export interface DaktelaTicketObservation {
   fingerprint: string;
 }
 
+export type ApproveActionAndEnqueueResult =
+  | { status: "queued"; jobPublicId: string }
+  | { status: "stale" }
+  | { status: "missing" }
+  | { status: "already_decided" };
+
+export interface JobCompletionDelivery {
+  kind: "message" | "discard";
+  message: string;
+}
+
+export interface ClaimedDelivery {
+  id: number;
+  job: ClaimedJob;
+  kind: "message" | "discard";
+  message: string;
+  actions: StoredAction[];
+  attempts: number;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -119,6 +139,7 @@ export class AgentStore {
       CREATE TABLE IF NOT EXISTS daktela_observations (
         ticket_id TEXT PRIMARY KEY,
         fingerprint TEXT NOT NULL,
+        latest_seen_fingerprint TEXT,
         stage TEXT NOT NULL,
         assigned_user TEXT NOT NULL,
         first_seen_at TEXT NOT NULL,
@@ -134,6 +155,28 @@ export class AgentStore {
         job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,
         channel_id TEXT NOT NULL,
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN ('message', 'discard')),
+        message TEXT NOT NULL DEFAULT '',
+        action_public_ids TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        next_attempt_at TEXT,
+        started_at TEXT,
+        completed_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS draft_reviews (
+        action_id INTEGER PRIMARY KEY REFERENCES actions(id) ON DELETE CASCADE,
+        decision TEXT NOT NULL CHECK(decision = 'accepted'),
+        decided_by TEXT NOT NULL,
+        decided_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS learned_rules (
@@ -154,6 +197,7 @@ export class AgentStore {
         ON daktela_observations(last_job_id);
       CREATE INDEX IF NOT EXISTS discord_delivery_routes_conversation_idx
         ON discord_delivery_routes(conversation_id, created_at);
+      CREATE INDEX IF NOT EXISTS deliveries_status_id_idx ON deliveries(status, id);
       CREATE INDEX IF NOT EXISTS learned_rules_updated_idx
         ON learned_rules(updated_at DESC);
     `);
@@ -162,6 +206,15 @@ export class AgentStore {
     this.ensureColumn("actions", "payload", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("actions", "quality_review", "TEXT");
     this.ensureColumn("daktela_observations", "discord_thread_id", "TEXT");
+    this.ensureColumn("daktela_observations", "latest_seen_fingerprint", "TEXT");
+    this.ensureColumn("deliveries", "next_attempt_at", "TEXT");
+    this.db
+      .prepare(`
+        UPDATE daktela_observations
+        SET latest_seen_fingerprint = fingerprint
+        WHERE latest_seen_fingerprint IS NULL OR latest_seen_fingerprint = ''
+      `)
+      .run();
     this.ensureColumn(
       "messages",
       "shared_context",
@@ -170,7 +223,7 @@ export class AgentStore {
   }
 
   private ensureColumn(
-    table: "jobs" | "actions" | "daktela_observations" | "messages",
+    table: "jobs" | "actions" | "daktela_observations" | "messages" | "deliveries",
     column: string,
     definition: string,
   ): void {
@@ -181,9 +234,23 @@ export class AgentStore {
   }
 
   private recoverInterruptedJobs(): void {
-    this.db
-      .prepare("UPDATE jobs SET status = 'pending', started_at = NULL WHERE status = 'running'")
-      .run();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare("UPDATE jobs SET status = 'pending', started_at = NULL WHERE status = 'running'")
+        .run();
+      this.db
+        .prepare(`
+          UPDATE deliveries
+          SET status = 'pending', started_at = NULL, next_attempt_at = NULL
+          WHERE status = 'running'
+        `)
+        .run();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   ingest(message: IncomingMessage): {
@@ -322,10 +389,12 @@ export class AgentStore {
         this.db
           .prepare(`
             INSERT INTO daktela_observations(
-              ticket_id, fingerprint, stage, assigned_user, first_seen_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+              ticket_id, fingerprint, latest_seen_fingerprint, stage, assigned_user,
+              first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ticket_id) DO UPDATE SET
               fingerprint = excluded.fingerprint,
+              latest_seen_fingerprint = excluded.latest_seen_fingerprint,
               stage = excluded.stage,
               assigned_user = excluded.assigned_user,
               last_seen_at = excluded.last_seen_at
@@ -333,6 +402,7 @@ export class AgentStore {
           .run(
             ticket.ticketId,
             storedFingerprint,
+            ticket.fingerprint,
             ticket.stage,
             ticket.assignedUser,
             timestamp,
@@ -531,13 +601,30 @@ export class AgentStore {
         SELECT bot_message_id, channel_id
         FROM discord_delivery_routes
         WHERE conversation_id = ?
-          AND (job_id IS NULL OR job_id != ?)
+          AND (job_id IS NULL OR job_id < ?)
         ORDER BY created_at ASC
       `)
       .all(conversationId, currentJobId) as Array<{
         bot_message_id: string;
         channel_id: string;
       }>;
+    return rows.map((row) => ({
+      botMessageId: row.bot_message_id,
+      channelId: row.channel_id,
+    }));
+  }
+
+  currentDiscordDeliveryRoutes(
+    jobId: number,
+  ): Array<{ botMessageId: string; channelId: string }> {
+    const rows = this.db
+      .prepare(`
+        SELECT bot_message_id, channel_id
+        FROM discord_delivery_routes
+        WHERE job_id = ?
+        ORDER BY rowid ASC
+      `)
+      .all(jobId) as Array<{ bot_message_id: string; channel_id: string }>;
     return rows.map((row) => ({
       botMessageId: row.bot_message_id,
       channelId: row.channel_id,
@@ -570,16 +657,21 @@ export class AgentStore {
 
   decideDraft(
     publicId: string,
-    decision: "approved" | "rejected",
+    decision: "rejected",
     decidedBy: string,
   ): "updated" | "missing" | "already_decided" {
     const row = this.db
-      .prepare("SELECT id, kind, status FROM actions WHERE public_id = ?")
+      .prepare(`
+        SELECT actions.id, actions.kind, actions.status,
+               EXISTS(SELECT 1 FROM draft_reviews WHERE action_id = actions.id) AS reviewed
+        FROM actions
+        WHERE actions.public_id = ?
+      `)
       .get(publicId) as
-      | { id: number; kind: string; status: string }
+      | { id: number; kind: string; status: string; reviewed: number }
       | undefined;
     if (!row || row.kind !== "reply_customer") return "missing";
-    if (row.status !== "proposed") return "already_decided";
+    if (row.status !== "proposed" || row.reviewed) return "already_decided";
 
     const result = this.db
       .prepare(`
@@ -589,6 +681,113 @@ export class AgentStore {
       `)
       .run(decision, decidedBy, now(), row.id);
     return result.changes > 0 ? "updated" : "already_decided";
+  }
+
+  recordDraftAcceptance(
+    publicId: string,
+    decidedBy: string,
+  ): "updated" | "stale" | "missing" | "already_decided" {
+    const normalized = publicId.toUpperCase();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db
+        .prepare(`
+          SELECT actions.id, actions.kind, actions.status,
+                 EXISTS(SELECT 1 FROM draft_reviews WHERE action_id = actions.id) AS reviewed,
+                 jobs.id AS source_job_id, jobs.trigger_message_id,
+                 jobs.conversation_id, jobs.external_message_id AS source_external_message_id,
+                 conversations.external_id AS conversation_external_id
+          FROM actions
+          JOIN jobs ON jobs.id = actions.job_id
+          JOIN conversations ON conversations.id = jobs.conversation_id
+          WHERE actions.public_id = ?
+        `)
+        .get(normalized) as
+        | {
+            id: number;
+            kind: string;
+            status: string;
+            reviewed: number;
+            source_job_id: number;
+            trigger_message_id: number;
+            conversation_id: number;
+            source_external_message_id: string;
+            conversation_external_id: string;
+          }
+        | undefined;
+      if (!row || row.kind !== "reply_customer") {
+        this.db.exec("COMMIT");
+        return "missing";
+      }
+      if (row.status !== "proposed" || row.reviewed) {
+        this.db.exec("COMMIT");
+        return "already_decided";
+      }
+      const newer = this.db
+        .prepare(`
+          SELECT
+            EXISTS(
+              SELECT 1 FROM messages
+              WHERE conversation_id = ?
+                AND id > ?
+                AND role IN ('human', 'context')
+            ) AS newer_inbound,
+            EXISTS(
+              SELECT 1 FROM jobs
+              WHERE conversation_id = ? AND id > ?
+            ) AS newer_job
+        `)
+        .get(
+          row.conversation_id,
+          row.trigger_message_id,
+          row.conversation_id,
+          row.source_job_id,
+        ) as { newer_inbound: number; newer_job: number };
+      let stale = Boolean(newer.newer_inbound || newer.newer_job);
+      const ticketId = row.conversation_external_id.match(/^daktela-ticket:(\d+)$/)?.[1];
+      const sourceFingerprint = row.source_external_message_id
+        .match(/^daktela:v\d+:\d+:(.+)$/i)?.[1];
+      if (!stale && ticketId && sourceFingerprint) {
+        const observation = this.db
+          .prepare(`
+            SELECT COALESCE(latest_seen_fingerprint, fingerprint) AS latest_seen_fingerprint,
+                   last_job_id
+            FROM daktela_observations
+            WHERE ticket_id = ?
+          `)
+          .get(ticketId) as
+          | { latest_seen_fingerprint: string; last_job_id: number | null }
+          | undefined;
+        stale = Boolean(
+          observation &&
+          (!observation.latest_seen_fingerprint.startsWith(sourceFingerprint) ||
+            (observation.last_job_id != null && observation.last_job_id > row.source_job_id)),
+        );
+      }
+      if (stale) {
+        this.db
+          .prepare(`
+            UPDATE actions
+            SET status = 'rejected', execution_result =
+              'Akceptacja draftu odrzucona: pojawił się nowszy kontekst sprawy.'
+            WHERE id = ? AND status = 'proposed'
+          `)
+          .run(row.id);
+        this.db.exec("COMMIT");
+        return "stale";
+      }
+      this.db
+        .prepare(`
+          INSERT INTO draft_reviews(action_id, decision, decided_by, decided_at)
+          VALUES (?, 'accepted', ?, ?)
+        `)
+        .run(row.id, decidedBy, now());
+      this.db.exec("COMMIT");
+      return "updated";
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   recentMessages(
@@ -726,7 +925,11 @@ export class AgentStore {
     return Number(result.lastInsertRowid);
   }
 
-  completeJob(jobId: number, output: AgentTurnOutput): string[] {
+  completeJob(
+    jobId: number,
+    output: AgentTurnOutput,
+    options: { agentReply?: string; delivery?: JobCompletionDelivery } = {},
+  ): string[] {
     const timestamp = now();
     const publicIds: string[] = [];
     this.db.exec("BEGIN IMMEDIATE");
@@ -827,6 +1030,39 @@ export class AgentStore {
             );
         }
       }
+      if (options.agentReply != null) {
+        this.db
+          .prepare(`
+            INSERT INTO messages(
+              conversation_id, external_message_id, role, author_id, author_name, content, created_at
+            ) VALUES (?, ?, 'agent', 'bok-agent', 'BOK Agent', ?, ?)
+            ON CONFLICT(conversation_id, external_message_id) DO UPDATE SET
+              content = excluded.content,
+              created_at = excluded.created_at
+          `)
+          .run(
+            jobContext.conversation_id,
+            `agent:${this.publicId("BOK", jobId)}`,
+            options.agentReply,
+            timestamp,
+          );
+      }
+      if (options.delivery) {
+        this.db
+          .prepare(`
+            INSERT INTO deliveries(
+              job_id, kind, message, action_public_ids, status, created_at
+            ) VALUES (?, ?, ?, ?, 'pending', ?)
+            ON CONFLICT(job_id) DO NOTHING
+          `)
+          .run(
+            jobId,
+            options.delivery.kind,
+            options.delivery.message,
+            JSON.stringify(publicIds),
+            timestamp,
+          );
+      }
       this.db
         .prepare("UPDATE jobs SET status = 'completed', completed_at = ?, error = NULL WHERE id = ?")
         .run(timestamp, jobId);
@@ -860,6 +1096,151 @@ export class AgentStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+  }
+
+  claimNextDelivery(): ClaimedDelivery | null {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db
+        .prepare(`
+          SELECT deliveries.id AS delivery_id, deliveries.kind, deliveries.message,
+                 deliveries.action_public_ids, deliveries.attempts AS delivery_attempts,
+                 jobs.id AS job_id, jobs.public_id AS job_public_id, jobs.conversation_id,
+                 jobs.trigger_message_id, jobs.platform, jobs.channel_id,
+                 jobs.external_message_id, jobs.attempts AS job_attempts
+          FROM deliveries
+          JOIN jobs ON jobs.id = deliveries.job_id
+          WHERE deliveries.status = 'pending'
+            AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= ?)
+            AND NOT EXISTS (
+              SELECT 1
+              FROM deliveries AS earlier_deliveries
+              JOIN jobs AS earlier_jobs ON earlier_jobs.id = earlier_deliveries.job_id
+              WHERE earlier_jobs.conversation_id = jobs.conversation_id
+                AND earlier_deliveries.id < deliveries.id
+                AND earlier_deliveries.status IN ('pending', 'running')
+            )
+          ORDER BY deliveries.id
+          LIMIT 1
+        `)
+        .get(now()) as
+        | {
+            delivery_id: number;
+            kind: "message" | "discard";
+            message: string;
+            action_public_ids: string;
+            delivery_attempts: number;
+            job_id: number;
+            job_public_id: string;
+            conversation_id: number;
+            trigger_message_id: number;
+            platform: "discord" | "local";
+            channel_id: string;
+            external_message_id: string;
+            job_attempts: number;
+          }
+        | undefined;
+      if (!row) {
+        this.db.exec("COMMIT");
+        return null;
+      }
+      this.db
+        .prepare(`
+          UPDATE deliveries
+          SET status = 'running', attempts = attempts + 1, started_at = ?,
+              next_attempt_at = NULL, error = NULL
+          WHERE id = ? AND status = 'pending'
+        `)
+        .run(now(), row.delivery_id);
+      this.db.exec("COMMIT");
+      const actionIds = parsePublicIdList(row.action_public_ids);
+      return {
+        id: row.delivery_id,
+        kind: row.kind,
+        message: row.message,
+        attempts: row.delivery_attempts + 1,
+        actions: this.getActions(actionIds),
+        job: {
+          id: row.job_id,
+          publicId: row.job_public_id,
+          conversationId: row.conversation_id,
+          triggerMessageId: row.trigger_message_id,
+          platform: row.platform,
+          channelId: row.channel_id,
+          externalMessageId: row.external_message_id,
+          attempts: row.job_attempts,
+        },
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  completeDelivery(deliveryId: number): void {
+    this.db
+      .prepare(`
+        UPDATE deliveries
+        SET status = 'completed', completed_at = ?, next_attempt_at = NULL, error = NULL
+        WHERE id = ? AND status = 'running'
+      `)
+      .run(now(), deliveryId);
+  }
+
+  requeueRunningDelivery(deliveryId: number, nextAttemptAt: string | null = null): void {
+    this.db
+      .prepare(`
+        UPDATE deliveries
+        SET status = 'pending', started_at = NULL, error = NULL, next_attempt_at = ?
+        WHERE id = ? AND status = 'running'
+      `)
+      .run(nextAttemptAt, deliveryId);
+  }
+
+  failDelivery(deliveryId: number, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    this.db
+      .prepare(`
+        UPDATE deliveries
+        SET status = 'failed', completed_at = ?, next_attempt_at = NULL, error = ?
+        WHERE id = ? AND status = 'running'
+      `)
+      .run(now(), detail.slice(0, 4000), deliveryId);
+  }
+
+  redriveDelivery(deliveryId: number): boolean {
+    const result = this.db
+      .prepare(`
+        UPDATE deliveries
+        SET status = 'pending', started_at = NULL, completed_at = NULL,
+            next_attempt_at = NULL, error = NULL
+        WHERE id = ? AND status IN ('pending', 'failed')
+      `)
+      .run(deliveryId);
+    return result.changes > 0;
+  }
+
+  failJobWithDelivery(jobId: number, error: unknown, delivery: JobCompletionDelivery): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    const timestamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare("UPDATE jobs SET status = 'failed', completed_at = ?, error = ? WHERE id = ?")
+        .run(timestamp, detail.slice(0, 4000), jobId);
+      this.db
+        .prepare(`
+          INSERT INTO deliveries(
+            job_id, kind, message, action_public_ids, status, created_at
+          ) VALUES (?, ?, ?, '[]', 'pending', ?)
+          ON CONFLICT(job_id) DO NOTHING
+        `)
+        .run(jobId, delivery.kind, delivery.message, timestamp);
+      this.db.exec("COMMIT");
+    } catch (failure) {
+      this.db.exec("ROLLBACK");
+      throw failure;
+    }
   }
 
   failJob(jobId: number, error: unknown): void {
@@ -898,24 +1279,108 @@ export class AgentStore {
     approverId: string,
     approvalMessageId: string,
     approvalChannelId: string,
-  ): string | null {
+  ): ApproveActionAndEnqueueResult {
     const normalized = publicId.toUpperCase();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const row = this.db
         .prepare(`
           SELECT actions.id, actions.public_id, actions.kind, actions.summary, actions.target,
-                 actions.payload, actions.reason, actions.risk, jobs.conversation_id, jobs.platform
+                 actions.payload, actions.reason, actions.risk, actions.status,
+                 jobs.id AS source_job_id, jobs.conversation_id, jobs.trigger_message_id,
+                 jobs.external_message_id AS source_external_message_id, jobs.platform,
+                 conversations.external_id AS conversation_external_id,
+                 EXISTS(SELECT 1 FROM draft_reviews WHERE action_id = actions.id) AS reviewed
           FROM actions
           JOIN jobs ON jobs.id = actions.job_id
-          WHERE actions.public_id = ? AND actions.status = 'proposed'
+          JOIN conversations ON conversations.id = jobs.conversation_id
+          WHERE actions.public_id = ?
         `)
         .get(normalized) as
-        | (StoredAction & { conversation_id: number; platform: "discord" | "local" })
+        | (StoredAction & {
+            status: "proposed" | "approved" | "rejected" | "executed" | "failed";
+            source_job_id: number;
+            conversation_id: number;
+            trigger_message_id: number;
+            source_external_message_id: string;
+            conversation_external_id: string;
+            reviewed: number;
+            platform: "discord" | "local";
+          })
         | undefined;
       if (!row) {
         this.db.exec("COMMIT");
-        return null;
+        return { status: "missing" };
+      }
+      if (row.status !== "proposed" || row.reviewed) {
+        this.db.exec("COMMIT");
+        return { status: "already_decided" };
+      }
+
+      const newer = this.db
+        .prepare(`
+          SELECT
+            EXISTS(
+              SELECT 1
+              FROM messages
+              WHERE conversation_id = ?
+                AND id > ?
+                AND role IN ('human', 'context')
+            ) AS newer_inbound,
+            EXISTS(
+              SELECT 1
+              FROM jobs
+              WHERE conversation_id = ? AND id > ?
+            ) AS newer_job,
+            EXISTS(
+              SELECT 1
+              FROM actions AS newer_actions
+              JOIN jobs AS newer_action_jobs ON newer_action_jobs.id = newer_actions.job_id
+              WHERE newer_action_jobs.conversation_id = ? AND newer_action_jobs.id > ?
+            ) AS newer_revision
+        `)
+        .get(
+          row.conversation_id,
+          row.trigger_message_id,
+          row.conversation_id,
+          row.source_job_id,
+          row.conversation_id,
+          row.source_job_id,
+        ) as { newer_inbound: number; newer_job: number; newer_revision: number };
+
+      let daktelaRevision = false;
+      const ticketId = row.conversation_external_id.match(/^daktela-ticket:(\d+)$/)?.[1];
+      const sourceFingerprint = row.source_external_message_id
+        .match(/^daktela:v\d+:\d+:(.+)$/i)?.[1];
+      if (ticketId && sourceFingerprint) {
+        const observation = this.db
+          .prepare(`
+            SELECT COALESCE(latest_seen_fingerprint, fingerprint) AS latest_seen_fingerprint,
+                   last_job_id
+            FROM daktela_observations
+            WHERE ticket_id = ?
+          `)
+          .get(ticketId) as
+          | { latest_seen_fingerprint: string; last_job_id: number | null }
+          | undefined;
+        daktelaRevision = Boolean(
+          observation &&
+          (!observation.latest_seen_fingerprint.startsWith(sourceFingerprint) ||
+            (observation.last_job_id != null && observation.last_job_id > row.source_job_id)),
+        );
+      }
+
+      if (newer.newer_inbound || newer.newer_job || newer.newer_revision || daktelaRevision) {
+        this.db
+          .prepare(`
+            UPDATE actions
+            SET status = 'rejected', approved_by = ?, approved_at = ?,
+                execution_result = 'Zatwierdzenie odrzucone: po przygotowaniu draftu pojawił się nowszy kontekst sprawy.'
+            WHERE id = ? AND status = 'proposed'
+          `)
+          .run(approverId, now(), row.id);
+        this.db.exec("COMMIT");
+        return { status: "stale" };
       }
 
       const timestamp = now();
@@ -955,10 +1420,100 @@ export class AgentStore {
       const jobPublicId = this.publicId("BOK", jobId);
       this.db.prepare("UPDATE jobs SET public_id = ? WHERE id = ?").run(jobPublicId, jobId);
       this.db.exec("COMMIT");
-      return jobPublicId;
+      return { status: "queued", jobPublicId };
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
+    }
+  }
+
+  assertApprovedActionFresh(executionJobId: number): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    let stale = false;
+    try {
+      const row = this.db
+        .prepare(`
+          SELECT execution_jobs.id AS execution_job_id,
+                 execution_jobs.trigger_message_id AS approval_message_id,
+                 execution_jobs.conversation_id,
+                 actions.status AS action_status,
+                 source_jobs.id AS source_job_id,
+                 source_jobs.external_message_id AS source_external_message_id,
+                 conversations.external_id AS conversation_external_id
+          FROM jobs AS execution_jobs
+          JOIN actions ON actions.id = execution_jobs.approved_action_id
+          JOIN jobs AS source_jobs ON source_jobs.id = actions.job_id
+          JOIN conversations ON conversations.id = execution_jobs.conversation_id
+          WHERE execution_jobs.id = ?
+        `)
+        .get(executionJobId) as
+        | {
+            execution_job_id: number;
+            approval_message_id: number;
+            conversation_id: number;
+            action_status: string;
+            source_job_id: number;
+            source_external_message_id: string;
+            conversation_external_id: string;
+          }
+        | undefined;
+      if (!row || row.action_status !== "approved") {
+        stale = true;
+      } else {
+        const newer = this.db
+          .prepare(`
+            SELECT
+              EXISTS(
+                SELECT 1 FROM messages
+                WHERE conversation_id = ?
+                  AND id > ?
+                  AND role IN ('human', 'context')
+              ) AS newer_inbound,
+              EXISTS(
+                SELECT 1 FROM jobs
+                WHERE conversation_id = ?
+                  AND id > ?
+                  AND approved_action_id IS NULL
+              ) AS newer_job
+          `)
+          .get(
+            row.conversation_id,
+            row.approval_message_id,
+            row.conversation_id,
+            row.execution_job_id,
+          ) as { newer_inbound: number; newer_job: number };
+        stale = Boolean(newer.newer_inbound || newer.newer_job);
+
+        const ticketId = row.conversation_external_id.match(/^daktela-ticket:(\d+)$/)?.[1];
+        const sourceFingerprint = row.source_external_message_id
+          .match(/^daktela:v\d+:\d+:(.+)$/i)?.[1];
+        if (!stale && ticketId && sourceFingerprint) {
+          const observation = this.db
+            .prepare(`
+              SELECT COALESCE(latest_seen_fingerprint, fingerprint) AS latest_seen_fingerprint,
+                     last_job_id
+              FROM daktela_observations
+              WHERE ticket_id = ?
+            `)
+            .get(ticketId) as
+            | { latest_seen_fingerprint: string; last_job_id: number | null }
+            | undefined;
+          stale = Boolean(
+            observation &&
+            (!observation.latest_seen_fingerprint.startsWith(sourceFingerprint) ||
+              (observation.last_job_id != null && observation.last_job_id > row.source_job_id)),
+          );
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    if (stale) {
+      throw new Error(
+        "Zablokowano nieaktualne zatwierdzenie: po akceptacji pojawiła się nowsza wiadomość, analiza lub rewizja ticketu.",
+      );
     }
   }
 
@@ -1011,7 +1566,14 @@ export class AgentStore {
 
   status(): Record<string, number> {
     const result: Record<string, number> = {};
-    for (const table of ["conversations", "messages", "daktela_observations", "learned_rules"] as const) {
+    for (const table of [
+      "conversations",
+      "messages",
+      "daktela_observations",
+      "learned_rules",
+      "deliveries",
+      "draft_reviews",
+    ] as const) {
       const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
         count: SqlValue;
       };
@@ -1025,6 +1587,10 @@ export class AgentStore {
       .prepare("SELECT status, COUNT(*) AS count FROM actions GROUP BY status")
       .all() as Array<{ status: string; count: SqlValue }>;
     for (const row of actions) result[`actions_${row.status}`] = Number(row.count);
+    const deliveries = this.db
+      .prepare("SELECT status, COUNT(*) AS count FROM deliveries GROUP BY status")
+      .all() as Array<{ status: string; count: SqlValue }>;
+    for (const row of deliveries) result[`deliveries_${row.status}`] = Number(row.count);
     return result;
   }
 
@@ -1043,6 +1609,17 @@ interface ActionRow {
   reason: string;
   risk: StoredAction["risk"];
   quality_review: string | null;
+}
+
+function parsePublicIdList(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 function parseQualityReview(value: string | null): StoredAction["qualityReview"] | undefined {

@@ -1,5 +1,10 @@
-import { assertDaktelaTicketIntegrity, type BokCodexAgent } from "./codex-agent.js";
-import type { AgentStore } from "./store.js";
+import {
+  assertApprovedActionDaktelaTicketIntegrity,
+  assertDaktelaTicketIntegrity,
+  expectedDaktelaTicketId,
+  type BokCodexAgent,
+} from "./codex-agent.js";
+import type { AgentStore, ClaimedDelivery, JobCompletionDelivery } from "./store.js";
 import type { AgentTurnOutput, ClaimedJob, StoredAction } from "./types.js";
 
 export type ActionExecution = NonNullable<AgentTurnOutput["actionExecution"]>;
@@ -26,21 +31,38 @@ export class JobWorker {
   ) {}
 
   async runOne(signal?: AbortSignal): Promise<boolean> {
+    const pendingDelivery = this.store.claimNextDelivery();
+    if (pendingDelivery) return this.processDelivery(pendingDelivery, signal);
+
     const job = this.store.claimNextJob();
     if (!job) return false;
     const conversationExternalId = this.store.getConversation(job.conversationId).externalId;
-    const browserBaseline = await this.agent.captureBrowserPageIds?.();
 
     try {
-      const directExecution = job.approvedAction
-        ? await this.sink.executeApprovedAction?.(job)
-        : undefined;
+      let directExecution: ActionExecution | undefined;
+      if (job.approvedAction) {
+        // Integralność musi zostać potwierdzona przed wywołaniem jakiegokolwiek narzędzia. Po
+        // zatwierdzeniu nie wolno też wracać do swobodnej tury modelu: brak deterministycznego
+        // executora jest wynikiem fail-closed, a nie zgodą na próbę przez przeglądarkę.
+        assertApprovedActionDaktelaTicketIntegrity(
+          job,
+          job.approvedAction,
+          conversationExternalId,
+        );
+        this.store.assertApprovedActionFresh(job.id);
+        directExecution = (await this.sink.executeApprovedAction?.(job)) ?? {
+          status: "failed",
+          result:
+            "Wykonanie zablokowane: brak deterministycznego executora z idempotencją i weryfikacją wyniku.",
+        };
+      }
       const output: AgentTurnOutput = directExecution
         ? {
-            reply:
-              directExecution.status === "executed"
-                ? `Wykonałem ${job.approvedAction?.publicId}. ${directExecution.result}`
-                : `Nie wykonałem ${job.approvedAction?.publicId}. ${directExecution.result}`,
+            reply: formatApprovedActionExecutionReply(
+              job,
+              directExecution,
+              conversationExternalId,
+            ),
             caseState: directExecution.status === "executed" ? "answered" : "waiting_for_human",
             proposedActions: [],
             actionExecution: directExecution,
@@ -54,20 +76,43 @@ export class JobWorker {
         };
         this.store.finishAction(job.approvedAction.id, execution.status, execution.result);
       }
-      const actionIds = this.store.completeJob(job.id, output);
-      const actions = this.store.getActions(actionIds);
-      const reply = formatAgentDelivery(output.reply, actions);
-      this.store.recordAgentReply(job.conversationId, job, reply);
-      if (shouldDeliverAgentOutput(job, output, actions, conversationExternalId)) {
-        await this.sink.deliver(job, reply, actions);
+      const previewActions = output.proposedActions
+        .filter((action) => action.qualityReview?.verdict !== "blocked")
+        .map((action, index): StoredAction => ({
+          id: -(index + 1),
+          publicId: `PREVIEW-${index + 1}`,
+          kind: action.kind,
+          summary: action.summary,
+          target: action.target,
+          payload: action.payload,
+          reason: action.reason,
+          risk: action.risk,
+          ...(action.qualityReview
+            ? {
+                qualityReview: {
+                  verdict: action.qualityReview.verdict,
+                  issues: action.qualityReview.issues,
+                  confidence: action.qualityReview.confidence,
+                  ...(action.qualityReview.polishTranslation
+                    ? { polishTranslation: action.qualityReview.polishTranslation }
+                    : {}),
+                },
+              }
+            : {}),
+        }));
+      const reply = formatAgentDelivery(output.reply, previewActions);
+      let delivery: JobCompletionDelivery | undefined;
+      if (shouldDeliverAgentOutput(job, output, previewActions, conversationExternalId)) {
+        delivery = { kind: "message", message: reply };
       } else if (
         isDaktelaConversation(job, conversationExternalId) &&
-        shouldDiscardSupersededDaktelaCard(output, actions)
+        shouldDiscardSupersededDaktelaCard(output, previewActions)
       ) {
-        // Cichy, nowszy wynik nadal zastępuje starą kartę tej samej sprawy. Inaczej na kanale
-        // zostaje nieaktualne pytanie lub draft mimo że ticket został już obsłużony.
-        await this.sink.discardSuperseded?.(job);
+        delivery = { kind: "discard", message: "" };
       }
+      this.store.completeJob(job.id, output, { agentReply: reply, ...(delivery ? { delivery } : {}) });
+      const queuedDelivery = delivery ? this.store.claimNextDelivery() : null;
+      if (queuedDelivery) await this.processDelivery(queuedDelivery, signal);
       return true;
     } catch (error) {
       if (signal?.aborted) {
@@ -80,18 +125,47 @@ export class JobWorker {
         if (retryDelayMs > 0) await wait(retryDelayMs, signal ?? new AbortController().signal);
         return true;
       }
-      this.store.failJob(job.id, error);
       const detail = error instanceof Error ? error.message : String(error);
       if (job.approvedAction) this.store.finishAction(job.approvedAction.id, "failed", detail);
-      if (!isDaktelaConversation(job, conversationExternalId)) {
-        await this.sink.deliver(
-          job,
-          `Nie domknąłem sprawy: ${detail.slice(0, 800)}.`,
-        );
-      }
+      const terminalMessage = isDaktelaConversation(job, conversationExternalId)
+        ? formatTerminalDaktelaFailureAlert(job, conversationExternalId, error)
+        : formatTerminalJobFailureAlert(job, error);
+      this.store.failJobWithDelivery(job.id, error, { kind: "message", message: terminalMessage });
+      const alertDelivery = this.store.claimNextDelivery();
+      if (alertDelivery) await this.processDelivery(alertDelivery, signal);
       return true;
-    } finally {
-      await this.agent.cleanupBrowserPages?.(browserBaseline);
+    }
+  }
+
+  private async processDelivery(
+    delivery: ClaimedDelivery,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    try {
+      if (delivery.kind === "discard") {
+        await this.sink.discardSuperseded?.(delivery.job);
+      } else {
+        await this.sink.deliver(delivery.job, delivery.message, delivery.actions);
+      }
+      this.store.completeDelivery(delivery.id);
+      return true;
+    } catch (error) {
+      if (signal?.aborted) {
+        this.store.requeueRunningDelivery(delivery.id);
+        return false;
+      }
+      if (isRetryableJobError(error)) {
+        // Dostawy i alerty są trwałym outboxem, nie kolejną pracą modelu. Chwilowa awaria
+        // Discorda nigdy nie przechodzi w terminalne `failed`; zapisujemy termin następnej próby,
+        // aby worker mógł w międzyczasie obsługiwać pozostałe joby i wznowić po restarcie.
+        const retryDelayMs = this.options.retryDelayMs ?? transientRetryDelayMs(delivery.attempts);
+        const nextAttemptAt = new Date(Date.now() + retryDelayMs).toISOString();
+        this.store.requeueRunningDelivery(delivery.id, nextAttemptAt);
+        return true;
+      }
+      this.store.failDelivery(delivery.id, error);
+      console.error(`Trwale nie dostarczono komunikatu dla ${delivery.job.publicId}.`);
+      return true;
     }
   }
 
@@ -107,6 +181,68 @@ export class JobWorker {
       this.running = false;
     }
   }
+}
+
+export function formatTerminalDaktelaFailureAlert(
+  job: ClaimedJob,
+  conversationExternalId: string,
+  error: unknown,
+): string {
+  const ticketId = conversationExternalId.match(/^daktela-ticket:(\d+)$/)?.[1];
+  const heading = ticketId
+    ? `**Daktela #${ticketId} · wymaga przejęcia**`
+    : "**Daktela · wymaga przejęcia**";
+  const errorCode = terminalDaktelaFailureCode(error);
+  const attemptLabel = job.attempts === 1 ? "1 próbie" : `${job.attempts} próbach`;
+  return [
+    heading,
+    `Agent nie potwierdził bezpiecznego domknięcia po ${attemptLabel}.`,
+    `Kod: \`${errorCode}\` · zadanie \`${job.publicId}\``,
+    "Sprawdź historię ticketu przed ponowieniem, aby nie wysłać odpowiedzi drugi raz.",
+  ].join("\n");
+}
+
+export function formatTerminalJobFailureAlert(job: ClaimedJob, error: unknown): string {
+  return [
+    "**BOK Agent · wymaga przejęcia**",
+    "Nie potwierdziłem bezpiecznego domknięcia zadania.",
+    `Kod: \`${terminalDaktelaFailureCode(error)}\` · zadanie \`${job.publicId}\``,
+    "Sprawdź historię rozmowy przed ponowieniem działania.",
+  ].join("\n");
+}
+
+export function formatApprovedActionExecutionReply(
+  job: ClaimedJob,
+  execution: ActionExecution,
+  conversationExternalId?: string,
+): string {
+  const ticketId = expectedDaktelaTicketId(job, conversationExternalId);
+  const result = execution.status === "executed"
+    ? `Wykonałem ${job.approvedAction?.publicId}. ${execution.result}`
+    : `Nie wykonałem ${job.approvedAction?.publicId}. ${execution.result}`;
+  return ticketId ? `DAKTELA #${ticketId}\n\n${result}` : result;
+}
+
+function terminalDaktelaFailureCode(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (isRetryableJobError(error)) return "provider_retry_exhausted";
+  if (
+    /pomieszanie ticketów|obcy ticket|nie wskazuje bieżącego ticketu|numer(?:em|u)?\s+innego\s+ticketu|ticket integrity|TICKET_INTEGRITY/i.test(
+      detail,
+    )
+  ) {
+    return "ticket_integrity_failed";
+  }
+  if (/nieaktualn|nowsz(?:y|a|e)\s+(?:inbound|wiadomość|kontekst|job|rewizj)|stale/i.test(detail)) {
+    return "stale_approval";
+  }
+  if (/contract|schema|json|structured output|parse/i.test(detail)) {
+    return "agent_contract_failed";
+  }
+  if (/daktela|zalogowa|sesj|contact centre|new email/i.test(detail)) {
+    return "daktela_session_failed";
+  }
+  return "agent_runtime_failed";
 }
 
 export function formatAgentDelivery(reply: string, actions: StoredAction[]): string {
@@ -175,6 +311,8 @@ export function shouldDeliverAgentOutput(
   // niezależnie od rodzaju rozmowy i nigdy nie są treścią dla BOK.
   if (/Draft wstrzymany przez kontrolę jakości:|\bquality review\b/i.test(output.reply)) return false;
   if (!isDaktelaConversation(job, conversationExternalId)) return true;
+  // Wynik jawnie zatwierdzonego wykonania (w tym fail-closed) zawsze musi wrócić do BOK.
+  if (job.approvedAction) return true;
   if (actions.some((action) => action.kind === "reply_customer")) return true;
   // Konkretny zapis w MasterLinku, którego runtime na tym etapie nie może wykonać, jest realnym
   // następnym krokiem sprawy. Pokazujemy go raz zespołowi; zwykłe analizy i listy czynności nadal
@@ -231,7 +369,7 @@ export function isConcreteOperationalInstruction(value: string): boolean {
 
 export function isRetryableJobError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /(?:selected model is at capacity|rate limit|too many requests|\b429\b|service unavailable|\b503\b|overloaded|temporarily unavailable|ECONNRESET|ETIMEDOUT)/i.test(message);
+  return /(?:selected model is at capacity|rate limit|too many requests|\b(?:408|425|429|500|502|503|504)\b|bad gateway|gateway timeout|internal server error|service unavailable|overloaded|temporarily unavailable|fetch failed|network error|socket hang up|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_(?:CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT|SOCKET))/i.test(message);
 }
 
 function transientRetryDelayMs(attempt: number): number {

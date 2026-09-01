@@ -66,6 +66,104 @@ test("odczyt przez drugi proces nie resetuje aktywnego zadania, a start runtime 
   }
 });
 
+test("restart runtime odzyskuje rozpoczętą dostawę z trwałego outboxa", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-delivery-recovery-"));
+  const worker = new AgentStore(dir);
+  try {
+    worker.ingest(message());
+    const job = worker.claimNextJob();
+    assert.ok(job);
+    worker.completeJob(job.id, {
+      reply: "Gotowe",
+      caseState: "answered",
+      proposedActions: [],
+      actionExecution: null,
+    }, {
+      agentReply: "Gotowe",
+      delivery: { kind: "message", message: "Gotowe" },
+    });
+    assert.equal(worker.claimNextDelivery()?.attempts, 1);
+  } finally {
+    worker.close();
+  }
+
+  const restartedRuntime = new AgentStore(dir, "bok-agent.sqlite", {
+    recoverInterruptedJobs: true,
+  });
+  try {
+    const recovered = restartedRuntime.claimNextDelivery();
+    assert.equal(recovered?.job.publicId, "BOK-000001");
+    assert.equal(recovered?.message, "Gotowe");
+    assert.equal(recovered?.attempts, 2);
+  } finally {
+    restartedRuntime.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("termin kolejnej próby outboxa jest trwały i nie blokuje nowych jobów", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-delivery-backoff-"));
+  const store = new AgentStore(dir);
+  try {
+    const first = store.ingest(message());
+    const job = store.claimNextJob();
+    assert.ok(job);
+    store.completeJob(job.id, {
+      reply: "Gotowe",
+      caseState: "answered",
+      proposedActions: [],
+      actionExecution: null,
+    }, { delivery: { kind: "message", message: "Gotowe" } });
+    const delivery = store.claimNextDelivery();
+    assert.ok(delivery);
+    store.requeueRunningDelivery(delivery.id, "2999-01-01T00:00:00.000Z");
+
+    store.ingest(message({
+      externalMessageId: "message-2",
+      content: "Nowe zadanie podczas backoffu",
+    }));
+    assert.equal(store.claimNextDelivery(), null);
+    const secondJob = store.claimNextJob();
+    assert.equal(secondJob?.publicId, "BOK-000002");
+    assert.ok(secondJob);
+    store.completeJob(secondJob.id, {
+      reply: "Nowsza odpowiedź",
+      caseState: "answered",
+      proposedActions: [],
+      actionExecution: null,
+    }, { delivery: { kind: "message", message: "Nowsza odpowiedź" } });
+    // Nowsza dostawa tej samej rozmowy nie może wyprzedzić starszej w backoffie.
+    assert.equal(store.claimNextDelivery(), null);
+    assert.equal(store.status().deliveries_pending, 2);
+    const observer = new AgentStore(dir);
+    try {
+      assert.equal(observer.claimNextDelivery(), null);
+    } finally {
+      observer.close();
+    }
+    assert.equal(store.redriveDelivery(delivery.id), true);
+    const recoveredFirst = store.claimNextDelivery();
+    assert.equal(recoveredFirst?.job.id, job.id);
+    assert.ok(recoveredFirst);
+    store.completeDelivery(recoveredFirst.id);
+    const orderedSecond = store.claimNextDelivery();
+    assert.equal(orderedSecond?.job.id, secondJob.id);
+    assert.ok(orderedSecond);
+    store.completeDelivery(orderedSecond.id);
+
+    store.recordDiscordDeliveryRoute("older-card", first.conversationId, job.id, "channel-1");
+    store.recordDiscordDeliveryRoute("newer-card", first.conversationId, secondJob.id, "channel-1");
+    assert.deepEqual(store.previousDiscordDeliveryRoutes(first.conversationId, job.id), []);
+    assert.deepEqual(store.previousDiscordDeliveryRoutes(first.conversationId, secondJob.id), [{
+      botMessageId: "older-card",
+      channelId: "channel-1",
+    }]);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("wiadomość obserwowana buduje kontekst bez zadania", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-store-"));
   const store = new AgentStore(dir);
@@ -160,13 +258,13 @@ test("propozycje działań dostają stabilne identyfikatory i wymagają approval
       ],
     });
     assert.deepEqual(ids, ["AKCJA-000001"]);
-    assert.equal(
+    assert.deepEqual(
       store.approveActionAndEnqueue("AKCJA-000001", "approver", "approval-1", "local"),
-      "BOK-000002",
+      { status: "queued", jobPublicId: "BOK-000002" },
     );
-    assert.equal(
+    assert.deepEqual(
       store.approveActionAndEnqueue("AKCJA-000001", "approver", "approval-2", "local"),
-      null,
+      { status: "already_decided" },
     );
     const execution = store.claimNextJob();
     assert.equal(execution?.approvedAction?.publicId, "AKCJA-000001");
@@ -247,6 +345,74 @@ test("limit skanu nie gubi kolejnych zmienionych ticketów", () => {
     assert.deepEqual(store.recordDaktelaScan(changed, 1).map((item) => item.ticketId), ["201"]);
     assert.deepEqual(store.recordDaktelaScan(changed, 1).map((item) => item.ticketId), ["202"]);
     assert.deepEqual(store.recordDaktelaScan(changed, 1), []);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("approval widzi latest fingerprint także dla rewizji odłożonej przez limit skanu", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-latest-seen-revision-"));
+  const store = new AgentStore(dir);
+  const ticket = (ticketId: string, fingerprint: string): DaktelaTicketObservation => ({
+    ticketId,
+    title: `Ticket ${ticketId}`,
+    category: "Pytanie",
+    assignedUser: "",
+    status: "Nowe",
+    stage: "Open",
+    edited: fingerprint,
+    editedBy: "System",
+    url: `https://daktela.example/tickets/update/${ticketId}`,
+    fingerprint,
+  });
+  try {
+    const oldA = "v7:old-a";
+    const oldB = "v7:old-b";
+    store.recordDaktelaScan([ticket("400", oldA), ticket("401", oldB)], 2);
+    const incoming = store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:401",
+      externalMessageId: `daktela:v6:401:${oldB.slice(0, 16)}`,
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Przeanalizuj Daktela #401",
+      createdAt: "2026-09-01T08:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    assert.ok(incoming.jobId);
+    store.linkDaktelaJob("401", oldB, incoming.jobId);
+    const source = store.claimNextJob();
+    assert.ok(source);
+    store.completeJob(source.id, {
+      reply: "DAKTELA #401 — draft gotowy.",
+      caseState: "action_proposed",
+      actionExecution: null,
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Odpowiedź",
+        target: "Daktela ticket #401",
+        payload: "OLD",
+        reason: "Test latest seen",
+        risk: "medium",
+      }],
+    });
+
+    // Max=1 wybiera ticket 400. Cursor kolejki ticketu 401 pozostaje stary, ale latest_seen musi
+    // zapamiętać już zaobserwowaną zmianę i zablokować akceptację starego draftu.
+    assert.deepEqual(
+      store.recordDaktelaScan([ticket("400", "v7:new-a"), ticket("401", "v7:new-b")], 1)
+        .map((item) => item.ticketId),
+      ["400"],
+    );
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000001", "approver", "old-click", "channel-1"),
+      { status: "stale" },
+    );
+    assert.equal(store.status().actions_rejected, 1);
+    assert.equal(store.status().actions_approved ?? 0, 0);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -397,7 +563,66 @@ test("nowszy draft tej samej odpowiedzi zastępuje starszy", () => {
     });
     assert.equal(first.conversationId, secondJob.conversationId);
     assert.deepEqual(store.listProposedActions().map((action) => action.payload), ["Wersja 2"]);
-    assert.equal(store.approveActionAndEnqueue("AKCJA-000001", "approver", "old", "local"), null);
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000001", "approver", "old", "local"),
+      { status: "already_decided" },
+    );
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomowa akceptacja odrzuca stary draft, ale kolejkuje najnowszą rewizję", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-stale-approval-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest(message());
+    const oldJob = store.claimNextJob();
+    assert.ok(oldJob);
+    store.completeJob(oldJob.id, {
+      reply: "Pierwsza wersja",
+      caseState: "action_proposed",
+      actionExecution: null,
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Stara odpowiedź",
+        target: "Daktela ticket #123",
+        payload: "OLD",
+        reason: "Test stale",
+        risk: "low",
+      }],
+    });
+
+    store.ingest(message({ externalMessageId: "message-new", content: "Nowy fakt do sprawy" }));
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000001", "approver", "old-click", "local"),
+      { status: "stale" },
+    );
+    assert.equal(store.status().actions_approved ?? 0, 0);
+    assert.equal(store.status().actions_rejected, 1);
+
+    const newJob = store.claimNextJob();
+    assert.ok(newJob);
+    store.completeJob(newJob.id, {
+      reply: "Najnowsza wersja",
+      caseState: "action_proposed",
+      actionExecution: null,
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Nowa odpowiedź",
+        target: "Daktela ticket #123",
+        payload: "NEW",
+        reason: "Uwzględnia nowy fakt",
+        risk: "low",
+      }],
+    });
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000002", "approver", "new-click", "local"),
+      { status: "queued", jobPublicId: "BOK-000003" },
+    );
+    assert.equal(store.claimNextJob()?.approvedAction?.payload, "NEW");
+    assert.equal(store.claimNextJob(), null);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -522,7 +747,7 @@ test("odpowiedź na wiadomość bota wraca do dokładnej rozmowy ticketu", () =>
   }
 });
 
-test("pracownik BOK może oznaczyć draft jako gotowy bez tworzenia zadania wysyłki", () => {
+test("odrzucenie draftu nie tworzy zadania wysyłki", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-draft-ready-"));
   const store = new AgentStore(dir);
   try {
@@ -544,10 +769,10 @@ test("pracownik BOK może oznaczyć draft jako gotowy bez tworzenia zadania wysy
         },
       ],
     });
-    assert.equal(store.decideDraft("AKCJA-000001", "approved", "bok-user"), "updated");
-    assert.equal(store.decideDraft("AKCJA-000001", "approved", "bok-user"), "already_decided");
+    assert.equal(store.decideDraft("AKCJA-000001", "rejected", "bok-user"), "updated");
+    assert.equal(store.decideDraft("AKCJA-000001", "rejected", "bok-user"), "already_decided");
     assert.equal(store.claimNextJob(), null);
-    assert.equal(store.status().actions_approved, 1);
+    assert.equal(store.status().actions_rejected, 1);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });

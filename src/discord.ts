@@ -18,9 +18,83 @@ import type { ActionExecution, ReplySink } from "./worker.js";
 const STATUS_PATTERN = /^!bok\s+status\s*$/i;
 const HELP_PATTERN = /^!bok\s+(?:pomoc|help)\s*$/i;
 const DRAFT_BUTTON_PATTERN = /^bok:draft:(ready|reject):(AKCJA-[A-Z0-9_-]+)$/;
+// Zmiana na true wymaga implementacji idempotentnego sendera i readbacku, nie ustawienia ENV.
+export const CUSTOMER_REPLY_SENDER_READY = false;
+
+export type DraftDecisionPersistenceResult =
+  | { status: "execution_queued"; jobPublicId: string }
+  | { status: "review_recorded" }
+  | { status: "rejected" }
+  | { status: "stale" }
+  | { status: "missing" }
+  | { status: "already_decided" };
+
+/**
+ * Zapisuje decyzję przycisku. Dopóki sender nie jest gotowy, akceptacja jest wyłącznie
+ * feedbackiem managerskim. Gdy obie bramy wykonania są jawnie aktywne,
+ * `approveActionAndEnqueue` trzyma zmianę statusu akcji i INSERT joba w jednej transakcji
+ * `BEGIN IMMEDIATE`, więc ponowne/dwukrotne kliknięcie nie może stworzyć drugiej wysyłki.
+ */
+export function persistDraftDecision(
+  store: AgentStore,
+  input: {
+    publicId: string;
+    decision: "ready" | "reject";
+    decidedBy: string;
+    interactionId: string;
+    channelId: string;
+    externalActionsEnabled: boolean;
+    customerReplySenderReady: boolean;
+  },
+): DraftDecisionPersistenceResult {
+  const action = store.getAction(input.publicId);
+  if (!action || action.kind !== "reply_customer") return { status: "missing" };
+
+  if (input.decision === "reject") {
+    const result = store.decideDraft(input.publicId, "rejected", input.decidedBy);
+    return { status: result === "updated" ? "rejected" : result };
+  }
+
+  // Akceptacja managerska pozostaje użyteczna także w read-only. Nie nazywamy jej jednak approval
+  // wykonania i nie tworzymy joba, dopóki obie niezależne bramy nie potwierdzają gotowego sendera.
+  if (!input.externalActionsEnabled || !input.customerReplySenderReady) {
+    const review = store.recordDraftAcceptance(input.publicId, input.decidedBy);
+    return { status: review === "updated" ? "review_recorded" : review };
+  }
+
+  const approval = store.approveActionAndEnqueue(
+    input.publicId,
+    input.decidedBy,
+    input.interactionId,
+    input.channelId,
+  );
+  if (approval.status === "queued") {
+    return { status: "execution_queued", jobPublicId: approval.jobPublicId };
+  }
+  return approval;
+}
+
+export async function publishThenRemoveSuperseded(
+  publish: () => Promise<void>,
+  removeSuperseded: () => Promise<void>,
+): Promise<void> {
+  // Stara karta pozostaje jedynym widocznym śladem sprawy, dopóki Discord nie potwierdzi całej
+  // nowej publikacji. Błąd publikacji nie może najpierw skasować działającej ścieżki przejęcia.
+  await publish();
+  await removeSuperseded();
+}
 
 export function isStatusCommand(content: string): boolean {
   return STATUS_PATTERN.test(content.trim());
+}
+
+export function isDiscordUnknownMessage(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; status?: unknown };
+  // Receipt wolno usunąć tylko po strukturalnie potwierdzonym Discordowym
+  // `Unknown Message` (10008) albo HTTP 404. Sam tekst wyjątku nie jest
+  // wiarygodny: błąd sieci/proxy może zawierać te słowa i nadal wymagać retry.
+  return candidate.code === 10008 || candidate.status === 404;
 }
 
 type ApprovedActionExecutor = (job: ClaimedJob) => Promise<ActionExecution | null>;
@@ -93,22 +167,75 @@ export class DiscordGateway implements ReplySink {
     if (!channel?.isTextBased() || channel.isDMBased()) {
       throw new Error(`Kanał ${job.channelId} nie jest obsługiwanym kanałem tekstowym`);
     }
-    if (this.store.getConversation(job.conversationId).externalId.startsWith("daktela-ticket:")) {
-      await this.removeSupersededDaktelaDeliveries(job);
-    }
-    const chunks = splitDiscordMessage(message);
-    const original = await channel.messages.fetch(job.externalMessageId).catch(() => null);
-    for (const [index, chunk] of chunks.entries()) {
-      const components = index === chunks.length - 1 ? draftDecisionComponents(actions) : [];
-      const sent =
-        index === 0 && original
-          ? await original.reply({
-              content: chunk,
-              components,
-              allowedMentions: { repliedUser: false },
-            })
-          : await channel.send({ content: chunk, components, allowedMentions: { parse: [] } });
-      this.store.recordDiscordDeliveryRoute(sent.id, job.conversationId, job.id, sent.channelId);
+    const isDaktela = this.store
+      .getConversation(job.conversationId)
+      .externalId.startsWith("daktela-ticket:");
+    const publish = async () => {
+      const chunks = splitDiscordMessage(message);
+      const existingRoutes = this.store.currentDiscordDeliveryRoutes(job.id);
+      if (existingRoutes.length > chunks.length) {
+        throw new Error(`Niespójny receipt Discord dla ${job.publicId}`);
+      }
+      for (const [index, route] of existingRoutes.entries()) {
+        const existingChannel = await this.client.channels.fetch(route.channelId);
+        if (!existingChannel?.isTextBased() || existingChannel.isDMBased()) {
+          throw new Error(`Kanał ${route.channelId} nie jest obsługiwanym kanałem tekstowym`);
+        }
+        const confirmed = await existingChannel.messages.fetch(route.botMessageId);
+        if (
+          confirmed.author.id !== this.client.user?.id ||
+          confirmed.content !== chunks[index]
+        ) {
+          throw new Error(`Discord receipt nie zgadza się z ${job.publicId}`);
+        }
+      }
+
+      const original = existingRoutes.length === 0
+        ? await channel.messages.fetch(job.externalMessageId).catch(() => null)
+        : null;
+      for (let index = existingRoutes.length; index < chunks.length; index += 1) {
+        const chunk = chunks[index] ?? "";
+        const nonce = `bok-${job.id.toString(36)}-${index.toString(36)}`;
+        const components = index === chunks.length - 1
+          ? draftDecisionComponents(
+              actions,
+              this.config.externalActionsEnabled && CUSTOMER_REPLY_SENDER_READY,
+            )
+          : [];
+        const sent =
+          index === 0 && original
+            ? await original.reply({
+                content: chunk,
+                components,
+                allowedMentions: { repliedUser: false },
+                nonce,
+                enforceNonce: true,
+              })
+            : await channel.send({
+                content: chunk,
+                components,
+                allowedMentions: { parse: [] },
+                nonce,
+                enforceNonce: true,
+              });
+        // Receipt zapisujemy natychmiast po potwierdzeniu POST przez Discord, jeszcze przed
+        // dodatkowym fetch. Deterministyczny nonce chroni też krótkie okno awarii między POST a
+        // zapisem receipt. Gdy fetch zwróci 429, retry odczyta ten sam message ID zamiast wysłać
+        // drugi egzemplarz.
+        this.store.recordDiscordDeliveryRoute(sent.id, job.conversationId, job.id, sent.channelId);
+        const confirmed = await sent.fetch();
+        if (confirmed.author.id !== this.client.user?.id || confirmed.content !== chunk) {
+          throw new Error(`Discord nie potwierdził publikacji ${job.publicId}`);
+        }
+      }
+    };
+    if (isDaktela) {
+      await publishThenRemoveSuperseded(
+        publish,
+        () => this.removeSupersededDaktelaDeliveries(job),
+      );
+    } else {
+      await publish();
     }
   }
 
@@ -123,11 +250,19 @@ export class DiscordGateway implements ReplySink {
     for (const route of this.store.previousDiscordDeliveryRoutes(job.conversationId, job.id)) {
       try {
         const channel = await this.client.channels.fetch(route.channelId);
-        if (channel?.isTextBased() && !channel.isDMBased()) {
-          await channel.messages.delete(route.botMessageId).catch(() => undefined);
+        if (!channel?.isTextBased() || channel.isDMBased()) {
+          throw new Error(`Kanał ${route.channelId} nie jest obsługiwanym kanałem tekstowym`);
         }
-      } finally {
+        await channel.messages.delete(route.botMessageId);
         this.store.removeDiscordDeliveryRoute(route.botMessageId);
+      } catch (error) {
+        // Sukces delete i potwierdzone 404 są równoważne. Każdy 429/5xx/network zostawia
+        // receipt w SQLite i wraca do trwałego outboxa, więc stara karta nie zostaje osierocona.
+        if (isDiscordUnknownMessage(error)) {
+          this.store.removeDiscordDeliveryRoute(route.botMessageId);
+          continue;
+        }
+        throw error;
       }
     }
   }
@@ -137,31 +272,33 @@ export class DiscordGateway implements ReplySink {
   ): Promise<ActionExecution | null> {
     const action = job.approvedAction;
     if (!action) return null;
-    if (action.kind !== "discord_notify") {
-      return (await this.approvedActionExecutor?.(job)) ?? null;
+    if (!this.config.externalActionsEnabled) {
+      return {
+        status: "failed",
+        result: "Wykonanie zewnętrzne jest wyłączone w konfiguracji runtime.",
+      };
     }
-    if (job.platform !== "discord") return null;
-    if (!action.payload) throw new Error(`${action.publicId} nie ma jawnego payloadu do wysłania`);
-    if (action.payload.length > 1_900) {
-      throw new Error(`${action.publicId} przekracza bezpieczny limit pojedynczej wiadomości Discord`);
+    if (action.kind === "reply_customer") {
+      // Obecny sterownik Dakteli nie ma klucza idempotencji ani pewnego readbacku treści po
+      // restarcie. Nie delegujemy więc wysyłki do modelu/przeglądarki: crash window mógłby
+      // spowodować ponowną odpowiedź klientowi.
+      return {
+        status: "failed",
+        result:
+          "Wysyłka do klienta jest zablokowana fail-closed do czasu wdrożenia idempotencji i readbacku Dakteli.",
+      };
     }
-
-    const channel = await this.client.channels.fetch(job.channelId);
-    if (!channel?.isTextBased() || channel.isDMBased()) {
-      throw new Error(`Kanał ${job.channelId} nie jest obsługiwanym kanałem tekstowym`);
+    if (action.kind === "discord_notify") {
+      // Bez osobnego receipt/idempotency key crash po POST, ale przed zapisem wyniku mógłby
+      // wysłać tę samą wiadomość ponownie po restarcie. Zwykłe odpowiedzi agenta korzystają
+      // z trwałego outboxa; ta przyszła akcja wykonawcza pozostaje fail-closed.
+      return {
+        status: "failed",
+        result:
+          "Powiadomienie Discord jest zablokowane fail-closed do czasu podłączenia idempotentnego executora.",
+      };
     }
-    const sent = await channel.send({
-      content: action.payload,
-      allowedMentions: { parse: [] },
-    });
-    const verified = await channel.messages.fetch(sent.id);
-    if (verified.author.id !== this.client.user?.id || verified.content !== action.payload) {
-      throw new Error(`Nie udało się zweryfikować wyniku ${action.publicId} w Discordzie`);
-    }
-    return {
-      status: "executed",
-      result: `Wiadomość Discord została wysłana i zweryfikowana (ID ${verified.id}).`,
-    };
+    return (await this.approvedActionExecutor?.(job)) ?? null;
   }
 
   private async onMessage(message: Message): Promise<void> {
@@ -280,12 +417,19 @@ export class DiscordGateway implements ReplySink {
       return;
     }
 
-    const decision = match[1] === "ready" ? "approved" : "rejected";
-    const result = this.store.decideDraft(match[2] ?? "", decision, interaction.user.id);
-    if (result !== "updated") {
+    const result = persistDraftDecision(this.store, {
+      publicId: match[2] ?? "",
+      decision: match[1] === "ready" ? "ready" : "reject",
+      decidedBy: interaction.user.id,
+      interactionId: interaction.id,
+      channelId: interaction.channelId,
+      externalActionsEnabled: this.config.externalActionsEnabled,
+      customerReplySenderReady: CUSTOMER_REPLY_SENDER_READY,
+    });
+    if (result.status === "missing" || result.status === "already_decided") {
       await interaction.reply({
         content:
-          result === "missing"
+          result.status === "missing"
             ? "Nie znalazłem tego draftu."
             : "Ten draft ma już zapisaną decyzję.",
         ephemeral: true,
@@ -293,10 +437,16 @@ export class DiscordGateway implements ReplySink {
       return;
     }
 
-    const label = decision === "approved" ? "✅ Gotowe" : "↩️ Do poprawy";
+    const label = result.status === "execution_queued"
+      ? `✅ Zatwierdzono · ${result.jobPublicId} w kolejce wykonania`
+      : result.status === "review_recorded"
+        ? "✅ Draft zaakceptowany przez BOK · nie wysłano"
+      : result.status === "stale"
+        ? "⚠️ Draft nieaktualny — pojawił się nowszy kontekst"
+        : "↩️ Do poprawy";
     const content = `${interaction.message.content}\n\n-# ${label}`;
     await interaction.update({ content: content.slice(0, 2_000), components: [] });
-    if (decision === "rejected") {
+    if (result.status === "rejected") {
       await interaction.followUp({
         content: "Napisz w odpowiedzi na tę kartę, co mam zmienić — poprawię właściwy ticket.",
         ephemeral: true,
@@ -398,15 +548,19 @@ export function daktelaConversationKey(ticketId: string): string {
   return `daktela-ticket:${ticketId}`;
 }
 
-function draftDecisionComponents(actions: StoredAction[]): ActionRowBuilder<ButtonBuilder>[] {
+function draftDecisionComponents(
+  actions: StoredAction[],
+  customerReplyExecutionReady: boolean,
+): ActionRowBuilder<ButtonBuilder>[] {
   const draft = actions.find((action) => action.kind === "reply_customer");
   if (!draft) return [];
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(`bok:draft:ready:${draft.publicId}`)
-        .setLabel("Gotowe")
-        .setStyle(ButtonStyle.Success),
+        .setLabel(customerReplyExecutionReady ? "Zatwierdź do wykonania" : "Akceptuj draft")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(false),
       new ButtonBuilder()
         .setCustomId(`bok:draft:reject:${draft.publicId}`)
         .setLabel("Do poprawy")

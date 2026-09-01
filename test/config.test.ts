@@ -19,6 +19,7 @@ test("konfiguracja rozdziela listy i domyślnie blokuje działania zewnętrzne",
   assert.deepEqual([...config.observeChannelIds], ["2", "3"]);
   assert.deepEqual([...config.allowedRoleIds], ["20", "21"]);
   assert.deepEqual([...config.approverUserIds], ["30"]);
+  assert.equal(config.browserResearchEnabled, false);
   assert.equal(config.externalActionsEnabled, false);
   assert.equal(config.workspacePath, "/tmp/project/agent-workspace");
   assert.equal(config.masterlinkMcpProjectDir, "/tmp/project/connectors/masterlink");
@@ -31,6 +32,15 @@ test("ścieżki connectora MasterLink można przenieść konfiguracją", () => {
   }, "/srv/bok-agent");
   assert.equal(config.masterlinkMcpProjectDir, "/srv/bok-agent/integrations/ml");
   assert.equal(config.masterlinkMcpEnvFile, "/srv/bok-agent/runtime/ml.env");
+});
+
+test("read-only research przeglądarki jest niezależny od writebacku", () => {
+  const config = loadConfig({
+    BOK_AGENT_BROWSER_RESEARCH: "true",
+    BOK_AGENT_EXTERNAL_ACTIONS: "false",
+  }, "/tmp/project");
+  assert.equal(config.browserResearchEnabled, true);
+  assert.equal(config.externalActionsEnabled, false);
 });
 
 test("pusty opcjonalny URL MasterLinka nie blokuje startu", () => {

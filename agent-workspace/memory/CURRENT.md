@@ -16,8 +16,9 @@ trwała historia w SQLite i jedna sesja Codex na rozmowę.
   osobnego kontrolowanego preflightu. Raporty `ai-raporty` i `ml-bok-adm` są tylko kontekstem
   pomocniczym.
 - Odczyt i research są autonomiczne. Gotowy draft może oznaczyć wyłącznie użytkownik wpisany jawnie
-  w `BOK_AGENT_APPROVER_USER_IDS`; pusta lista blokuje decyzje. Przycisk zapisuje wyłącznie decyzję,
-  nie kolejkuje ani nie wysyła wiadomości do klienta. Identyfikatory techniczne są ukryte.
+  w `BOK_AGENT_APPROVER_USER_IDS`; pusta lista blokuje decyzje. `Akceptuj draft` zapisuje wyłącznie
+  feedback managerski, nie approval wykonania, i nie kolejkuje ani nie wysyła wiadomości do klienta.
+  Identyfikatory techniczne są ukryte.
 - Gdy zapis MasterLink zostanie kiedyś osobno odebrany i włączony, każda operacja będzie wymagała
   dry-runu, idempotencji i ponownego odczytu. Obecnie agent przekazuje BOK konkretny krok operacyjny.
 - Odpowiedzi BOK na pytania agenta mogą zostać zapisane jako uogólnione reguły przyszłej pracy,
@@ -29,11 +30,20 @@ trwała historia w SQLite i jedna sesja Codex na rozmowę.
 - Publiczna wiedza Paryskie jest dostępna lokalnie i odświeżana automatycznie: 743 produkty,
   185 kategorii i 59 stron podczas pierwszego pełnego przebiegu. Agent ma wyszukiwarkę produktów,
   procedur i regulaminów oraz Chrome do bieżącego researchu.
-- Zalogowane Arkusze Google są dostępne przez Chrome na VPS. Odczyt jest autonomiczny; zapis ma być
-  wąski, wynikać z jasnego zadania lub poznanego procesu i być zweryfikowany ponownym odczytem.
-  Test utworzenia, wpisu i odczytu przeszedł; plik testowy został przeniesiony do kosza.
+- Zalogowane Arkusze Google są dostępne przez już otwarte strony Chrome na VPS. Bieżąca brama
+  browser research wystawia tylko listowanie, wybór, snapshot, screenshot i oczekiwanie. Nawigacja,
+  kliknięcia, formularze, JS, sieć, konsola i wszystkie zapisy pozostają technicznie wyłączone.
 - Discord nie pokazuje wewnętrznych blokad kontrolera jakości. Nowszy wynik ticketu zastępuje
-  wszystkie poprzednie karty tej sprawy, również gdy został wywołany naturalną korektą BOK.
-- Wysyłka do klienta nie jest podłączona: `Gotowe` zapisuje tylko decyzję. Bieżąca sesja Dakteli jest
-  read-only/back-office; przyszły sender wymaga osobnego wdrożenia, preflightu sesji Contact
-  Centre/Email i kontrolowanego testu.
+  poprzednie karty dopiero po potwierdzeniu nowej publikacji. Wyniki i alerty terminalne są trwałym
+  outboxem SQLite, więc błąd Discorda nie uruchamia ponownie analizy ani nie gubi karty po restarcie.
+- Wysyłka do klienta nie jest podłączona. `BOK_AGENT_EXTERNAL_ACTIONS=false` blokuje wykonanie
+  server-side, ale nie blokuje zapisu managerskiej akceptacji. Read-only Chrome ma osobną flagę
+  `BOK_AGENT_BROWSER_RESEARCH`, więc research nie wymaga włączania mutacji. Nawet po włączeniu
+  flagi zewnętrznych akcji `reply_customer` pozostaje
+  fail-closed: sterownik Chrome nie ma klucza idempotencji ani readbacku, więc crash po wysyłce mógłby
+  spowodować double-send. Przyszły sender wymaga idempotentnego connectora, ponownego odczytu wyniku,
+  osobnego wdrożenia i kontrolowanego testu.
+- Osobny legacy bridge nie jest sterowany powyższą flagą. Odczyt statusu 2026-09-01 pokazał w nim
+  `agentEnabled=true` i `writebackEnabled=true`, gdy outbox/live-send głównego MasterLinka były OFF.
+  Do czasu jawnego wyłączenia lub izolacji tej ścieżki i potwierdzenia readbackiem nie wdrażaj zmian
+  ani nie uruchamiaj pilota; nie zmieniaj jego flag z poziomu tego repozytorium.
