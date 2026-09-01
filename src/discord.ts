@@ -22,6 +22,8 @@ const DRAFT_BUTTON_PATTERN = /^bok:draft:(ready|reject):(AKCJA-[A-Z0-9_-]+)$/;
 export type DraftDecisionPersistenceResult =
   | { status: "execution_queued"; jobPublicId: string }
   | { status: "rejected" }
+  | { status: "stale" }
+  | { status: "execution_disabled" }
   | { status: "missing" }
   | { status: "already_decided" };
 
@@ -39,6 +41,7 @@ export function persistDraftDecision(
     decidedBy: string;
     interactionId: string;
     channelId: string;
+    externalActionsEnabled: boolean;
   },
 ): DraftDecisionPersistenceResult {
   const action = store.getAction(input.publicId);
@@ -49,15 +52,30 @@ export function persistDraftDecision(
     return { status: result === "updated" ? "rejected" : result };
   }
 
-  const jobPublicId = store.approveActionAndEnqueue(
+  // Brama jest po stronie runtime, nie tylko w wyglądzie przycisku. Spreparowana lub stara
+  // interakcja Discorda nie może zmienić statusu draftu ani stworzyć joba, gdy writeback jest OFF.
+  if (!input.externalActionsEnabled) return { status: "execution_disabled" };
+
+  const approval = store.approveActionAndEnqueue(
     input.publicId,
     input.decidedBy,
     input.interactionId,
     input.channelId,
   );
-  return jobPublicId
-    ? { status: "execution_queued", jobPublicId }
-    : { status: "already_decided" };
+  if (approval.status === "queued") {
+    return { status: "execution_queued", jobPublicId: approval.jobPublicId };
+  }
+  return approval;
+}
+
+export async function publishThenRemoveSuperseded(
+  publish: () => Promise<void>,
+  removeSuperseded: () => Promise<void>,
+): Promise<void> {
+  // Stara karta pozostaje jedynym widocznym śladem sprawy, dopóki Discord nie potwierdzi całej
+  // nowej publikacji. Błąd publikacji nie może najpierw skasować działającej ścieżki przejęcia.
+  await publish();
+  await removeSuperseded();
 }
 
 export function isStatusCommand(content: string): boolean {
@@ -134,22 +152,43 @@ export class DiscordGateway implements ReplySink {
     if (!channel?.isTextBased() || channel.isDMBased()) {
       throw new Error(`Kanał ${job.channelId} nie jest obsługiwanym kanałem tekstowym`);
     }
-    if (this.store.getConversation(job.conversationId).externalId.startsWith("daktela-ticket:")) {
-      await this.removeSupersededDaktelaDeliveries(job);
-    }
-    const chunks = splitDiscordMessage(message);
-    const original = await channel.messages.fetch(job.externalMessageId).catch(() => null);
-    for (const [index, chunk] of chunks.entries()) {
-      const components = index === chunks.length - 1 ? draftDecisionComponents(actions) : [];
-      const sent =
-        index === 0 && original
-          ? await original.reply({
-              content: chunk,
-              components,
-              allowedMentions: { repliedUser: false },
-            })
-          : await channel.send({ content: chunk, components, allowedMentions: { parse: [] } });
-      this.store.recordDiscordDeliveryRoute(sent.id, job.conversationId, job.id, sent.channelId);
+    const isDaktela = this.store
+      .getConversation(job.conversationId)
+      .externalId.startsWith("daktela-ticket:");
+    const publish = async () => {
+      const chunks = splitDiscordMessage(message);
+      const original = await channel.messages.fetch(job.externalMessageId).catch(() => null);
+      for (const [index, chunk] of chunks.entries()) {
+        const components = index === chunks.length - 1
+          ? draftDecisionComponents(actions, this.config.externalActionsEnabled)
+          : [];
+        const sent =
+          index === 0 && original
+            ? await original.reply({
+                content: chunk,
+                components,
+                allowedMentions: { repliedUser: false },
+              })
+            : await channel.send({ content: chunk, components, allowedMentions: { parse: [] } });
+        const confirmed = await sent.fetch();
+        if (confirmed.author.id !== this.client.user?.id || confirmed.content !== chunk) {
+          throw new Error(`Discord nie potwierdził publikacji ${job.publicId}`);
+        }
+        this.store.recordDiscordDeliveryRoute(
+          confirmed.id,
+          job.conversationId,
+          job.id,
+          confirmed.channelId,
+        );
+      }
+    };
+    if (isDaktela) {
+      await publishThenRemoveSuperseded(
+        publish,
+        () => this.removeSupersededDaktelaDeliveries(job),
+      );
+    } else {
+      await publish();
     }
   }
 
@@ -178,6 +217,22 @@ export class DiscordGateway implements ReplySink {
   ): Promise<ActionExecution | null> {
     const action = job.approvedAction;
     if (!action) return null;
+    if (!this.config.externalActionsEnabled) {
+      return {
+        status: "failed",
+        result: "Wykonanie zewnętrzne jest wyłączone w konfiguracji runtime.",
+      };
+    }
+    if (action.kind === "reply_customer") {
+      // Obecny sterownik Dakteli nie ma klucza idempotencji ani pewnego readbacku treści po
+      // restarcie. Nie delegujemy więc wysyłki do modelu/przeglądarki: crash window mógłby
+      // spowodować ponowną odpowiedź klientowi.
+      return {
+        status: "failed",
+        result:
+          "Wysyłka do klienta jest zablokowana fail-closed do czasu wdrożenia idempotencji i readbacku Dakteli.",
+      };
+    }
     if (action.kind !== "discord_notify") {
       return (await this.approvedActionExecutor?.(job)) ?? null;
     }
@@ -327,7 +382,15 @@ export class DiscordGateway implements ReplySink {
       decidedBy: interaction.user.id,
       interactionId: interaction.id,
       channelId: interaction.channelId,
+      externalActionsEnabled: this.config.externalActionsEnabled,
     });
+    if (result.status === "execution_disabled") {
+      await interaction.reply({
+        content: "Wykonanie jest wyłączone. Draft pozostaje do wglądu i nie został zatwierdzony ani zakolejkowany.",
+        ephemeral: true,
+      });
+      return;
+    }
     if (result.status === "missing" || result.status === "already_decided") {
       await interaction.reply({
         content:
@@ -341,7 +404,9 @@ export class DiscordGateway implements ReplySink {
 
     const label = result.status === "execution_queued"
       ? `✅ Zatwierdzono · ${result.jobPublicId} w kolejce wykonania`
-      : "↩️ Do poprawy";
+      : result.status === "stale"
+        ? "⚠️ Draft nieaktualny — pojawił się nowszy kontekst"
+        : "↩️ Do poprawy";
     const content = `${interaction.message.content}\n\n-# ${label}`;
     await interaction.update({ content: content.slice(0, 2_000), components: [] });
     if (result.status === "rejected") {
@@ -446,15 +511,19 @@ export function daktelaConversationKey(ticketId: string): string {
   return `daktela-ticket:${ticketId}`;
 }
 
-function draftDecisionComponents(actions: StoredAction[]): ActionRowBuilder<ButtonBuilder>[] {
+function draftDecisionComponents(
+  actions: StoredAction[],
+  externalActionsEnabled: boolean,
+): ActionRowBuilder<ButtonBuilder>[] {
   const draft = actions.find((action) => action.kind === "reply_customer");
   if (!draft) return [];
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(`bok:draft:ready:${draft.publicId}`)
-        .setLabel("Zatwierdź do wykonania")
-        .setStyle(ButtonStyle.Success),
+        .setLabel(externalActionsEnabled ? "Zatwierdź do wykonania" : "Wykonanie wyłączone")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(!externalActionsEnabled),
       new ButtonBuilder()
         .setCustomId(`bok:draft:reject:${draft.publicId}`)
         .setLabel("Do poprawy")

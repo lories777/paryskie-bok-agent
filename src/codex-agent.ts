@@ -26,6 +26,7 @@ import {
   type AgentTurnOutput,
   type ClaimedJob,
   type ProposedAction,
+  type StoredAction,
 } from "./types.js";
 
 export class BokCodexAgent {
@@ -584,6 +585,32 @@ export function daktelaTicketIntegrityIssues(
     }
   }
   return [...new Set(issues)];
+}
+
+/**
+ * Bramka wykonywana przed narzędziem mutującym. Walidacja wyniku agenta po fakcie nie wystarcza:
+ * błędny target mógłby już zostać wysłany do obcego ticketu.
+ */
+export function assertApprovedActionDaktelaTicketIntegrity(
+  job: ClaimedJob,
+  action: StoredAction,
+  conversationExternalId?: string,
+): void {
+  const expected = expectedDaktelaTicketId(job, conversationExternalId);
+  if (!expected || !["reply_customer", "update_daktela"].includes(action.kind)) return;
+  const targetRefs = extractDaktelaTicketReferences(action.target);
+  const issues: string[] = [];
+  if (!targetRefs.includes(expected)) {
+    issues.push(`target zatwierdzonej akcji nie wskazuje bieżącego ticketu #${expected}`);
+  }
+  for (const ticketId of targetRefs) {
+    if (ticketId !== expected) {
+      issues.push(`target zatwierdzonej akcji wskazuje obcy ticket #${ticketId}`);
+    }
+  }
+  if (issues.length > 0) {
+    throw new Error(`Zablokowano pomieszanie ticketów: ${[...new Set(issues)].join("; ")}`);
+  }
 }
 
 export function attachMissingDaktelaIdentity(

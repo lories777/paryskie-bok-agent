@@ -617,6 +617,129 @@ test("integrity gate obejmuje korektę Discord przypisaną do rozmowy ticketu", 
   }
 });
 
+test("zatwierdzona akcja Dakteli przechodzi integrity gate przed executorem i nie wpada w false positive po wykonaniu", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-approved-daktela-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:99570",
+      externalMessageId: "daktela:v6:99570:fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Przeanalizuj Daktela #99570",
+      createdAt: "2026-09-01T10:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    const proposal = store.claimNextJob();
+    assert.ok(proposal);
+    store.completeJob(proposal.id, {
+      reply: "DAKTELA #99570 — draft gotowy.",
+      caseState: "action_proposed",
+      actionExecution: null,
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Odpowiedź klientowi",
+        target: "Daktela ticket #99570",
+        payload: "Treść testowa",
+        reason: "Test integralności",
+        risk: "medium",
+      }],
+    });
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000001", "approver", "approval-good", "channel-1"),
+      { status: "queued", jobPublicId: "BOK-000002" },
+    );
+
+    let agentCalled = false;
+    let executorCalls = 0;
+    const agent = {
+      async run() {
+        agentCalled = true;
+        throw new Error("zatwierdzonej akcji nie może wykonywać swobodna tura modelu");
+      },
+    } as unknown as BokCodexAgent;
+    const delivered: string[] = [];
+    const worker = new JobWorker(store, agent, {
+      async executeApprovedAction() {
+        executorCalls += 1;
+        return { status: "executed", result: "Wynik deterministycznie zweryfikowany." };
+      },
+      async deliver(_job, message) { delivered.push(message); },
+    });
+
+    assert.equal(await worker.runOne(), true);
+    assert.equal(executorCalls, 1);
+    assert.equal(agentCalled, false);
+    assert.match(delivered[0] ?? "", /Daktela #99570/);
+    assert.match(delivered[0] ?? "", /Wykonałem AKCJA-000001/);
+    assert.equal(store.status().actions_executed, 1);
+    assert.equal(store.status().jobs_failed ?? 0, 0);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("obcy target zatwierdzonej akcji jest blokowany przed wywołaniem executora", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-approved-wrong-ticket-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:99570",
+      externalMessageId: "daktela:v6:99570:fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Przeanalizuj Daktela #99570",
+      createdAt: "2026-09-01T10:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    const proposal = store.claimNextJob();
+    assert.ok(proposal);
+    store.completeJob(proposal.id, {
+      reply: "DAKTELA #99570 — draft gotowy.",
+      caseState: "action_proposed",
+      actionExecution: null,
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Błędny target",
+        target: "Daktela ticket #99571",
+        payload: "Nie wolno wysłać",
+        reason: "Test integralności",
+        risk: "high",
+      }],
+    });
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000001", "approver", "approval-wrong", "channel-1"),
+      { status: "queued", jobPublicId: "BOK-000002" },
+    );
+
+    let executorCalls = 0;
+    const delivered: string[] = [];
+    const worker = new JobWorker(store, {} as BokCodexAgent, {
+      async executeApprovedAction() {
+        executorCalls += 1;
+        return { status: "executed", result: "NIE POWINNO SIĘ WYKONAĆ" };
+      },
+      async deliver(_job, message) { delivered.push(message); },
+    });
+    assert.equal(await worker.runOne(), true);
+    assert.equal(executorCalls, 0);
+    assert.equal(store.status().jobs_failed, 1);
+    assert.equal(store.status().actions_failed, 1);
+    assert.match(delivered[0] ?? "", /ticket_integrity_failed/);
+    assert.doesNotMatch(delivered[0] ?? "", /99571/);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("zatwierdzony discord_notify wykonuje deterministyczne narzędzie i weryfikuje wynik", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-worker-"));
   const store = new AgentStore(dir);
@@ -650,9 +773,9 @@ test("zatwierdzony discord_notify wykonuje deterministyczne narzędzie i weryfik
         },
       ],
     });
-    assert.equal(
+    assert.deepEqual(
       store.approveActionAndEnqueue("AKCJA-000001", "approver", "approval-1", "channel-1"),
-      "BOK-000002",
+      { status: "queued", jobPublicId: "BOK-000002" },
     );
 
     let agentCalled = false;

@@ -26,6 +26,12 @@ export interface DaktelaTicketObservation {
   fingerprint: string;
 }
 
+export type ApproveActionAndEnqueueResult =
+  | { status: "queued"; jobPublicId: string }
+  | { status: "stale" }
+  | { status: "missing" }
+  | { status: "already_decided" };
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -898,24 +904,99 @@ export class AgentStore {
     approverId: string,
     approvalMessageId: string,
     approvalChannelId: string,
-  ): string | null {
+  ): ApproveActionAndEnqueueResult {
     const normalized = publicId.toUpperCase();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const row = this.db
         .prepare(`
           SELECT actions.id, actions.public_id, actions.kind, actions.summary, actions.target,
-                 actions.payload, actions.reason, actions.risk, jobs.conversation_id, jobs.platform
+                 actions.payload, actions.reason, actions.risk, actions.status,
+                 jobs.id AS source_job_id, jobs.conversation_id, jobs.trigger_message_id,
+                 jobs.external_message_id AS source_external_message_id, jobs.platform,
+                 conversations.external_id AS conversation_external_id
           FROM actions
           JOIN jobs ON jobs.id = actions.job_id
-          WHERE actions.public_id = ? AND actions.status = 'proposed'
+          JOIN conversations ON conversations.id = jobs.conversation_id
+          WHERE actions.public_id = ?
         `)
         .get(normalized) as
-        | (StoredAction & { conversation_id: number; platform: "discord" | "local" })
+        | (StoredAction & {
+            status: "proposed" | "approved" | "rejected" | "executed" | "failed";
+            source_job_id: number;
+            conversation_id: number;
+            trigger_message_id: number;
+            source_external_message_id: string;
+            conversation_external_id: string;
+            platform: "discord" | "local";
+          })
         | undefined;
       if (!row) {
         this.db.exec("COMMIT");
-        return null;
+        return { status: "missing" };
+      }
+      if (row.status !== "proposed") {
+        this.db.exec("COMMIT");
+        return { status: "already_decided" };
+      }
+
+      const newer = this.db
+        .prepare(`
+          SELECT
+            EXISTS(
+              SELECT 1
+              FROM messages
+              WHERE conversation_id = ?
+                AND id > ?
+                AND role IN ('human', 'context')
+            ) AS newer_inbound,
+            EXISTS(
+              SELECT 1
+              FROM jobs
+              WHERE conversation_id = ? AND id > ?
+            ) AS newer_job,
+            EXISTS(
+              SELECT 1
+              FROM actions AS newer_actions
+              JOIN jobs AS newer_action_jobs ON newer_action_jobs.id = newer_actions.job_id
+              WHERE newer_action_jobs.conversation_id = ? AND newer_action_jobs.id > ?
+            ) AS newer_revision
+        `)
+        .get(
+          row.conversation_id,
+          row.trigger_message_id,
+          row.conversation_id,
+          row.source_job_id,
+          row.conversation_id,
+          row.source_job_id,
+        ) as { newer_inbound: number; newer_job: number; newer_revision: number };
+
+      let daktelaRevision = false;
+      const ticketId = row.conversation_external_id.match(/^daktela-ticket:(\d+)$/)?.[1];
+      const sourceFingerprint = row.source_external_message_id
+        .match(/^daktela:v\d+:\d+:(.+)$/i)?.[1];
+      if (ticketId && sourceFingerprint) {
+        const observation = this.db
+          .prepare("SELECT fingerprint, last_job_id FROM daktela_observations WHERE ticket_id = ?")
+          .get(ticketId) as { fingerprint: string; last_job_id: number | null } | undefined;
+        daktelaRevision = Boolean(
+          observation &&
+          (!observation.fingerprint.startsWith(sourceFingerprint) ||
+            (observation.last_job_id != null && observation.last_job_id > row.source_job_id)),
+        );
+      }
+
+      if (newer.newer_inbound || newer.newer_job || newer.newer_revision || daktelaRevision) {
+        this.db
+          .prepare(`
+            UPDATE actions
+            SET status = 'rejected', approved_by = ?, approved_at = ?,
+                execution_result = 'Zatwierdzenie odrzucone: po przygotowaniu draftu pojawił się nowszy kontekst sprawy.'
+            WHERE id = ? AND status = 'proposed'
+          `)
+          .run(approverId, now(), row.id);
+        this.db.exec("COMMIT");
+        return { status: "stale" };
       }
 
       const timestamp = now();
@@ -955,7 +1036,7 @@ export class AgentStore {
       const jobPublicId = this.publicId("BOK", jobId);
       this.db.prepare("UPDATE jobs SET public_id = ? WHERE id = ?").run(jobPublicId, jobId);
       this.db.exec("COMMIT");
-      return jobPublicId;
+      return { status: "queued", jobPublicId };
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;

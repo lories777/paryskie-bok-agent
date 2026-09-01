@@ -34,6 +34,8 @@ trwała historia w SQLite i jedna sesja Codex na rozmowę.
   Test utworzenia, wpisu i odczytu przeszedł; plik testowy został przeniesiony do kosza.
 - Discord nie pokazuje wewnętrznych blokad kontrolera jakości. Nowszy wynik ticketu zastępuje
   wszystkie poprzednie karty tej sprawy, również gdy został wywołany naturalną korektą BOK.
-- Wysyłka do klienta nie jest podłączona: `Gotowe` zapisuje tylko decyzję. Bieżąca sesja Dakteli jest
-  read-only/back-office; przyszły sender wymaga osobnego wdrożenia, preflightu sesji Contact
-  Centre/Email i kontrolowanego testu.
+- Wysyłka do klienta nie jest podłączona. Przy `BOK_AGENT_EXTERNAL_ACTIONS=false` wykonanie draftu
+  jest blokowane server-side bez zmiany statusu. Nawet po włączeniu flagi `reply_customer` pozostaje
+  fail-closed: sterownik Chrome nie ma klucza idempotencji ani readbacku, więc crash po wysyłce mógłby
+  spowodować double-send. Przyszły sender wymaga idempotentnego connectora, ponownego odczytu wyniku,
+  osobnego wdrożenia i kontrolowanego testu.

@@ -17,7 +17,8 @@ obserwowane kanały od kanału poleceń i zapisuje proponowane działania do oso
 - analiza, pytanie lub gotowy draft pojawiają się bezpośrednio na wspólnym kanale;
 - draft jest pokazany w całości w czytelnej karcie i ma proste przyciski `Gotowe`
   oraz `Do poprawy`; decyzję może zapisać wyłącznie użytkownik wpisany jawnie w
-  `BOK_AGENT_APPROVER_USER_IDS`, a kliknięcie niczego nie wysyła;
+  `BOK_AGENT_APPROVER_USER_IDS`; przy `BOK_AGENT_EXTERNAL_ACTIONS=false` wykonanie jest wyłączone
+  również po stronie serwera i kliknięcie nie zatwierdza ani nie kolejkuje draftu;
 - każdy draft przechodzi osobny, read-only przebieg kontroli jakości; niepotwierdzony fakt blokuje
   draft, a błąd czysto redakcyjny może zostać poprawiony automatycznie;
 - poprawki przekazuje się zwykłym zdaniem, np. „napisz to krócej” albo „zmień ton na cieplejszy”;
@@ -33,8 +34,8 @@ obserwowane kanały od kanału poleceń i zapisuje proponowane działania do oso
   autonomiczne, a zapis w arkuszu ma być wąski i weryfikowany ponownym odczytem;
 - przyszłe uruchomienie operacji zapisu MasterLink wymaga osobnego kontrolowanego preflightu,
   dry-runu, idempotencji i weryfikacji ponownym odczytem; nie jest częścią bieżącego runtime;
-- obecny etap obejmuje analizę, drafty i ręczne zatwierdzanie. Wysyłka z Dakteli czeka na konto
-  Contact Centre z licencją Email.
+- obecny etap obejmuje analizę i drafty. Wysyłka z Dakteli czeka na idempotentny connector,
+  potwierdzony readback oraz osobny kontrolowany test konta Contact Centre z licencją Email.
 
 ## Uruchomienie lokalne
 
@@ -73,9 +74,15 @@ subskrypcji, nie wywołania rozliczane kluczem OpenAI API.
 ## Granice
 
 Odczyt MasterLink jest aktywny, natomiast narzędzia zapisu pozostają wyłączone. Odpowiedzi Daktela
-nadal są draftami: zatwierdzenie na Discordzie zapisuje wyłącznie decyzję i nie kolejkuje ani nie
-wysyła wiadomości. Wysyłkę podłączymy dopiero po dostarczeniu stanowiska Daktela Contact Centre i
-osobnym teście bezpiecznego wykonania.
+nadal są draftami. `BOK_AGENT_EXTERNAL_ACTIONS` ma pozostać `false`: przy tym ustawieniu przycisk
+wykonania jest nieaktywny, a runtime odrzuca także spreparowaną lub starą interakcję Discorda bez
+zmiany statusu draftu.
+
+Samo ustawienie flagi na `true` nie odblokowuje wysyłki `reply_customer`. Obecny sterownik Chrome
+nie ma stabilnego klucza idempotencji ani wiarygodnego readbacku wysłanej treści. Awaria po kliknięciu
+„Wyślij”, ale przed zapisem wyniku w SQLite, mogłaby po restarcie spowodować double-send. Dlatego
+executor Dakteli kończy taką akcję fail-closed bez otwierania strony wysyłki. Wysyłkę można odblokować
+dopiero po wdrożeniu idempotentnego connectora i weryfikacji wyniku ponownym odczytem.
 
 ## Connector MasterLink
 

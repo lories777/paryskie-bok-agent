@@ -160,13 +160,13 @@ test("propozycje działań dostają stabilne identyfikatory i wymagają approval
       ],
     });
     assert.deepEqual(ids, ["AKCJA-000001"]);
-    assert.equal(
+    assert.deepEqual(
       store.approveActionAndEnqueue("AKCJA-000001", "approver", "approval-1", "local"),
-      "BOK-000002",
+      { status: "queued", jobPublicId: "BOK-000002" },
     );
-    assert.equal(
+    assert.deepEqual(
       store.approveActionAndEnqueue("AKCJA-000001", "approver", "approval-2", "local"),
-      null,
+      { status: "already_decided" },
     );
     const execution = store.claimNextJob();
     assert.equal(execution?.approvedAction?.publicId, "AKCJA-000001");
@@ -397,7 +397,66 @@ test("nowszy draft tej samej odpowiedzi zastępuje starszy", () => {
     });
     assert.equal(first.conversationId, secondJob.conversationId);
     assert.deepEqual(store.listProposedActions().map((action) => action.payload), ["Wersja 2"]);
-    assert.equal(store.approveActionAndEnqueue("AKCJA-000001", "approver", "old", "local"), null);
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000001", "approver", "old", "local"),
+      { status: "already_decided" },
+    );
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomowa akceptacja odrzuca stary draft, ale kolejkuje najnowszą rewizję", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-stale-approval-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest(message());
+    const oldJob = store.claimNextJob();
+    assert.ok(oldJob);
+    store.completeJob(oldJob.id, {
+      reply: "Pierwsza wersja",
+      caseState: "action_proposed",
+      actionExecution: null,
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Stara odpowiedź",
+        target: "Daktela ticket #123",
+        payload: "OLD",
+        reason: "Test stale",
+        risk: "low",
+      }],
+    });
+
+    store.ingest(message({ externalMessageId: "message-new", content: "Nowy fakt do sprawy" }));
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000001", "approver", "old-click", "local"),
+      { status: "stale" },
+    );
+    assert.equal(store.status().actions_approved ?? 0, 0);
+    assert.equal(store.status().actions_rejected, 1);
+
+    const newJob = store.claimNextJob();
+    assert.ok(newJob);
+    store.completeJob(newJob.id, {
+      reply: "Najnowsza wersja",
+      caseState: "action_proposed",
+      actionExecution: null,
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Nowa odpowiedź",
+        target: "Daktela ticket #123",
+        payload: "NEW",
+        reason: "Uwzględnia nowy fakt",
+        risk: "low",
+      }],
+    });
+    assert.deepEqual(
+      store.approveActionAndEnqueue("AKCJA-000002", "approver", "new-click", "local"),
+      { status: "queued", jobPublicId: "BOK-000003" },
+    );
+    assert.equal(store.claimNextJob()?.approvedAction?.payload, "NEW");
+    assert.equal(store.claimNextJob(), null);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });

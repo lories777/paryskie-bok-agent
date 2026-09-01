@@ -1,4 +1,9 @@
-import { assertDaktelaTicketIntegrity, type BokCodexAgent } from "./codex-agent.js";
+import {
+  assertApprovedActionDaktelaTicketIntegrity,
+  assertDaktelaTicketIntegrity,
+  expectedDaktelaTicketId,
+  type BokCodexAgent,
+} from "./codex-agent.js";
 import type { AgentStore } from "./store.js";
 import type { AgentTurnOutput, ClaimedJob, StoredAction } from "./types.js";
 
@@ -32,15 +37,29 @@ export class JobWorker {
     const browserBaseline = await this.agent.captureBrowserPageIds?.();
 
     try {
-      const directExecution = job.approvedAction
-        ? await this.sink.executeApprovedAction?.(job)
-        : undefined;
+      let directExecution: ActionExecution | undefined;
+      if (job.approvedAction) {
+        // Integralność musi zostać potwierdzona przed wywołaniem jakiegokolwiek narzędzia. Po
+        // zatwierdzeniu nie wolno też wracać do swobodnej tury modelu: brak deterministycznego
+        // executora jest wynikiem fail-closed, a nie zgodą na próbę przez przeglądarkę.
+        assertApprovedActionDaktelaTicketIntegrity(
+          job,
+          job.approvedAction,
+          conversationExternalId,
+        );
+        directExecution = (await this.sink.executeApprovedAction?.(job)) ?? {
+          status: "failed",
+          result:
+            "Wykonanie zablokowane: brak deterministycznego executora z idempotencją i weryfikacją wyniku.",
+        };
+      }
       const output: AgentTurnOutput = directExecution
         ? {
-            reply:
-              directExecution.status === "executed"
-                ? `Wykonałem ${job.approvedAction?.publicId}. ${directExecution.result}`
-                : `Nie wykonałem ${job.approvedAction?.publicId}. ${directExecution.result}`,
+            reply: formatApprovedActionExecutionReply(
+              job,
+              directExecution,
+              conversationExternalId,
+            ),
             caseState: directExecution.status === "executed" ? "answered" : "waiting_for_human",
             proposedActions: [],
             actionExecution: directExecution,
@@ -141,6 +160,18 @@ export function formatTerminalDaktelaFailureAlert(
   ].join("\n");
 }
 
+export function formatApprovedActionExecutionReply(
+  job: ClaimedJob,
+  execution: ActionExecution,
+  conversationExternalId?: string,
+): string {
+  const ticketId = expectedDaktelaTicketId(job, conversationExternalId);
+  const result = execution.status === "executed"
+    ? `Wykonałem ${job.approvedAction?.publicId}. ${execution.result}`
+    : `Nie wykonałem ${job.approvedAction?.publicId}. ${execution.result}`;
+  return ticketId ? `DAKTELA #${ticketId}\n\n${result}` : result;
+}
+
 function terminalDaktelaFailureCode(error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error);
   if (isRetryableJobError(error)) return "provider_retry_exhausted";
@@ -226,6 +257,8 @@ export function shouldDeliverAgentOutput(
   // niezależnie od rodzaju rozmowy i nigdy nie są treścią dla BOK.
   if (/Draft wstrzymany przez kontrolę jakości:|\bquality review\b/i.test(output.reply)) return false;
   if (!isDaktelaConversation(job, conversationExternalId)) return true;
+  // Wynik jawnie zatwierdzonego wykonania (w tym fail-closed) zawsze musi wrócić do BOK.
+  if (job.approvedAction) return true;
   if (actions.some((action) => action.kind === "reply_customer")) return true;
   // Konkretny zapis w MasterLinku, którego runtime na tym etapie nie może wykonać, jest realnym
   // następnym krokiem sprawy. Pokazujemy go raz zespołowi; zwykłe analizy i listy czynności nadal
