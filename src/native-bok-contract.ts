@@ -6,6 +6,9 @@ export const MAX_NATIVE_BOK_REQUEST_BYTES = 1_000_000;
 export const MAX_NATIVE_BOK_CONTEXT_CHARS = 500_000;
 export const MAX_NATIVE_BOK_MESSAGE_BODY_CHARS = 100_000;
 export const MAX_NATIVE_BOK_DRAFT_BODY_CHARS = 20_000;
+export const MAX_NATIVE_BOK_INTERNAL_NOTE_CHARS = 1_200;
+export const MAX_NATIVE_BOK_NEXT_ACTIONS = 5;
+export const MAX_NATIVE_BOK_NEXT_ACTION_CHARS = 300;
 
 export const TICKET_AI_INTENTS = [
   "faq",
@@ -98,6 +101,8 @@ export const ticketAiContextSchema = z
 export const ticketAiGeneratorOutputSchema = z
   .object({
     body: nonBlank(MAX_NATIVE_BOK_DRAFT_BODY_CHARS),
+    internalNote: nonBlank(MAX_NATIVE_BOK_INTERNAL_NOTE_CHARS),
+    nextActions: z.array(nonBlank(MAX_NATIVE_BOK_NEXT_ACTION_CHARS)).max(MAX_NATIVE_BOK_NEXT_ACTIONS),
     intent: z.enum(TICKET_AI_INTENTS),
     confidence: z.enum(["low", "medium", "high"]),
     usedFactKeys: z.array(z.string().regex(SAFE_FACT_KEY)).max(50),
@@ -163,6 +168,20 @@ export const TICKET_AI_GENERATOR_OUTPUT_JSON_SCHEMA = {
   type: "object",
   properties: {
     body: { type: "string", minLength: 1, maxLength: MAX_NATIVE_BOK_DRAFT_BODY_CHARS },
+    internalNote: {
+      type: "string",
+      minLength: 1,
+      maxLength: MAX_NATIVE_BOK_INTERNAL_NOTE_CHARS,
+    },
+    nextActions: {
+      type: "array",
+      maxItems: MAX_NATIVE_BOK_NEXT_ACTIONS,
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: MAX_NATIVE_BOK_NEXT_ACTION_CHARS,
+      },
+    },
     intent: { type: "string", enum: TICKET_AI_INTENTS },
     confidence: { type: "string", enum: ["low", "medium", "high"] },
     usedFactKeys: {
@@ -198,6 +217,8 @@ export const TICKET_AI_GENERATOR_OUTPUT_JSON_SCHEMA = {
   },
   required: [
     "body",
+    "internalNote",
+    "nextActions",
     "intent",
     "confidence",
     "usedFactKeys",
