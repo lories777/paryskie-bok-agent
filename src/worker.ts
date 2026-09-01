@@ -83,7 +83,20 @@ export class JobWorker {
       this.store.failJob(job.id, error);
       const detail = error instanceof Error ? error.message : String(error);
       if (job.approvedAction) this.store.finishAction(job.approvedAction.id, "failed", detail);
-      if (!isDaktelaConversation(job, conversationExternalId)) {
+      if (isDaktelaConversation(job, conversationExternalId)) {
+        // Terminalny błąd Dakteli nie może znikać tylko w lokalnym SQLite/journalu. Nie pokazujemy
+        // surowego wyjątku (może zawierać dane klienta), ale zostawiamy BOK jednoznaczną kartę do
+        // przejęcia. Dla błędu chwilowego ta ścieżka uruchamia się dopiero po wyczerpaniu retry.
+        try {
+          await this.sink.deliver(
+            job,
+            formatTerminalDaktelaFailureAlert(job, conversationExternalId, error),
+          );
+        } catch {
+          // Nie zapętlamy błędu kanału alertowego. Job oraz pełny detail są już trwale zapisane.
+          console.error(`Nie udało się opublikować alertu terminalnego dla ${job.publicId}.`);
+        }
+      } else {
         await this.sink.deliver(
           job,
           `Nie domknąłem sprawy: ${detail.slice(0, 800)}.`,
@@ -107,6 +120,44 @@ export class JobWorker {
       this.running = false;
     }
   }
+}
+
+export function formatTerminalDaktelaFailureAlert(
+  job: ClaimedJob,
+  conversationExternalId: string,
+  error: unknown,
+): string {
+  const ticketId = conversationExternalId.match(/^daktela-ticket:(\d+)$/)?.[1];
+  const heading = ticketId
+    ? `**Daktela #${ticketId} · wymaga przejęcia**`
+    : "**Daktela · wymaga przejęcia**";
+  const errorCode = terminalDaktelaFailureCode(error);
+  const attemptLabel = job.attempts === 1 ? "1 próbie" : `${job.attempts} próbach`;
+  return [
+    heading,
+    `Agent nie potwierdził bezpiecznego domknięcia po ${attemptLabel}.`,
+    `Kod: \`${errorCode}\` · zadanie \`${job.publicId}\``,
+    "Sprawdź historię ticketu przed ponowieniem, aby nie wysłać odpowiedzi drugi raz.",
+  ].join("\n");
+}
+
+function terminalDaktelaFailureCode(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (isRetryableJobError(error)) return "provider_retry_exhausted";
+  if (
+    /pomieszanie ticketów|obcy ticket|nie wskazuje bieżącego ticketu|numer(?:em|u)?\s+innego\s+ticketu|ticket integrity|TICKET_INTEGRITY/i.test(
+      detail,
+    )
+  ) {
+    return "ticket_integrity_failed";
+  }
+  if (/contract|schema|json|structured output|parse/i.test(detail)) {
+    return "agent_contract_failed";
+  }
+  if (/daktela|zalogowa|sesj|contact centre|new email/i.test(detail)) {
+    return "daktela_session_failed";
+  }
+  return "agent_runtime_failed";
 }
 
 export function formatAgentDelivery(reply: string, actions: StoredAction[]): string {

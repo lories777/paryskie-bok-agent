@@ -19,6 +19,47 @@ const STATUS_PATTERN = /^!bok\s+status\s*$/i;
 const HELP_PATTERN = /^!bok\s+(?:pomoc|help)\s*$/i;
 const DRAFT_BUTTON_PATTERN = /^bok:draft:(ready|reject):(AKCJA-[A-Z0-9_-]+)$/;
 
+export type DraftDecisionPersistenceResult =
+  | { status: "execution_queued"; jobPublicId: string }
+  | { status: "rejected" }
+  | { status: "missing" }
+  | { status: "already_decided" };
+
+/**
+ * Zapisuje decyzję przycisku i — wyłącznie dla jawnej akceptacji draftu klienta — atomowo
+ * tworzy job wykonawczy. `approveActionAndEnqueue` trzyma zmianę statusu akcji i INSERT joba
+ * w jednej transakcji `BEGIN IMMEDIATE`, więc ponowne/dwukrotne kliknięcie nie może stworzyć
+ * drugiej wysyłki.
+ */
+export function persistDraftDecision(
+  store: AgentStore,
+  input: {
+    publicId: string;
+    decision: "ready" | "reject";
+    decidedBy: string;
+    interactionId: string;
+    channelId: string;
+  },
+): DraftDecisionPersistenceResult {
+  const action = store.getAction(input.publicId);
+  if (!action || action.kind !== "reply_customer") return { status: "missing" };
+
+  if (input.decision === "reject") {
+    const result = store.decideDraft(input.publicId, "rejected", input.decidedBy);
+    return { status: result === "updated" ? "rejected" : result };
+  }
+
+  const jobPublicId = store.approveActionAndEnqueue(
+    input.publicId,
+    input.decidedBy,
+    input.interactionId,
+    input.channelId,
+  );
+  return jobPublicId
+    ? { status: "execution_queued", jobPublicId }
+    : { status: "already_decided" };
+}
+
 export function isStatusCommand(content: string): boolean {
   return STATUS_PATTERN.test(content.trim());
 }
@@ -280,12 +321,17 @@ export class DiscordGateway implements ReplySink {
       return;
     }
 
-    const decision = match[1] === "ready" ? "approved" : "rejected";
-    const result = this.store.decideDraft(match[2] ?? "", decision, interaction.user.id);
-    if (result !== "updated") {
+    const result = persistDraftDecision(this.store, {
+      publicId: match[2] ?? "",
+      decision: match[1] === "ready" ? "ready" : "reject",
+      decidedBy: interaction.user.id,
+      interactionId: interaction.id,
+      channelId: interaction.channelId,
+    });
+    if (result.status === "missing" || result.status === "already_decided") {
       await interaction.reply({
         content:
-          result === "missing"
+          result.status === "missing"
             ? "Nie znalazłem tego draftu."
             : "Ten draft ma już zapisaną decyzję.",
         ephemeral: true,
@@ -293,10 +339,12 @@ export class DiscordGateway implements ReplySink {
       return;
     }
 
-    const label = decision === "approved" ? "✅ Gotowe" : "↩️ Do poprawy";
+    const label = result.status === "execution_queued"
+      ? `✅ Zatwierdzono · ${result.jobPublicId} w kolejce wykonania`
+      : "↩️ Do poprawy";
     const content = `${interaction.message.content}\n\n-# ${label}`;
     await interaction.update({ content: content.slice(0, 2_000), components: [] });
-    if (decision === "rejected") {
+    if (result.status === "rejected") {
       await interaction.followUp({
         content: "Napisz w odpowiedzi na tę kartę, co mam zmienić — poprawię właściwy ticket.",
         ephemeral: true,
@@ -405,7 +453,7 @@ function draftDecisionComponents(actions: StoredAction[]): ActionRowBuilder<Butt
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(`bok:draft:ready:${draft.publicId}`)
-        .setLabel("Gotowe")
+        .setLabel("Zatwierdź do wykonania")
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(`bok:draft:reject:${draft.publicId}`)

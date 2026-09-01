@@ -11,6 +11,7 @@ import {
   isConcreteHumanQuestion,
   formatActionCard,
   formatAgentDelivery,
+  formatTerminalDaktelaFailureAlert,
   JobWorker,
   shouldDiscardSupersededDaktelaCard,
   shouldDeliverAgentOutput,
@@ -403,6 +404,66 @@ test("chwilowe przeciążenie modelu wraca do kolejki zamiast trwale gubić tick
   }
 });
 
+test("terminalne wyczerpanie retry Dakteli publikuje bezpieczny alert bez PII", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-terminal-alert-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "daktela-ticket:100025",
+      externalMessageId: "daktela:v7:100025:fingerprint",
+      channelId: "channel-1",
+      authorId: "daktela-monitor",
+      authorName: "Monitor Daktela",
+      content: "Przeanalizuj Daktela #100025",
+      createdAt: "2026-09-01T09:00:00.000Z",
+      shouldRespond: true,
+      role: "context",
+    });
+    const privateDetail = "429 provider timeout for private.customer@example.com";
+    const agent = {
+      async run() {
+        throw new Error(privateDetail);
+      },
+    } as unknown as BokCodexAgent;
+    const delivered: string[] = [];
+    const worker = new JobWorker(store, agent, {
+      async deliver(_job, content) { delivered.push(content); },
+    }, { retryDelayMs: 0, maxTransientAttempts: 2 });
+
+    assert.equal(await worker.runOne(), true);
+    assert.deepEqual(delivered, []);
+    assert.equal(store.status().jobs_pending, 1);
+
+    assert.equal(await worker.runOne(), true);
+    assert.equal(store.status().jobs_failed, 1);
+    assert.equal(delivered.length, 1);
+    assert.match(delivered[0] ?? "", /Daktela #100025 · wymaga przejęcia/);
+    assert.match(delivered[0] ?? "", /provider_retry_exhausted/);
+    assert.match(delivered[0] ?? "", /po 2 próbach/);
+    assert.doesNotMatch(delivered[0] ?? "", /private\.customer|example\.com/);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("alert terminalny ostrzega przed double-send i nie ujawnia surowego błędu", () => {
+  const alert = formatTerminalDaktelaFailureAlert({
+    id: 7,
+    publicId: "BOK-000007",
+    conversationId: 2,
+    triggerMessageId: 3,
+    platform: "discord",
+    channelId: "channel-1",
+    externalMessageId: "daktela:v7:100026:fingerprint",
+    attempts: 1,
+  }, "daktela-ticket:100026", new Error("ticket integrity customer@example.com"));
+  assert.match(alert, /ticket_integrity_failed/);
+  assert.match(alert, /nie wysłać odpowiedzi drugi raz/);
+  assert.doesNotMatch(alert, /customer@example\.com/);
+});
+
 test("sama techniczna akcja bez draftu ani pytania nie jest publikowana", () => {
   assert.equal(
     shouldDeliverAgentOutput(
@@ -505,7 +566,9 @@ test("worker nie zapisuje ani nie publikuje wyniku z numerem innego ticketu", as
       async deliver(_job, content) { delivered.push(content); },
     });
     assert.equal(await worker.runOne(), true);
-    assert.deepEqual(delivered, []);
+    assert.equal(delivered.length, 1);
+    assert.match(delivered[0] ?? "", /ticket_integrity_failed/);
+    assert.doesNotMatch(delivered[0] ?? "", /99567/);
     assert.equal(store.status().jobs_failed, 1);
   } finally {
     store.close();
@@ -544,7 +607,9 @@ test("integrity gate obejmuje korektę Discord przypisaną do rozmowy ticketu", 
       async deliver(_job, content) { delivered.push(content); },
     });
     assert.equal(await worker.runOne(), true);
-    assert.deepEqual(delivered, []);
+    assert.equal(delivered.length, 1);
+    assert.match(delivered[0] ?? "", /ticket_integrity_failed/);
+    assert.doesNotMatch(delivered[0] ?? "", /99567/);
     assert.equal(store.status().jobs_failed, 1);
   } finally {
     store.close();

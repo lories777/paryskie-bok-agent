@@ -570,7 +570,7 @@ export class AgentStore {
 
   decideDraft(
     publicId: string,
-    decision: "approved" | "rejected",
+    decision: "rejected",
     decidedBy: string,
   ): "updated" | "missing" | "already_decided" {
     const row = this.db

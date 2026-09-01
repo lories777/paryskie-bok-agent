@@ -522,7 +522,7 @@ test("odpowiedź na wiadomość bota wraca do dokładnej rozmowy ticketu", () =>
   }
 });
 
-test("pracownik BOK może oznaczyć draft jako gotowy bez tworzenia zadania wysyłki", () => {
+test("odrzucenie draftu nie tworzy zadania wysyłki", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-draft-ready-"));
   const store = new AgentStore(dir);
   try {
@@ -544,10 +544,10 @@ test("pracownik BOK może oznaczyć draft jako gotowy bez tworzenia zadania wysy
         },
       ],
     });
-    assert.equal(store.decideDraft("AKCJA-000001", "approved", "bok-user"), "updated");
-    assert.equal(store.decideDraft("AKCJA-000001", "approved", "bok-user"), "already_decided");
+    assert.equal(store.decideDraft("AKCJA-000001", "rejected", "bok-user"), "updated");
+    assert.equal(store.decideDraft("AKCJA-000001", "rejected", "bok-user"), "already_decided");
     assert.equal(store.claimNextJob(), null);
-    assert.equal(store.status().actions_approved, 1);
+    assert.equal(store.status().actions_rejected, 1);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
