@@ -6,6 +6,11 @@ Na VPS1 działa całodobowy agent BOK Paryskich Perfum. Czyta tickety Dakteli, k
 kontekstu rozmów na Discordzie, przygotowuje odpowiedzi i obecnie wymaga prostego ręcznego
 zatwierdzenia draftu. Agent nie wysyła jeszcze wiadomości do klientów.
 
+Natywny bridge BOK zwraca MasterLinkowi trzy jawnie rozdzielone elementy: publiczne `body` do
+klienta, prywatny polski brief `internalNote` oraz maksymalnie pięć kroków `nextActions` dla BOK.
+Judge otrzymuje do oceny wyłącznie publiczne `body` i metadane jakościowe, więc notatka operacyjna
+nie może zostać domieszana do wiadomości klienta. Szczegóły kontraktu opisuje `NATIVE-BOK-API.md`.
+
 Connector MCP znajduje się w `connectors/masterlink`. Udostępnia dziewięć odczytów oraz cztery wąskie
 operacje: anulowanie, notatkę wewnętrzną, rozpoczęcie zwrotu i korektę danych dostawy. Po odbiorze
 połączenia jednoznaczne operacje agent wykonuje samodzielnie przez ograniczone API MasterLink:

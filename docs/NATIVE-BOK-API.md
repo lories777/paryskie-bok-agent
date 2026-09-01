@@ -6,7 +6,8 @@ Nie jest drugim systemem ticketowym i nie ma prawa zapisu do MasterLinka ani Dak
 Podział odpowiedzialności:
 
 - MasterLink składa aktualny kontekst ticketu, zweryfikowane fakty zamówienia i rewizję;
-- `paryskie-bok-agent` generuje draft i wykonuje osobny, niezależny judge;
+- `paryskie-bok-agent` generuje publiczną odpowiedź, prywatny brief i działania BOK, a następnie
+  wykonuje osobny, niezależny judge publicznej odpowiedzi;
 - MasterLink ponownie sprawdza rewizję/fakty, zapisuje sugestię albo outbox i kontroluje wysyłkę;
 - API agenta nie korzysta z kolejki Discord/Daktela, nie tworzy akcji i nie zapisuje odpowiedzi w
   swojej bazie SQLite. Czyta z niej wyłącznie trwałe reguły wyuczone od BOK.
@@ -35,6 +36,8 @@ Generator zwraca dokładnie:
 ```json
 {
   "body": "gotowa odpowiedź",
+  "internalNote": "prywatny, zwięzły brief po polsku dla BOK",
+  "nextActions": [],
   "intent": "delivery_status",
   "confidence": "high",
   "usedFactKeys": ["order.status"],
@@ -56,10 +59,14 @@ Judge zwraca dokładnie:
 }
 ```
 
-Schematy wejścia i wyjścia są strict. `contextTruncated` jest obowiązkowe, `usedFactKeys` może
-wskazywać wyłącznie klucze obecne w `verifiedFacts`, a treści klienta są zawsze oznaczone jako
-niezaufane. Generator oraz judge działają w osobnych, nowych wątkach Codexa; judge nie widzi
-rozumowania generatora.
+Schematy wejścia i wyjścia są strict. `body` jest wyłącznie treścią wysyłaną klientowi.
+`internalNote` jest obowiązkowym, prywatnym briefem po polsku (maks. 1200 znaków), a `nextActions`
+zawiera maksymalnie pięć krótkich działań dla BOK (maks. 300 znaków każde); pusta lista oznacza brak
+dalszej pracy operatora. Żadnego z tych pól nie wolno kopiować do `body`. `contextTruncated` jest
+obowiązkowe, `usedFactKeys` może wskazywać wyłącznie klucze obecne w `verifiedFacts`, a treści
+klienta są zawsze oznaczone jako niezaufane. Generator oraz judge działają w osobnych, nowych
+wątkach Codexa. Judge nie widzi rozumowania generatora ani treści `internalNote`/`nextActions`:
+ocenia wyłącznie publiczne `body` oraz metadane jakościowe.
 
 ## Granice bezpieczeństwa
 

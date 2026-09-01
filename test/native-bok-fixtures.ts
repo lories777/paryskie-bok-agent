@@ -42,6 +42,8 @@ export const NATIVE_BOK_CONTEXT: TicketAiContext = {
 
 export const NATIVE_BOK_DRAFT: TicketAiGeneratorOutput = {
   body: "Dzień dobry, zamówienie zostało wysłane. Pozdrawiamy, Zespół Paryskie Perfumy",
+  internalNote: "Status wysyłki potwierdzony w danych zamówienia; brak ryzyk wymagających decyzji BOK.",
+  nextActions: [],
   intent: "delivery_status",
   confidence: "high",
   usedFactKeys: ["order.status"],
