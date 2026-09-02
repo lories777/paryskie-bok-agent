@@ -87,7 +87,11 @@ nie sygnałem do fallbacku na lokalny playbook lub pamięć modelu.
 - zwykłe reguły modelu i dane katalogowe pozostają niezaufaną pamięcią pomocniczą; wyłącznie
   autoryzowana odpowiedź do BOK Agenta albo jawny mention w kanale poleceń może utworzyć
   wersjonowaną korektę proceduralną. Taka korekta może w swoim wąskim zakresie poprawić starszą
-  procedurę, ale nigdy nie jest faktem klienta, dowodem wykonania operacji ani podstawą mutacji;
+  procedurę, ale nigdy nie jest faktem klienta, dowodem wykonania operacji ani podstawą mutacji.
+  Dokładna treść człowieka jest źródłem; modelowe `situation`/`instruction` są wyłącznie niezaufanym
+  indeksem i nie mogą jej rozszerzać. Generate wiąże snapshot pamięci z `operationId`, a judge używa
+  dokładnie tego samego snapshotu lub kończy fail-closed kodem 409; po restarcie/wygaśnięciu bindingu
+  caller musi ponowić generate;
 - dedykowany `BOK_NATIVE_CODEX_HOME` nie zawiera konfiguracji MCP; shell, unified exec,
   multi-agent, web, obrazy i aplikacje są wyłączone, środowisko hosta nie jest dziedziczone, sandbox
   jest read-only, a sieć narzędzi modelu wyłączona;

@@ -8,6 +8,7 @@ import {
   directRequestConversationKey,
   DiscordGateway,
   isDiscordUnknownMessage,
+  isConfiguredDiscordCommandChannel,
   isStatusCommand,
   persistDraftDecision,
   publishThenRemoveSuperseded,
@@ -78,7 +79,7 @@ test("gateway ufa tylko reply albo jawnemu mention w command channel", () => {
   const authorization = { authorizationKind: "allowed_role" as const, authorizationId: "bok-role" };
   assert.deepEqual(resolveVerifiedCorrectionSource({
     authorization,
-    inCommandChannel: false,
+    inExplicitCommandChannel: false,
     mentionedAgent: false,
     replyingToAgent: true,
     replyToBotMessageId: "bot-card-1",
@@ -89,7 +90,7 @@ test("gateway ufa tylko reply albo jawnemu mention w command channel", () => {
   });
   assert.deepEqual(resolveVerifiedCorrectionSource({
     authorization,
-    inCommandChannel: true,
+    inExplicitCommandChannel: true,
     mentionedAgent: true,
     replyingToAgent: false,
   }), {
@@ -99,16 +100,26 @@ test("gateway ufa tylko reply albo jawnemu mention w command channel", () => {
   });
   assert.equal(resolveVerifiedCorrectionSource({
     authorization,
-    inCommandChannel: true,
+    inExplicitCommandChannel: true,
     mentionedAgent: false,
     replyingToAgent: false,
   }), undefined, "zwykła wiadomość bez mention nie uczy pamięci");
   assert.equal(resolveVerifiedCorrectionSource({
     authorization,
-    inCommandChannel: false,
+    inExplicitCommandChannel: false,
     mentionedAgent: true,
     replyingToAgent: false,
   }), undefined, "mention w observe-only nie uczy pamięci");
+});
+
+test("direct mention rozpoznaje tylko skonfigurowany command channel lub jego thread", () => {
+  const commandChannels = new Set(["bok-command"]);
+  assert.equal(isConfiguredDiscordCommandChannel("bok-command", null, commandChannels), true);
+  assert.equal(isConfiguredDiscordCommandChannel("thread-1", "bok-command", commandChannels), true);
+  assert.equal(
+    isConfiguredDiscordCommandChannel("daktela-escalation", null, commandChannels),
+    false,
+  );
 });
 
 test("Gotowe atomowo zatwierdza draft i kolejkuje dokładnie jedno wykonanie", () => {

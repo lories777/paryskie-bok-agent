@@ -13,7 +13,10 @@ import {
   parseGeneratorOutput,
   ticketAiJudgeOutputSchema,
 } from "./native-bok-contract.js";
-import type { NativeBokInference } from "./native-bok-inference.js";
+import {
+  NativeBokCorrectionBindingError,
+  type NativeBokInference,
+} from "./native-bok-inference.js";
 
 interface NativeBokInferencePort {
   readonly generatorModel: string;
@@ -130,6 +133,10 @@ export function createNativeBokHttpServerForConfig(
         }
         if (error instanceof SafeHttpError) {
           sendError(response, error.status, error.code);
+          return;
+        }
+        if (error instanceof NativeBokCorrectionBindingError) {
+          sendError(response, 409, error.code);
           return;
         }
         // Szczegóły modelu mogą zawierać treść klienta albo dane runtime. Nie trafiają do HTTP/logu.

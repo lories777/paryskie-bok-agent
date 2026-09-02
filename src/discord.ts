@@ -307,9 +307,13 @@ export class DiscordGateway implements ReplySink {
     const replyContext = await this.resolveReplyContext(message);
 
     const parentId = message.channel.isThread() ? message.channel.parentId : null;
+    const inExplicitCommandChannel = isConfiguredDiscordCommandChannel(
+      message.channelId,
+      parentId,
+      this.config.commandChannelIds,
+    );
     const inCommandChannel =
-      this.config.commandChannelIds.has(message.channelId) ||
-      Boolean(parentId && this.config.commandChannelIds.has(parentId)) ||
+      inExplicitCommandChannel ||
       message.channelId === this.config.daktelaEscalationChannelId ||
       parentId === this.config.daktelaEscalationChannelId;
     const inObserveChannel =
@@ -329,7 +333,7 @@ export class DiscordGateway implements ReplySink {
     );
     const verifiedCorrectionSource = resolveVerifiedCorrectionSource({
       authorization: correctionAuthorization,
-      inCommandChannel,
+      inExplicitCommandChannel,
       mentionedAgent: mentioned,
       replyingToAgent: replyContext.replyingToAgent,
       replyToBotMessageId: replyContext.botMessageId,
@@ -581,7 +585,7 @@ export function resolveVerifiedCorrectionSource(input: {
   authorization:
     | { authorizationKind: "allowed_user" | "allowed_role"; authorizationId: string }
     | undefined;
-  inCommandChannel: boolean;
+  inExplicitCommandChannel: boolean;
   mentionedAgent: boolean;
   replyingToAgent: boolean;
   replyToBotMessageId?: string | undefined;
@@ -596,12 +600,21 @@ export function resolveVerifiedCorrectionSource(input: {
         }
       : undefined;
   }
-  if (!input.inCommandChannel || !input.mentionedAgent) return undefined;
+  if (!input.inExplicitCommandChannel || !input.mentionedAgent) return undefined;
   return {
     sourceKind: "direct_mention",
     replyToBotMessageId: null,
     ...input.authorization,
   };
+}
+
+export function isConfiguredDiscordCommandChannel(
+  channelId: string,
+  parentId: string | null,
+  commandChannelIds: ReadonlySet<string>,
+): boolean {
+  return commandChannelIds.has(channelId) ||
+    Boolean(parentId && commandChannelIds.has(parentId));
 }
 
 function conversationKey(message: Message): string {
