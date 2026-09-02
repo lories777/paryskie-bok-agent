@@ -11,7 +11,7 @@ import {
   nativeBokGenerateRequestSchema,
   nativeBokJudgeRequestSchema,
   parseGeneratorOutput,
-  ticketAiJudgeOutputSchema,
+  parseJudgeOutput,
   type NativeBokRuntimeStatus,
 } from "./native-bok-contract.js";
 import {
@@ -130,13 +130,14 @@ export function createNativeBokHttpServerForConfig(
           return;
         }
         const parsed = parseJudgeRequest(body);
-        const result = ticketAiJudgeOutputSchema.parse(
+        const result = parseJudgeOutput(
           await inference.judge(
             parsed.context,
             parsed.draft,
             parsed.knowledgeSnapshot,
             signal,
           ),
+          parsed.draft,
         );
         sendSuccess(response, result, inference.judgeModel);
       } catch (error) {

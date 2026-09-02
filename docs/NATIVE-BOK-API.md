@@ -66,6 +66,36 @@ wystarcza MasterLinkowi do uznania, że połączył się z właściwym agentem.
 MasterLink musi również porównać `operationalActionCatalog` z własnym, przypiętym kontraktem;
 inna wersja lub hash oznacza brak gotowości do bezpiecznej obsługi akcji.
 
+## Typowane propozycje działań
+
+Generator może zwrócić najwyżej jedną jawną propozycję `operationalActionRequest` schema v2:
+
+```json
+{
+  "schemaVersion": 2,
+  "actionType": "order.stop",
+  "factKeys": ["order.id", "order.status"]
+}
+```
+
+Niezależny judge może zwrócić osobną decyzję tylko dla dokładnie tego samego typu akcji:
+
+```json
+{
+  "schemaVersion": 2,
+  "actionType": "order.stop",
+  "verdict": "approve",
+  "reasonCodes": ["facts_verified", "intent_match"]
+}
+```
+
+Każdy `factKey` musi występować w `verifiedFacts` oraz `usedFactKeys`. Brak requestu lub decyzji,
+różnica typu, niezgodna intencja albo brak faktu oznacza brak zatwierdzonej akcji. Model nie zwraca
+`factsHash`, `handling`, `logicalDestination`, `orderRequired`, routingu, kanału, odbiorcy ani treści
+zadania. Akcji nie wolno rekonstruować z `body`, `internalNote` ani `nextActions`. MasterLink
+wylicza hash aktualnych faktów i rozstrzyga wykonawcę według własnego, przypiętego katalogu; akcje
+MasterLink, w tym `order.stop`, nigdy nie są zamieniane na wiadomości Discord.
+
 ## Wiedza i bezpieczeństwo
 
 - fakty konkretnego klienta i zamówienia pochodzą wyłącznie z `verifiedFacts` ML;

@@ -5,8 +5,25 @@ import {
   ticketAiKnowledgeSnapshotSchema,
   TICKET_AI_INTENTS,
 } from "./native-bok-knowledge.js";
+import {
+  TICKET_AI_OPERATIONAL_ACTION_DECISION_JSON_SCHEMA,
+  TICKET_AI_OPERATIONAL_ACTION_REQUEST_JSON_SCHEMA,
+  ticketAiOperationalActionDecisionSchema,
+  ticketAiOperationalActionRequestSchema,
+  ticketOperationalActionAcceptsAiIntent,
+} from "./native-bok-operational-actions.js";
 
 export { TICKET_AI_INTENTS } from "./native-bok-knowledge.js";
+export {
+  TICKET_AI_OPERATIONAL_ACTION_DECISION_REASONS,
+  TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION,
+  TICKET_OPERATIONAL_ACTION_DEFINITIONS,
+  TICKET_OPERATIONAL_ACTION_TYPES,
+  operationalActionCatalogContract,
+  operationalActionCatalogHash,
+  ticketAiOperationalActionDecisionSchema,
+  ticketAiOperationalActionRequestSchema,
+} from "./native-bok-operational-actions.js";
 
 export const NATIVE_BOK_PROVIDER = "paryskie-bok-agent" as const;
 export const NATIVE_BOK_RUNTIME = "discord-shared" as const;
@@ -370,6 +387,7 @@ export const ticketAiGeneratorOutputSchema = z
         "other",
       ])
       .nullable(),
+    operationalActionRequest: ticketAiOperationalActionRequestSchema.nullable().optional(),
   })
   .strict();
 
@@ -380,6 +398,7 @@ export const ticketAiJudgeOutputSchema = z
     grounded: z.boolean(),
     policyCompliant: z.boolean(),
     reasonCodes: z.array(z.enum(TICKET_AI_JUDGE_REASON_CODES)).max(20),
+    operationalActionDecision: ticketAiOperationalActionDecisionSchema.nullable().optional(),
   })
   .strict();
 
@@ -427,6 +446,43 @@ export function parseGeneratorOutput(
   }
   if (output.usedFactKeys.some((key) => !known.has(key))) {
     throw new Error("generator_fact_key_unknown");
+  }
+  const request = output.operationalActionRequest;
+  if (request) {
+    const used = new Set(output.usedFactKeys);
+    if (request.factKeys.some((key) => !known.has(key))) {
+      throw new Error("generator_operational_fact_key_unknown");
+    }
+    if (request.factKeys.some((key) => !used.has(key))) {
+      throw new Error("generator_operational_fact_key_unused");
+    }
+    if (request.factKeys.some((key) => {
+      const fact = context.verifiedFacts[key];
+      return fact === undefined || fact === null || fact === "";
+    })) {
+      throw new Error("generator_operational_fact_value_missing");
+    }
+    if (!ticketOperationalActionAcceptsAiIntent(request.actionType, output.intent)) {
+      throw new Error("generator_operational_intent_mismatch");
+    }
+  }
+  return output;
+}
+
+export function parseJudgeOutput(
+  value: unknown,
+  draft: TicketAiGeneratorOutput,
+): TicketAiJudgeOutput {
+  const output = ticketAiJudgeOutputSchema.parse(value);
+  const decision = output.operationalActionDecision;
+  if (!decision) return output;
+  const request = draft.operationalActionRequest;
+  if (!request) throw new Error("judge_operational_action_unrequested");
+  if (decision.actionType !== request.actionType) {
+    throw new Error("judge_operational_action_mismatch");
+  }
+  if (decision.verdict === "approve" && output.verdict !== "approve") {
+    throw new Error("judge_operational_action_outer_verdict_mismatch");
   }
   return output;
 }
@@ -481,6 +537,7 @@ export const TICKET_AI_GENERATOR_OUTPUT_JSON_SCHEMA = {
         { type: "null" },
       ],
     },
+    operationalActionRequest: TICKET_AI_OPERATIONAL_ACTION_REQUEST_JSON_SCHEMA,
   },
   required: [
     "body",
@@ -492,6 +549,7 @@ export const TICKET_AI_GENERATOR_OUTPUT_JSON_SCHEMA = {
     "unverifiedClaims",
     "needsHumanReview",
     "escalationCode",
+    "operationalActionRequest",
   ],
   additionalProperties: false,
 } as const;
@@ -508,7 +566,15 @@ export const TICKET_AI_JUDGE_OUTPUT_JSON_SCHEMA = {
       maxItems: 20,
       items: { type: "string", enum: TICKET_AI_JUDGE_REASON_CODES },
     },
+    operationalActionDecision: TICKET_AI_OPERATIONAL_ACTION_DECISION_JSON_SCHEMA,
   },
-  required: ["verdict", "score", "grounded", "policyCompliant", "reasonCodes"],
+  required: [
+    "verdict",
+    "score",
+    "grounded",
+    "policyCompliant",
+    "reasonCodes",
+    "operationalActionDecision",
+  ],
   additionalProperties: false,
 } as const;
