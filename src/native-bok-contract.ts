@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   parseTicketAiKnowledgeSnapshot,
@@ -8,11 +9,37 @@ import {
 export { TICKET_AI_INTENTS } from "./native-bok-knowledge.js";
 
 export const NATIVE_BOK_PROVIDER = "paryskie-bok-agent" as const;
+export const NATIVE_BOK_RUNTIME = "discord-shared" as const;
 export const DEFAULT_NATIVE_BOK_MODEL = "codex-subscription-managed";
 export const MAX_NATIVE_BOK_REQUEST_BYTES = 1_000_000;
 export const MAX_NATIVE_BOK_CONTEXT_CHARS = 500_000;
 export const MAX_NATIVE_BOK_MESSAGE_BODY_CHARS = 100_000;
 export const MAX_NATIVE_BOK_DRAFT_BODY_CHARS = 20_000;
+
+export interface NativeBokRuntimeStatus {
+  schemaVersion: 1;
+  provider: typeof NATIVE_BOK_PROVIDER;
+  runtime: typeof NATIVE_BOK_RUNTIME;
+  store: {
+    source: "shared-agent-store";
+    identity: string;
+  };
+  corrections: {
+    source: "verified-discord-corrections";
+    revision: number;
+    activeRules: number;
+    total: number;
+    truncated: false;
+  };
+  playbook: {
+    source: "shared-agent-workspace";
+    revision: string;
+  };
+  operationalActionCatalog: {
+    schemaVersion: 2;
+    hash: string;
+  };
+}
 export const MAX_NATIVE_BOK_INTERNAL_NOTE_CHARS = 1_200;
 export const MAX_NATIVE_BOK_NEXT_ACTIONS = 5;
 export const MAX_NATIVE_BOK_NEXT_ACTION_CHARS = 300;
@@ -191,6 +218,20 @@ const verifiedFactsSchema = z.record(
   z.union([z.string().max(2_000), z.number().finite(), z.boolean(), z.null()]),
 ).refine((facts) => Object.keys(facts).length <= 50);
 
+const operatorGuidanceSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    id: z.string().uuid(),
+    sourceRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    content: z.string().min(1).max(4_000).refine((value) =>
+      value.trim().length > 0 && value.normalize("NFC") === value
+    ),
+    decision: z.enum(["yes", "no", "custom"]),
+    contentHash: z.string().regex(SAFE_SHA256),
+    createdAt: z.string().datetime({ offset: true }),
+  })
+  .strict();
+
 const commonContextFields = {
   operationId: nonBlank(100),
   ticket: ticketSchema,
@@ -198,6 +239,7 @@ const commonContextFields = {
   contextTruncated: z.boolean(),
   verifiedFacts: verifiedFactsSchema,
   promptVersion: z.string().regex(SAFE_VERSION),
+  operatorGuidance: operatorGuidanceSchema.nullable().optional(),
 };
 
 const legacyTicketAiContextSchema = z
@@ -290,6 +332,18 @@ export const ticketAiContextSchema = z
   .superRefine((context, issue) => {
     if (JSON.stringify(context).length > MAX_NATIVE_BOK_CONTEXT_CHARS) {
       issue.addIssue({ code: "custom", message: "context_too_large" });
+    }
+    const guidance = context.operatorGuidance;
+    if (guidance) {
+      if (guidance.sourceRevision !== context.ticket.revision) {
+        issue.addIssue({ code: "custom", message: "operator_guidance_revision_mismatch" });
+      }
+      const expectedHash = createHash("sha256")
+        .update(guidance.content, "utf8")
+        .digest("hex");
+      if (guidance.contentHash !== expectedHash) {
+        issue.addIssue({ code: "custom", message: "operator_guidance_hash_mismatch" });
+      }
     }
   });
 

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type {
   AgentTurnOutput,
@@ -225,6 +226,11 @@ export class AgentStore {
       );
       INSERT OR IGNORE INTO verified_correction_state(singleton, revision) VALUES (1, 0);
 
+      CREATE TABLE IF NOT EXISTS runtime_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS jobs_status_id_idx ON jobs(status, id);
       CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id, id);
       CREATE INDEX IF NOT EXISTS actions_status_id_idx ON actions(status, id);
@@ -236,6 +242,10 @@ export class AgentStore {
       CREATE INDEX IF NOT EXISTS learned_rules_updated_idx
         ON learned_rules(updated_at DESC);
     `);
+    this.db.prepare(`
+      INSERT OR IGNORE INTO runtime_metadata(key, value)
+      VALUES ('store_id', ?)
+    `).run(randomUUID());
     this.ensureColumn("jobs", "approved_action_id", "INTEGER REFERENCES actions(id)");
     this.ensureColumn("actions", "execution_result", "TEXT");
     this.ensureColumn("actions", "payload", "TEXT NOT NULL DEFAULT ''");
@@ -286,6 +296,16 @@ export class AgentStore {
         ON verified_correction_sources(source_revision)
         WHERE source_revision IS NOT NULL;
     `);
+  }
+
+  runtimeIdentity(): string {
+    const row = this.db
+      .prepare("SELECT value FROM runtime_metadata WHERE key = 'store_id'")
+      .get() as { value?: unknown } | undefined;
+    if (!row || typeof row.value !== "string" || !/^[0-9a-f-]{36}$/i.test(row.value)) {
+      throw new Error("Brak tożsamości wspólnego AgentStore.");
+    }
+    return row.value;
   }
 
   private ensureColumn(

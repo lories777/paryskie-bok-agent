@@ -1,14 +1,17 @@
 import path from "node:path";
 import {
-  Codex,
   type McpToolCallItem,
-  type ModelReasoningEffort,
   type RunResult,
   type ThreadItem,
   type ThreadOptions,
 } from "@openai/codex-sdk";
+import {
+  BokAgentCore,
+  buildPrimaryCodexConfigOverrides as buildCodexConfigOverrides,
+  buildPrimaryThreadOptions,
+  CHROME_READ_ONLY_TOOLS,
+} from "./bok-agent-core.js";
 import type { AppConfig } from "./config.js";
-import { readBokPlaybook } from "./bok-knowledge.js";
 import {
   applyDraftReview,
   buildDraftReviewPrompt,
@@ -20,6 +23,7 @@ import { buildTurnPrompt } from "./prompt.js";
 import type { MasterLinkReportClient } from "./masterlink.js";
 import { buildParyskieRecommendationContext } from "./paryskie-knowledge.js";
 import type { AgentStore } from "./store.js";
+import { NativeBokInference } from "./native-bok-inference.js";
 import {
   AGENT_OUTPUT_JSON_SCHEMA,
   agentTurnOutputSchema,
@@ -30,16 +34,21 @@ import {
 } from "./types.js";
 
 export class BokCodexAgent {
-  private readonly codex: Codex;
-  private readonly reviewerCodex: Codex;
+  private readonly config: AppConfig;
+  private readonly store: AgentStore;
+  private readonly codex;
+  private readonly reviewerCodex;
   private readonly bokPlaybook: string;
+  readonly nativeInference: NativeBokInference;
 
   constructor(
-    private readonly config: AppConfig,
-    private readonly store: AgentStore,
+    readonly core: BokAgentCore,
     private readonly masterlink?: MasterLinkReportClient,
   ) {
-    this.bokPlaybook = readBokPlaybook(config.workspacePath);
+    const config = core.config;
+    this.config = config;
+    this.store = core.store;
+    this.bokPlaybook = core.playbook;
     const masterlinkStarter = path.join(
       config.masterlinkMcpProjectDir,
       "bin/start-masterlink-mcp",
@@ -56,18 +65,9 @@ export class BokCodexAgent {
           'mcp_servers.masterlink.default_tools_approval_mode="approve"',
         ]
       : [];
-    this.codex = new Codex({
-      configOverrides: buildCodexConfigOverrides(config, masterlinkMcpOverrides),
-    });
-    this.reviewerCodex = new Codex({
-      configOverrides: [
-        "mcp_servers.chrome-devtools.enabled=false",
-        "mcp_servers.desktop-control.enabled=false",
-        "mcp_servers.playwright.enabled=false",
-        "mcp_servers.supabase.enabled=false",
-        "mcp_servers.openaiDeveloperDocs.enabled=false",
-      ],
-    });
+    this.codex = core.createPrimaryCodex(masterlinkMcpOverrides);
+    this.reviewerCodex = core.createReviewerCodex();
+    this.nativeInference = new NativeBokInference(core);
   }
 
   async run(job: ClaimedJob, signal?: AbortSignal): Promise<AgentTurnOutput> {
@@ -85,6 +85,7 @@ export class BokCodexAgent {
       conversation.id,
       extractExplicitOrderNumbers(messages),
     );
+    const sharedPolicy = this.core.policySnapshot(messages);
     const learnedRules = this.store.activeLearnedRules();
     const options = this.threadOptions();
     const businessContext = joinBusinessContext(
@@ -104,8 +105,9 @@ export class BokCodexAgent {
         sharedContext,
         this.config.masterlinkMcpEnabled,
         learnedRules,
-        this.bokPlaybook,
+        sharedPolicy.playbook,
         relatedTicketContext,
+        sharedPolicy.verifiedCorrections,
       ),
       { outputSchema: AGENT_OUTPUT_JSON_SCHEMA, ...(signal ? { signal } : {}) },
     );
@@ -227,6 +229,7 @@ export class BokCodexAgent {
         messages,
         reviewerBusinessContext,
         formatVerifiedToolEvidence(evidenceItems),
+        sharedPolicy.verifiedCorrections,
         signal,
       );
       for (
@@ -261,6 +264,7 @@ export class BokCodexAgent {
           messages,
           reviewerBusinessContext,
           formatVerifiedToolEvidence(evidenceItems),
+          sharedPolicy.verifiedCorrections,
           signal,
         );
       }
@@ -319,6 +323,7 @@ export class BokCodexAgent {
     messages: ReturnType<AgentStore["recentMessages"]>,
     businessContext?: string,
     verifiedToolEvidence?: string,
+    verifiedCorrections?: ReturnType<BokAgentCore["policySnapshot"]>["verifiedCorrections"],
     signal?: AbortSignal,
   ): Promise<string[]> {
     const blockedIssues = catalogRecommendationResolutionIssues(output, businessContext);
@@ -347,6 +352,7 @@ export class BokCodexAgent {
           messages,
           businessContext,
           verifiedToolEvidence,
+          verifiedCorrections,
         ), {
           outputSchema: CUSTOMER_DRAFT_REVIEW_JSON_SCHEMA,
           ...(signal ? { signal } : {}),
@@ -389,73 +395,15 @@ export class BokCodexAgent {
   }
 
   private threadOptions(): ThreadOptions {
-    return buildPrimaryThreadOptions(this.config);
+    return this.core.primaryThreadOptions();
   }
 
   private reviewThreadOptions(): ThreadOptions {
-    return {
-      workingDirectory: this.config.workspacePath,
-      sandboxMode: "read-only",
-      approvalPolicy: "never",
-      networkAccessEnabled: false,
-      webSearchMode: "disabled",
-      modelReasoningEffort: this.config.reasoningEffort as ModelReasoningEffort,
-      threadSource: "paryskie-bok-draft-reviewer",
-      ...(this.config.model ? { model: this.config.model } : {}),
-    };
+    return this.core.reviewerThreadOptions();
   }
 }
 
-export function buildPrimaryThreadOptions(
-  config: Pick<
-    AppConfig,
-    "workspacePath" | "reasoningEffort" | "model" | "browserResearchEnabled"
-  >,
-): ThreadOptions {
-  return {
-    workingDirectory: config.workspacePath,
-    sandboxMode: "workspace-write",
-    approvalPolicy: "never",
-    // Research przeglądarki idzie wyłącznie przez poniższą allowlistę MCP. Ogólny dostęp
-    // sieciowy Codexa pozostaje wyłączony, aby flaga odczytu nie umożliwiała curl/fetch POST.
-    networkAccessEnabled: false,
-    webSearchMode: "disabled",
-    modelReasoningEffort: config.reasoningEffort as ModelReasoningEffort,
-    threadSource: "paryskie-bok-agent",
-    ...(config.model ? { model: config.model } : {}),
-  };
-}
-
-export function buildCodexConfigOverrides(
-  config: Pick<AppConfig, "browserResearchEnabled">,
-  masterlinkMcpOverrides: string[] = [],
-): string[] {
-  return [
-    `mcp_servers.chrome-devtools.enabled=${config.browserResearchEnabled ? "true" : "false"}`,
-    ...(config.browserResearchEnabled
-      ? [
-          "mcp_servers.chrome-devtools.required=true",
-          `mcp_servers.chrome-devtools.enabled_tools=${JSON.stringify(CHROME_READ_ONLY_TOOLS)}`,
-          'mcp_servers.chrome-devtools.default_tools_approval_mode="approve"',
-        ]
-      : []),
-    "mcp_servers.desktop-control.enabled=false",
-    "mcp_servers.playwright.enabled=false",
-    "mcp_servers.supabase.enabled=false",
-    "mcp_servers.openaiDeveloperDocs.enabled=false",
-    ...masterlinkMcpOverrides,
-  ];
-}
-
-// Oficjalne narzędzia Chrome DevTools MCP ograniczone do inspekcji już otwartych stron.
-// Celowo brak navigate/new_page, click/fill/press_key, evaluate_script, upload i rozszerzeń.
-export const CHROME_READ_ONLY_TOOLS = [
-  "list_pages",
-  "select_page",
-  "take_snapshot",
-  "take_screenshot",
-  "wait_for",
-] as const;
+export { buildCodexConfigOverrides, buildPrimaryThreadOptions, CHROME_READ_ONLY_TOOLS };
 
 interface MasterlinkResearchRequirement {
   orderNumbers: string[];

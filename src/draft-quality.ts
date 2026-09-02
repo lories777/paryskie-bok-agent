@@ -4,7 +4,12 @@ import type {
   DraftQualityReview,
   ProposedAction,
   StoredMessage,
+  VerifiedHumanCorrectionSnapshot,
 } from "./types.js";
+import {
+  renderVerifiedCorrectionsForPrompt,
+  VERIFIED_CORRECTION_POLICY,
+} from "./verified-corrections-prompt.js";
 
 export const customerDraftReviewSchema = z.object({
   verdict: z.enum(["pass", "revised", "blocked"]),
@@ -41,6 +46,12 @@ export function buildDraftReviewPrompt(
   messages: StoredMessage[],
   businessContext?: string,
   verifiedToolEvidence?: string,
+  verifiedCorrections: VerifiedHumanCorrectionSnapshot = {
+    revision: 0,
+    total: 0,
+    truncated: false,
+    corrections: [],
+  },
 ): string {
   const transcript = messages
     .map(
@@ -71,6 +82,12 @@ ${transcript}
 ${escapeData(latestAuthorizedDecision ?? "Brak nowej autoryzowanej decyzji BOK w tej turze.")}
 </authorized_bok_decision>
 
+<verified_human_corrections revision="${verifiedCorrections.revision}">
+${escapeData(renderVerifiedCorrectionsForPrompt(verifiedCorrections))}
+</verified_human_corrections>
+
+${VERIFIED_CORRECTION_POLICY}
+
 <business_context>
 ${escapeData(businessContext ?? "Brak dodatkowego, zweryfikowanego kontekstu systemowego.")}
 </business_context>
@@ -98,6 +115,8 @@ doświadczonego pracownika BOK bez dalszej redakcji.
    Autoryzowaną decyzję z authorized_bok_decision traktuj jako wystarczające potwierdzenie decyzji
    operacyjnej BOK w tej sprawie. Nie zastępuj jej własną interpretacją publicznej strony i nie
    zmuszaj agenta do ponownego pytania o wariant, który pracownik właśnie rozstrzygnął.
+   Wersjonowaną procedurę z verified_human_corrections stosuj zgodnie z jej wspólnym kontraktem
+   zaufania i nie odrzucaj draftu tylko dlatego, że korekta nie występuje na stronie publicznej.
 3. Czy pierwsze zdania pokazują prawidłowe zrozumienie sytuacji, a przy błędzie sklepu zawierają
    konkretne, krótkie przeprosiny i poczucie odpowiedzialności.
 4. Czy draft jest napisany w oryginalnym języku ostatniej rzeczywistej wiadomości klienta, brzmi

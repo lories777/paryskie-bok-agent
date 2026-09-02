@@ -2,12 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import "dotenv/config";
+import { BokAgentCore } from "./bok-agent-core.js";
 import { BokCodexAgent } from "./codex-agent.js";
 import { assertLiveConfig, assertNativeBokApiConfig, loadConfig } from "./config.js";
 import { DiscordGateway } from "./discord.js";
 import { DaktelaMonitor } from "./daktela-monitor.js";
 import { MasterLinkReportClient } from "./masterlink.js";
-import { NativeBokInference } from "./native-bok-inference.js";
 import { createNativeBokHttpServer } from "./native-bok-server.js";
 import { AgentStore } from "./store.js";
 import type { ClaimedJob, IncomingMessage } from "./types.js";
@@ -49,7 +49,8 @@ async function main(): Promise<void> {
         shouldRespond: true,
       };
       store.ingest(incoming);
-      const agent = new BokCodexAgent(config, store, masterlink);
+      const core = new BokAgentCore(config, store);
+      const agent = new BokCodexAgent(core, masterlink);
       const sink: ReplySink = {
         async deliver(_job: ClaimedJob, message: string) {
           console.log(message);
@@ -60,35 +61,11 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (command === "native-api") {
-      assertNativeBokApiConfig(config);
-      const inference = new NativeBokInference(config, store);
-      const server = createNativeBokHttpServer(config, inference);
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(config.nativeApiPort, config.nativeApiHost, () => {
-          server.off("error", reject);
-          resolve();
-        });
-      });
-      console.log(
-        `Natywne API BOK działa na ${config.nativeApiHost}:${config.nativeApiPort} (loopback).`,
-      );
-      await new Promise<void>((resolve) => {
-        process.once("SIGINT", resolve);
-        process.once("SIGTERM", resolve);
-      });
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        server.closeIdleConnections();
-      });
-      return;
-    }
-
     if (command === "run") {
       assertLiveConfig(config);
       const discord = new DiscordGateway(config, store);
-      const agent = new BokCodexAgent(config, store, masterlink);
+      const core = new BokAgentCore(config, store);
+      const agent = new BokCodexAgent(core, masterlink);
       const worker = new JobWorker(store, agent, discord);
       const daktela = config.daktelaMonitorEnabled
         ? new DaktelaMonitor(config, store)
@@ -109,13 +86,19 @@ async function main(): Promise<void> {
       const shutdown = () => controller.abort();
       process.once("SIGINT", shutdown);
       process.once("SIGTERM", shutdown);
-      await discord.start();
+      const nativeServer = config.nativeApiEnabled
+        ? await startSharedNativeApi(config, agent)
+        : undefined;
+      let discordStarted = false;
       try {
+        await discord.start();
+        discordStarted = true;
         await daktela?.start();
         await worker.runForever(controller.signal);
       } finally {
         await daktela?.stop();
-        await discord.stop();
+        if (discordStarted) await discord.stop();
+        await stopSharedNativeApi(nativeServer);
       }
       return;
     }
@@ -126,11 +109,38 @@ Paryskie BOK Agent
   npm run dev -- local "pytanie"   lokalna rozmowa przez zalogowany Codex
   npm run dev -- status             stan trwałej kolejki
   npm run dev -- run                uruchom gateway Discord + worker 24/7
-  npm run dev -- native-api         prywatne generate+judge dla natywnego BOK MasterLink
+  BOK_NATIVE_API_ENABLED=true       wystawia prywatne API w tym samym procesie co Discord
 `.trim());
   } finally {
     store.close();
   }
+}
+
+async function startSharedNativeApi(
+  config: ReturnType<typeof loadConfig>,
+  agent: BokCodexAgent,
+) {
+  assertNativeBokApiConfig(config);
+  const server = createNativeBokHttpServer(config, agent.nativeInference);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(config.nativeApiPort, config.nativeApiHost, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  console.log(
+    `Współdzielone API BOK działa na ${config.nativeApiHost}:${config.nativeApiPort} (Discord + ML + jeden Store).`,
+  );
+  return server;
+}
+
+async function stopSharedNativeApi(server: ReturnType<typeof createNativeBokHttpServer> | undefined) {
+  if (!server) return;
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+    server.closeIdleConnections();
+  });
 }
 
 function assertWorkspace(workspacePath: string): void {

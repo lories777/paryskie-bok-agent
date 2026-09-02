@@ -12,6 +12,7 @@ import {
   nativeBokJudgeRequestSchema,
   parseGeneratorOutput,
   ticketAiJudgeOutputSchema,
+  type NativeBokRuntimeStatus,
 } from "./native-bok-contract.js";
 import {
   NativeBokCorrectionBindingError,
@@ -21,6 +22,7 @@ import {
 interface NativeBokInferencePort {
   readonly generatorModel: string;
   readonly judgeModel: string;
+  runtimeStatus(): NativeBokRuntimeStatus;
   generate(context: unknown, knowledgeSnapshot: unknown, signal: AbortSignal): Promise<unknown>;
   judge(
     context: unknown,
@@ -77,6 +79,18 @@ export function createNativeBokHttpServerForConfig(
       if (!authorized(request.headers.authorization, config.token)) {
         response.setHeader("WWW-Authenticate", "Bearer");
         sendError(response, 401, "unauthorized");
+        return;
+      }
+      if (url.pathname === "/v1/bok/runtime" && url.search === "") {
+        if (request.method !== "GET") {
+          response.setHeader("Allow", "GET");
+          sendError(response, 405, "method_not_allowed");
+          return;
+        }
+        sendJson(response, 200, {
+          ok: true,
+          ...inference.runtimeStatus(),
+        });
         return;
       }
       if (url.search !== "" || !["/v1/bok/generate", "/v1/bok/judge"].includes(url.pathname)) {
