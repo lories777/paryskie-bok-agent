@@ -3,8 +3,10 @@
 API MasterLink nie jest osobnym agentem ani stateless mirrorem. Uruchamia się wyłącznie wewnątrz
 komendy `run`, czyli w tym samym procesie co Discord i monitor Dakteli. Korzysta z tej samej
 instancji `AgentStore`, tego samego `bok-agent.sqlite`, workspace, playbooka, modelu oraz
-tożsamości uwierzytelnienia i konfiguracji `CODEX_HOME`. Generate, judge i worker uruchamiają
-osobne klienty i nowe wątki inferencji; nie współdzielą ukrytej historii rozmowy modelu.
+tożsamości uwierzytelnienia i konfiguracji `CODEX_HOME`. Produkcyjny outbound decision korzysta
+z dokładnie tego samego `BokCodexAgent` co worker Discorda: tego samego promptu, wątku ticketu,
+MCP MasterLink, playbooka, korekt, bramek jakości i niezależnego reviewera. Lokalne endpointy
+`generate/judge` pozostają węższym kontraktem diagnostycznym i nie reklamują parity decision.
 
 Oba wejścia dostają tę samą instancję `BokAgentCore`. Core jest właścicielem modelu, playbooka,
 czytnika wersjonowanych korekt i profili narzędzi. Profil HTTP jest celowo węższy: read-only,
@@ -57,6 +59,20 @@ Status współdzielonego runtime ma postać:
     "schemaVersion": 2,
     "hash": "sha256"
   },
+  "decisionCapability": {
+    "schemaVersion": 2,
+    "pipeline": "daktela-discord-parity-v1",
+    "pipelineHash": "7c0c38e7e421ae28918dee136e14d58b02cf9174355233606b4f72e1df43241c",
+    "attachmentPolicyVersion": "daktela-cdp-evidence-v1",
+    "ready": true,
+    "components": {
+      "sharedEngine": true,
+      "daktelaRead": true,
+      "masterlinkRead": true,
+      "attachmentEvidence": true,
+      "independentJudge": true
+    }
+  },
   "operationalActionDispatch": {
     "schemaVersion": 2,
     "provider": "paryskie-bok-agent",
@@ -88,6 +104,11 @@ Status współdzielonego runtime ma postać:
 nie ujawnia identyfikatorów serwera, kategorii ani kanałów. `ready` jest prawdziwe wyłącznie
 wtedy, gdy bramka jest włączona, konfiguracja jest kompletna, Discord jest połączony, a dokładna
 tożsamość wszystkich tras została zweryfikowana.
+
+`decisionCapability.ready` jest koniunkcją wszystkich pięciu komponentów. MasterLink może wydać
+decision lease wyłącznie dla dokładnej wersji/pipeline/policy/hash i `ready=true`. Sesja Dakteli
+jest weryfikowana cyklicznie; każda awaria authenticated read natychmiast wyłącza komponent,
+a odzyskanie zalogowanego Chrome przywraca go bez lease'owania testowego ticketu.
 
 Endpoint nie zwraca statusu gotowości, jeśli snapshot korekt jest ucięty albo wewnętrznie
 niespójny. `revision` identyfikuje mutację pełnego snapshotu, a `total` musi być zgodne z
@@ -177,9 +198,10 @@ nie pobiera następnego: co 10 sekund wysyła niezależny heartbeat z tą samą 
 aktualnym runtime statusem, aż terminalny wynik zostanie potwierdzony. Długie generate/judge nie
 oznacza więc fałszywego offline:
 
-- `decision` ma jawne etapy `generate → judge`; oba przebiegi używają tej samej instancji
-  `NativeBokInference`, tego samego requestu, snapshotu, `contextHash`, `sourceRevision` i
-  `operatorGuidanceHash`, a wynik trafia do jednego terminalnego CAS;
+- `decision` ma jawne etapy `generate → judge`, ale wykonuje je jeden dokładny shared pipeline
+  `BokCodexAgent`; model główny i niezależny reviewer dostają te same zweryfikowane obrazy,
+  ten sam ticket/store/playbook, `contextHash`, `sourceRevision` i `operatorGuidanceHash`, a wynik
+  `NativeBokDecisionResultV2` trafia do jednego terminalnego CAS;
 - `dispatch` ma jeden etap i wywołuje bezpośrednio tę samą instancję
   `NativeOperationalActionDispatcher`; MasterLink nie wydaje go, gdy exact dispatch readiness
   jest fałszywe.
@@ -192,6 +214,30 @@ identyczne body. Strict `409 { error: "lease_lost" }` kończy próbę bez ponown
 ale `result_conflict` jest nieretryowalnym błędem spójności, a nie maskowaną utratą lease.
 Odpowiedzi sterujące są czytane z twardym limitem rozmiaru. Błędy połączenia mają ograniczony
 exponential backoff i nie logują requestu, tokenu ani danych klienta.
+
+## Exact Daktela source i dowody załączników
+
+Decision request zawiera serwerowo zbudowany, kanoniczny `source`: zewnętrzny numer i rewizję
+ticketu, exact latest inbound activity, kolejkę oraz posortowany manifest maksymalnie 10
+nie-inline JPEG/PNG/PDF. `sourceHash` jest SHA-256 surowych pobranych bajtów, a `snapshotHash`
+wiąże cały manifest. Bot ponownie otwiera dokładny ticket przez uwierzytelniony Chrome, porównuje
+rewizję/event/kolejkę/metadata, pobiera plik tylko przez allowlistowany GET i ponownie hashuje
+bajty. Pominięty obsługiwany plik blokuje całą decyzję; techniczne części MIME `text/plain` nie są
+udawane jako dowód wizualny i nie blokują.
+
+JPEG/PNG trafiają jako prywatne `local_image`; PDF jest lokalnie renderowany przez Poppler w 144
+DPI, maksymalnie 10 stron. Pliki mają losowe nazwy, prawa 0600, sumaryczne limity rozmiaru i są
+usuwane w `finally`. Hash renderu jest sprawdzany bezpośrednio przed każdym wywołaniem modelu.
+Treść obrazu/PDF jest jawnie oznaczona jako niezaufane dane klienta, nigdy instrukcja. Native i
+Discord są serializowane jednym pipeline mutexem, a read-session pozostaje zablokowana od exact
+read aż do końca niezależnego reviewera.
+
+Wynik v2 zawiera wyłącznie reviewed customer reply albo stan `blocked`, internal note, reason
+codes, pełne attachment receipts/evidence hash oraz hashe provenance narzędzi/polityki/review.
+Pozostałe akcje są nieegzekwowalnymi podsumowaniami bez targetu/payloadu/routingu. Wskazówka
+managera jest po zweryfikowaniu exact source zapisywana immutable i tylko w rozmowie ticketu;
+receipt wiąże jej id/hash/ticket/rewizję/tożsamość Store. Nie tworzy globalnej reguły ani joba
+Discord. Brak rozmowy monitora w shared SQLite kończy lease retryable fail-closed.
 
 ## Uruchomienie
 

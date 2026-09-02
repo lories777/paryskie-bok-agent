@@ -2,12 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   NATIVE_BOK_PROVIDER,
-  nativeBokGenerateRequestSchema,
-  parseGeneratorOutput,
-  parseJudgeOutput,
   type NativeBokRuntimeStatus,
-  type TicketAiGeneratorOutput,
-  type TicketAiJudgeOutput,
 } from "./native-bok-contract.js";
 import { NativeBokCorrectionBindingError } from "./native-bok-inference.js";
 import {
@@ -20,6 +15,16 @@ import {
   fullNativeBokRuntimeStatus,
   type FullNativeBokRuntimeStatus,
 } from "./native-bok-runtime.js";
+import {
+  NativeBokDaktelaDecisionEngineError,
+  nativeBokDaktelaDecisionRequestV2Schema,
+} from "./native-bok-daktela-decision-engine.js";
+import type {
+  NativeBokDecisionCapabilityStatus,
+} from "./native-bok-decision-capability.js";
+import type { NativeBokDecisionResultV2 } from "./native-bok-decision-result.js";
+import { DaktelaReadSessionError } from "./daktela-read-session.js";
+import { NativeBokAttachmentRenderError } from "./native-bok-attachment-renderer.js";
 
 export const NATIVE_BOK_OUTBOUND_SCHEMA_VERSION = 1 as const;
 export const MAX_NATIVE_BOK_LEASE_RESPONSE_BYTES = 1_100_000;
@@ -47,11 +52,14 @@ const decisionLeaseSchema = z
     ...leaseBaseShape,
     kind: z.literal("decision"),
     stages: z.tuple([z.literal("generate"), z.literal("judge")]),
-    request: nativeBokGenerateRequestSchema,
+    request: nativeBokDaktelaDecisionRequestV2Schema,
   })
   .strict()
   .superRefine((lease, context) => {
-    const contextHash = nativeBridgeHash(lease.request.context);
+    const contextHash = nativeBridgeHash({
+      context: lease.request.context,
+      source: lease.request.source,
+    });
     const guidance = lease.request.context.operatorGuidance;
     const operatorGuidanceHash = guidance === undefined ? null : nativeBridgeHash(guidance);
     const requestHash = nativeBridgeHash({
@@ -165,7 +173,7 @@ type NativeBokOutboundResult =
       outcome:
         | {
             status: "completed";
-            result: { draft: TicketAiGeneratorOutput; judgement: TicketAiJudgeOutput };
+            result: NativeBokDecisionResultV2;
           }
         | { status: "failed"; errorCode: string; retryable: boolean };
     }
@@ -182,17 +190,8 @@ type NativeBokOutboundResult =
 
 export interface NativeBokOutboundInferencePort {
   runtimeStatus(): NativeBokRuntimeStatus;
-  generate(
-    context: unknown,
-    knowledgeSnapshot: unknown,
-    signal: AbortSignal,
-  ): Promise<unknown>;
-  judge(
-    context: unknown,
-    draft: unknown,
-    knowledgeSnapshot: unknown,
-    signal: AbortSignal,
-  ): Promise<unknown>;
+  decisionCapabilityStatus(): NativeBokDecisionCapabilityStatus;
+  decide(request: unknown, signal: AbortSignal): Promise<NativeBokDecisionResultV2>;
 }
 
 export interface NativeBokOutboundDispatcherPort {
@@ -302,7 +301,7 @@ export class NativeBokOutboundPoller {
   }
 
   runtimeStatus(): FullNativeBokRuntimeStatus {
-    return fullNativeBokRuntimeStatus(this.inference, this.dispatcher);
+    return fullNativeBokRuntimeStatus(this.inference, this.dispatcher, this.inference);
   }
 
   async runOnce(signal: AbortSignal): Promise<NativeBokOutboundTickResult> {
@@ -401,24 +400,8 @@ export class NativeBokOutboundPoller {
     lease: Extract<NativeBokOutboundLease, { kind: "decision" }>,
     signal: AbortSignal,
   ): Promise<Extract<NativeBokOutboundResult["outcome"], { status: "completed" }>> {
-    const draft = parseGeneratorOutput(
-      await this.inference.generate(
-        lease.request.context,
-        lease.request.knowledgeSnapshot,
-        signal,
-      ),
-      lease.request.context,
-    );
-    const judgement = parseJudgeOutput(
-      await this.inference.judge(
-        lease.request.context,
-        draft,
-        lease.request.knowledgeSnapshot,
-        signal,
-      ),
-      draft,
-    );
-    return { status: "completed", result: { draft, judgement } };
+    const result = await this.inference.decide(lease.request, signal);
+    return { status: "completed", result };
   }
 
   private async processDispatch(
@@ -549,7 +532,14 @@ export class NativeBokOutboundPoller {
       );
     }
     if (response.status === 409 && parseResultConflict) {
-      const body = await readBoundedJson(response, maximumResponseBytes);
+      let body: unknown;
+      try {
+        body = await readBoundedJson(response, maximumResponseBytes);
+      } catch {
+        // Każdy 409 poza dokładnym, ograniczonym kontraktem jest naruszeniem spójności,
+        // nie chwilowym błędem transportu, który wolno zamaskować jako utratę lease.
+        throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
+      }
       const parsed = nativeOutboundResultConflictResponseSchema.safeParse(body);
       if (!parsed.success) {
         throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
@@ -612,6 +602,31 @@ function classifyProcessingFailure(
   }
   if (error instanceof NativeBokCorrectionBindingError) {
     return { status: "failed", errorCode: error.code, retryable: false };
+  }
+  if (error instanceof NativeBokDaktelaDecisionEngineError) {
+    return { status: "failed", errorCode: error.code, retryable: error.retryable };
+  }
+  if (error instanceof DaktelaReadSessionError) {
+    return {
+      status: "failed",
+      errorCode: error.code,
+      retryable: [
+        "daktela_read_session_unverified",
+        "daktela_read_interrupted",
+        "daktela_read_failed",
+      ].includes(error.code),
+    };
+  }
+  if (error instanceof NativeBokAttachmentRenderError) {
+    return {
+      status: "failed",
+      errorCode: error.code,
+      retryable: [
+        "attachment_renderer_unavailable",
+        "attachment_render_interrupted",
+        "attachment_render_failed",
+      ].includes(error.code),
+    };
   }
   return { status: "failed", errorCode: "native_execution_failed", retryable: true };
 }

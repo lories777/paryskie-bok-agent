@@ -289,7 +289,12 @@ const attachmentCoverageSchema = z
   })
   .strict();
 
-const attachmentTicketAiContextSchema = z
+/**
+ * Strict transport carrier including unresolved visual attachments. The legacy generate/judge
+ * endpoints add a second refinement below and still reject anything not extracted as text.
+ * Exact Daktela parity uses this carrier only when those media are bound to its source manifest.
+ */
+const ticketAiAttachmentContextCarrierCoreSchema = z
   .object({
     ...commonContextFields,
     conversation: z.array(attachmentConversationMessageSchema).min(1).max(100),
@@ -336,33 +341,52 @@ const attachmentTicketAiContextSchema = z
     ) {
       issue.addIssue({ code: "custom", message: "attachment_coverage_invalid" });
     }
+  });
+
+function validateTicketAiContextEnvelope(
+  context: z.infer<typeof ticketAiAttachmentContextCarrierCoreSchema>
+    | z.infer<typeof legacyTicketAiContextSchema>,
+  issue: z.core.$RefinementCtx<unknown>,
+): void {
+  if (JSON.stringify(context).length > MAX_NATIVE_BOK_CONTEXT_CHARS) {
+    issue.addIssue({ code: "custom", message: "context_too_large" });
+  }
+  const guidance = context.operatorGuidance;
+  if (guidance) {
+    if (guidance.sourceRevision !== context.ticket.revision) {
+      issue.addIssue({ code: "custom", message: "operator_guidance_revision_mismatch" });
+    }
+    const expectedHash = createHash("sha256")
+      .update(guidance.content, "utf8")
+      .digest("hex");
+    if (guidance.contentHash !== expectedHash) {
+      issue.addIssue({ code: "custom", message: "operator_guidance_hash_mismatch" });
+    }
+  }
+}
+
+export const ticketAiAttachmentContextCarrierSchema =
+  ticketAiAttachmentContextCarrierCoreSchema.superRefine(validateTicketAiContextEnvelope);
+
+const attachmentTicketAiContextSchema = ticketAiAttachmentContextCarrierSchema.superRefine(
+  (context, issue) => {
+    const attachments = context.conversation.flatMap((message) => message.attachments);
     if (
-      context.attachmentCoverage.operatorRequiredCount > 0 ||
-      attachments.some(({ attachment }) => attachment.status !== "read")
+      context.attachmentCoverage.operatorRequiredCount > 0
+      || attachments.some((attachment) => attachment.status !== "read")
     ) {
       issue.addIssue({ code: "custom", message: "attachment_unread" });
     }
-  });
+  },
+);
 
-export const ticketAiContextSchema = z
-  .union([attachmentTicketAiContextSchema, legacyTicketAiContextSchema])
-  .superRefine((context, issue) => {
-    if (JSON.stringify(context).length > MAX_NATIVE_BOK_CONTEXT_CHARS) {
-      issue.addIssue({ code: "custom", message: "context_too_large" });
-    }
-    const guidance = context.operatorGuidance;
-    if (guidance) {
-      if (guidance.sourceRevision !== context.ticket.revision) {
-        issue.addIssue({ code: "custom", message: "operator_guidance_revision_mismatch" });
-      }
-      const expectedHash = createHash("sha256")
-        .update(guidance.content, "utf8")
-        .digest("hex");
-      if (guidance.contentHash !== expectedHash) {
-        issue.addIssue({ code: "custom", message: "operator_guidance_hash_mismatch" });
-      }
-    }
-  });
+const validatedLegacyTicketAiContextSchema =
+  legacyTicketAiContextSchema.superRefine(validateTicketAiContextEnvelope);
+
+export const ticketAiContextSchema = z.union([
+  attachmentTicketAiContextSchema,
+  validatedLegacyTicketAiContextSchema,
+]);
 
 export const ticketAiGeneratorOutputSchema = z
   .object({

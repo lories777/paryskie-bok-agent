@@ -7,8 +7,10 @@ import { BokCodexAgent } from "./codex-agent.js";
 import { assertLiveConfig, assertNativeBokApiConfig, loadConfig } from "./config.js";
 import { DiscordGateway } from "./discord.js";
 import { DaktelaMonitor } from "./daktela-monitor.js";
+import { DaktelaReadSession } from "./daktela-read-session.js";
 import { MasterLinkReportClient } from "./masterlink.js";
 import { NativeBokOutboundPoller } from "./native-bok-outbound.js";
+import { NativeBokDaktelaDecisionEngine } from "./native-bok-daktela-decision-engine.js";
 import { NativeOperationalActionDispatcher } from "./native-bok-operational-dispatch.js";
 import { createNativeBokHttpServer } from "./native-bok-server.js";
 import { AgentStore } from "./store.js";
@@ -68,17 +70,19 @@ async function main(): Promise<void> {
       const discord = new DiscordGateway(config, store);
       const core = new BokAgentCore(config, store);
       const agent = new BokCodexAgent(core, masterlink);
+      const daktelaReadSession = new DaktelaReadSession(config);
+      const decisionEngine = new NativeBokDaktelaDecisionEngine(agent, daktelaReadSession);
       const operationalDispatcher = new NativeOperationalActionDispatcher(
         config,
         store,
         discord,
       );
       const nativeOutbound = config.nativeOutboundEnabled
-        ? createNativeOutboundPoller(config, agent, operationalDispatcher)
+        ? createNativeOutboundPoller(config, decisionEngine, operationalDispatcher)
         : undefined;
       const worker = new JobWorker(store, agent, discord);
       const daktela = config.daktelaMonitorEnabled
-        ? new DaktelaMonitor(config, store)
+        ? new DaktelaMonitor(config, store, daktelaReadSession)
         : undefined;
       if (daktela) {
         discord.setApprovedActionExecutor((job) => daktela.executeApprovedAction(job));
@@ -102,17 +106,20 @@ async function main(): Promise<void> {
         await discord.start();
         discordStarted = true;
         await operationalDispatcher.initialize();
+        await decisionEngine.verifyDaktelaReadiness();
         nativeServer = config.nativeApiEnabled
           ? await startSharedNativeApi(config, agent, operationalDispatcher)
           : undefined;
         await daktela?.start();
         await Promise.all([
           worker.runForever(controller.signal),
+          decisionEngine.runReadinessForever(controller.signal),
           ...(nativeOutbound ? [nativeOutbound.runForever(controller.signal)] : []),
         ]);
       } finally {
         controller.abort();
         await daktela?.stop();
+        await daktelaReadSession.close();
         await stopSharedNativeApi(nativeServer);
         if (discordStarted) await discord.stop();
       }
@@ -134,13 +141,13 @@ Paryskie BOK Agent
 
 function createNativeOutboundPoller(
   config: ReturnType<typeof loadConfig>,
-  agent: BokCodexAgent,
+  decisionEngine: NativeBokDaktelaDecisionEngine,
   operationalDispatcher: NativeOperationalActionDispatcher,
 ): NativeBokOutboundPoller {
   if (!config.nativeOutboundUrl || !config.nativeOutboundToken) {
     throw new Error("Brak konfiguracji outbound bridge MasterLink.");
   }
-  return new NativeBokOutboundPoller(agent.nativeInference, operationalDispatcher, {
+  return new NativeBokOutboundPoller(decisionEngine, operationalDispatcher, {
     endpointUrl: config.nativeOutboundUrl,
     token: config.nativeOutboundToken,
     requestTimeoutMs: config.masterlinkReportTimeoutMs,
