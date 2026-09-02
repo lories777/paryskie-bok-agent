@@ -488,17 +488,27 @@ test("409 result_conflict jest jawnym nieretryowalnym błędem kontraktu", async
 });
 
 test("nieznany 409 nie jest maskowany jako utrata lease", async () => {
-  const transport = capture([
-    json({ ok: true, schemaVersion: 1, lease: decisionLease() }),
+  for (const conflict of [
     json({ ok: false, error: "job_payload_conflict" }, 409),
-  ]);
-  await assert.rejects(
-    poller(transport.fetcher).runOnce(new AbortController().signal),
-    (error: unknown) =>
-      error instanceof NativeBokOutboundPollerError
-      && error.code === "native_outbound_malformed"
-      && !error.retryable,
-  );
+    new Response("not-json", { status: 409, headers: { "content-type": "text/plain" } }),
+    new Response("x".repeat(4_097), {
+      status: 409,
+      headers: { "content-type": "application/json", "content-length": "4097" },
+    }),
+  ]) {
+    const transport = capture([
+      json({ ok: true, schemaVersion: 1, lease: decisionLease() }),
+      conflict,
+    ]);
+    await assert.rejects(
+      poller(transport.fetcher).runOnce(new AbortController().signal),
+      (error: unknown) =>
+        error instanceof NativeBokOutboundPollerError
+        && error.code === "native_outbound_malformed"
+        && !error.retryable,
+    );
+    assert.equal(transport.requests.length, 2);
+  }
 });
 
 test("lease bez bezpiecznego budżetu nie uruchamia modelu i raportuje retryable failure", async () => {

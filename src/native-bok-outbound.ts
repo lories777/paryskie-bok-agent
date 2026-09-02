@@ -549,7 +549,14 @@ export class NativeBokOutboundPoller {
       );
     }
     if (response.status === 409 && parseResultConflict) {
-      const body = await readBoundedJson(response, maximumResponseBytes);
+      let body: unknown;
+      try {
+        body = await readBoundedJson(response, maximumResponseBytes);
+      } catch {
+        // Każdy 409 poza dokładnym, ograniczonym kontraktem jest naruszeniem spójności,
+        // nie chwilowym błędem transportu, który wolno zamaskować jako utratę lease.
+        throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
+      }
       const parsed = nativeOutboundResultConflictResponseSchema.safeParse(body);
       if (!parsed.success) {
         throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
