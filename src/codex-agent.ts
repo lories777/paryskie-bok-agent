@@ -420,10 +420,9 @@ export class BokCodexAgent {
     }
     if (
       !job.approvedAction &&
-      nextDayDeliveryPromiseComplaint(messages) &&
-      hasCompleteDeliveryPromiseEvidence(
+      deliveryPromiseMustResolveWithoutHuman(
+        messages,
         formatVerifiedToolEvidence(evidenceItems),
-        exactDeliveryPromiseOrderNumber(messages),
       ) &&
       !output.proposedActions.some((action) => action.kind === "reply_customer")
     ) {
@@ -2117,6 +2116,18 @@ function hasCompleteDeliveryPromiseEvidence(
   const fulfillment = verifiedFulfillmentState(verifiedToolEvidence, expectedOrderNumber);
   if (!carrier || !shipment || !fulfillment || shipment.kind === "ambiguous") return false;
   return hasResolvableDeliveryPromiseEvidence(carrier, shipment, fulfillment);
+}
+
+export function deliveryPromiseMustResolveWithoutHuman(
+  messages: ReturnType<AgentStore["recentMessages"]>,
+  verifiedToolEvidence: string | undefined,
+): boolean {
+  return nextDayDeliveryPromiseComplaint(messages) &&
+    !deliveryPromiseHasAdditionalIntent(messages) &&
+    hasCompleteDeliveryPromiseEvidence(
+      verifiedToolEvidence,
+      exactDeliveryPromiseOrderNumber(messages),
+    );
 }
 
 function hasApology(value: string): boolean {

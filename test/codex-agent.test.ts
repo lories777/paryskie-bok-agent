@@ -22,6 +22,7 @@ import {
   catalogRecommendationResolutionIssues,
   draftReviewIntegrityIssues,
   deliveryPromiseResolutionIssues,
+  deliveryPromiseMustResolveWithoutHuman,
   extractExplicitOrderNumbers,
   assertDaktelaTicketIntegrity,
   correctionEscalationIsActionable,
@@ -782,6 +783,7 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
     evidence("dpd"),
   );
   assert.ok(canonicalInTransit);
+  assert.equal(deliveryPromiseMustResolveWithoutHuman([complaint], evidence("dpd")), true);
   assert.deepEqual(deliveryPromiseResolutionIssues(
     [complaint],
     canonicalInTransit,
@@ -1204,12 +1206,18 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
     "Nie naliczyły mi się punkty.",
     "Kosmetyczki również nie było w paczce.",
   ]) {
+    const additionalComplaint = { ...complaint, content: `${complaint.content} ${additionalQuestion}` };
     assert.equal(buildVerifiedDeliveryPromiseFallback(
       daktelaJob,
-      [{ ...complaint, content: `${complaint.content} ${additionalQuestion}` }],
+      [additionalComplaint],
       result("Błędny draft"),
       evidence("dpd"),
     ), null, additionalQuestion);
+    assert.equal(
+      deliveryPromiseMustResolveWithoutHuman([additionalComplaint], evidence("dpd")),
+      false,
+      `drugi wątek nie może zamienić blokady jakości w terminalny retry: ${additionalQuestion}`,
+    );
   }
 
   const languageCases: Array<{ language: string; complaint: StoredMessage }> = [{
