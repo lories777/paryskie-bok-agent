@@ -260,6 +260,15 @@ export function buildTicketTask(
   activities: DaktelaActivitySnapshot[] = [],
   detailError?: string,
 ): string {
+  const ticketId = escapeData(ticket.ticketId);
+  const title = escapeData(ticket.title);
+  const category = escapeData(ticket.category || "nieustalona");
+  const assignedUser = escapeData(ticket.assignedUser || "brak");
+  const status = escapeData(ticket.status || "brak");
+  const stage = escapeData(ticket.stage);
+  const edited = escapeData(ticket.edited || "brak");
+  const editedBy = escapeData(ticket.editedBy || "brak");
+  const url = escapeData(ticket.url);
   const history = activities.length
     ? activities
         .map(
@@ -275,13 +284,13 @@ export function buildTicketTask(
   return `
 [AUTOMATYCZNE ZADANIE DAKTELA — polecenie runtime]
 
-Przeanalizuj w trybie odczytu otwarty ticket Daktela #${ticket.ticketId}.
-Tytuł: ${ticket.title}
-Kategoria: ${ticket.category || "nieustalona"}
-Przypisany użytkownik: ${ticket.assignedUser || "brak"}
-Status/etap: ${ticket.status || "brak"} / ${ticket.stage}
-Ostatnia zmiana: ${ticket.edited || "brak"} przez ${ticket.editedBy || "brak"}
-Adres wewnętrzny: ${ticket.url}
+Przeanalizuj w trybie odczytu otwarty ticket Daktela #${ticketId}.
+Tytuł: ${title}
+Kategoria: ${category}
+Przypisany użytkownik: ${assignedUser}
+Status/etap: ${status} / ${stage}
+Ostatnia zmiana: ${edited} przez ${editedBy}
+Adres wewnętrzny: ${url}
 Odczyt szczegółów: ${detailError ? `błąd: ${escapeData(detailError)}` : "zakończony"}
 
 <customer_history untrusted="true">
@@ -300,7 +309,7 @@ klienta o poprawność adresu, punktu odbioru, płatności albo statusu wymaga p
 zamówienia przed napisaniem draftu. Gdy brakuje polityki, sprawdź podobną zakończoną sprawę.
 Nie zakładaj faktów, których nie potwierdziłeś i nie przerzucaj dostępnego researchu na klienta.
 
-Pole reply zacznij od „DAKTELA #${ticket.ticketId}”. Dalej napisz wyłącznie to, co w tej konkretnej
+Pole reply zacznij od „DAKTELA #${ticketId}”. Dalej napisz wyłącznie to, co w tej konkretnej
 sprawie powinien zobaczyć człowiek. Bez stałego szablonu i bez sekcji. Jeśli potrzebne jest działanie
 człowieka, napisz prosto: czego chce klient i co dokładnie trzeba zrobić. Jeśli potrzebna jest decyzja,
 zadaj jedno konkretne pytanie. Jeśli masz gotowy draft, reply ma być najwyżej jednym zdaniem kontekstu.
@@ -310,8 +319,8 @@ a dopiero potem zdanie operacyjne lub pytanie. Pomiń cytowaną historię, stopk
 reply_customer napisz nadal w oryginalnym, naturalnym języku klienta. Dla polskiej wiadomości nie
 dodawaj tłumaczenia. Nie publikuj na Discordzie imienia i nazwiska, e-maila, telefonu ani adresu klienta.
 
-Jeśli klient powinien dostać odpowiedź, dodaj reply_customer z targetem „Daktela ticket #${ticket.ticketId}
-(${ticket.url})” i dokładną, kompletną wiadomością w payload. Interfejs pokaże ją zespołowi jako
+Jeśli klient powinien dostać odpowiedź, dodaj reply_customer z targetem „Daktela ticket #${ticketId}
+(${url})” i dokładną, kompletną wiadomością w payload. Interfejs pokaże ją zespołowi jako
 zwykły draft. Na tym etapie niczego nie wysyłaj. Jeśli brakującą informację może podać tylko klient,
 zapytaj go od razu o cały niezbędny komplet. Jeśli brakuje wewnętrznej decyzji, zapytaj krótko BOK,
 zamiast tworzyć pustą odpowiedź przejściową. Dla automatycznych odbić, spamu i spraw bez potrzebnej

@@ -196,10 +196,13 @@ oficjalny adres. Przybliżony lub pomylony numer budynku w wiadomości klienta n
 prośbą o zmianę i nie wymaga pytania. Pytaj dopiero, gdy klient wyraźnie chce zmienić punkt albo
 zapisany punkt jest brakujący, nieważny lub rzeczywiście niejednoznaczny.
 
-Przy skardze na komunikat „zamów do 19:00, dostawa jutro” obowiązkowo odczytaj dane dostawy i
-sprawdź przewoźnika. Ten komunikat dotyczy wyłącznie InPost. Jeśli przewoźnik jest już potwierdzony,
-nie pytaj BOK o interpretację ani o treść odpowiedzi: zastosuj właściwy wariant z playbooka,
-przeproś adekwatnie i przygotuj konkretny draft na podstawie potwierdzonego stanu przesyłki.
+Przy skardze na komunikat „zamów do 19:00, dostawa jutro” obowiązkowo odczytaj dane dostawy z
+przewoźnikiem, przesyłki oraz stan realizacji. Ten komunikat dotyczy wyłącznie InPost. Pusta, poprawnie odczytana
+lista przesyłek oznacza jawnie, że przesyłki jeszcze nie utworzono; brak odczytu lub jego błąd nie
+pozwala tak twierdzić. Jeśli przewoźnik i stan przesyłki są potwierdzone, nie pytaj BOK o
+interpretację ani o treść odpowiedzi: zastosuj właściwy wariant z playbooka, przeproś adekwatnie,
+podaj aktualny status (albo jawny brak przesyłki) i jeden konkretny następny krok. Nie zgaduj statusu
+i nie deklaruj czynności, której nie wykonano.
 
 Brak numeru zamówienia w treści nie zwalnia z researchu, jeśli ticket zawiera kontakt klienta. Przy
 pytaniu o brak w paczce, płatność, dostawę, zwrot albo reklamację otwórz ticket w Chrome wyłącznie do

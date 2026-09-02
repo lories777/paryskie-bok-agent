@@ -149,6 +149,7 @@ const nativeOutboundHeartbeatResponseSchema = z
     runtimeIdentity: z.string().uuid(),
     storeIdentity: z.string().regex(SHA256),
     statusHash: z.string().regex(SHA256),
+    leaseValid: z.boolean().optional(),
   })
   .strict();
 
@@ -238,6 +239,7 @@ export class NativeBokOutboundPollerError extends Error {
 }
 
 class NativeBokOutboundShutdown extends Error {}
+class NativeBokDispatchLeaseInvalid extends Error {}
 
 export class NativeBokOutboundPoller {
   readonly instanceId: string;
@@ -409,6 +411,15 @@ export class NativeBokOutboundPoller {
     signal: AbortSignal,
   ): Promise<Extract<NativeBokOutboundResult["outcome"], { status: "completed" }>> {
     while (!signal.aborted) {
+      const leaseValid = await this.postHeartbeat(signal, {
+        jobId: lease.jobId,
+        leaseToken: lease.leaseToken,
+        kind: lease.kind,
+        requestHash: lease.requestHash,
+      });
+      // Ostatni server-side fence jest wykonywany bezpośrednio przed każdym
+      // nieodwracalnym Discord POST, także przed retry wyniku pending.
+      if (leaseValid !== true) throw new NativeBokDispatchLeaseInvalid();
       const result = await this.dispatcher.dispatch(lease.request);
       if (result.status === "sent") return { status: "completed", result };
       await this.sleep(this.dispatchRetryMs, signal);
@@ -437,7 +448,10 @@ export class NativeBokOutboundPoller {
     }
   }
 
-  private async postHeartbeat(signal: AbortSignal): Promise<void> {
+  private async postHeartbeat(
+    signal: AbortSignal,
+    lease?: Pick<NativeBokOutboundLease, "jobId" | "leaseToken" | "kind" | "requestHash">,
+  ): Promise<boolean | undefined> {
     const runtime = this.runtimeStatus();
     const response = await this.postJson(
       this.heartbeatUrl,
@@ -448,6 +462,7 @@ export class NativeBokOutboundPoller {
           processStartedAt: this.processStartedAt,
         },
         runtime,
+        ...(lease ? { lease } : {}),
       }),
       signal,
       MAX_NATIVE_BOK_CONTROL_RESPONSE_BYTES,
@@ -461,6 +476,7 @@ export class NativeBokOutboundPoller {
     ) {
       throw new NativeBokOutboundPollerError("native_outbound_malformed", true);
     }
+    return parsed.data.leaseValid;
   }
 
   private async postResultUntilSettled(
@@ -592,6 +608,12 @@ function classifyProcessingFailure(
 ): { status: "failed"; errorCode: string; retryable: boolean } {
   if (deadlineReached) {
     return { status: "failed", errorCode: "lease_deadline", retryable: true };
+  }
+  if (error instanceof NativeBokDispatchLeaseInvalid) {
+    return { status: "failed", errorCode: "dispatch_lease_invalid", retryable: true };
+  }
+  if (error instanceof NativeBokOutboundPollerError) {
+    return { status: "failed", errorCode: error.code, retryable: error.retryable };
   }
   if (error instanceof NativeOperationalActionDispatchError) {
     return {

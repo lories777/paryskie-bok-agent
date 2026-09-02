@@ -181,6 +181,8 @@ test("native generate i judge samodzielnie rozstrzygają claim dostawy po przewo
     assert.match(prompt, /przewoźnik.*faktem rozstrzygającym|używa potwierdzonego\s+przewoźnika/s);
     assert.match(prompt, /nie (?:ustawiaj needsHumanReview|uzasadnia verdict="human")/);
     assert.match(prompt, /adekwatne przeprosiny|adekwatne przeprosi/);
+    assert.match(prompt, /statusu przesyłki|zweryfikowany status/);
+    assert.match(prompt, /konkretnego\s+następnego kroku|konkretny następny krok/);
   }
 });
 
