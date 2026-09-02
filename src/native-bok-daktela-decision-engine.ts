@@ -15,25 +15,32 @@ import {
 } from "./native-bok-decision-result.js";
 import {
   nativeBokGenerateRequestSchema,
+  ticketAiAttachmentContextCarrierSchema,
+  ticketAiContextSchema,
   type NativeBokRuntimeStatus,
 } from "./native-bok-contract.js";
 import { DaktelaReadSession } from "./daktela-read-session.js";
+import { parseTicketAiKnowledgeSnapshot } from "./native-bok-knowledge.js";
+
+const nativeBokDaktelaDecisionContextV2Schema = z.union([
+  ticketAiAttachmentContextCarrierSchema,
+  ticketAiContextSchema,
+]);
 
 export const nativeBokDaktelaDecisionRequestV2Schema = z
   .object({
-    context: nativeBokGenerateRequestSchema.shape.context,
+    context: nativeBokDaktelaDecisionContextV2Schema,
     knowledgeSnapshot: nativeBokGenerateRequestSchema.shape.knowledgeSnapshot,
     source: nativeBokDaktelaDecisionSourceSchema,
   })
   .strict()
   .superRefine((request, issue) => {
-    const legacy = nativeBokGenerateRequestSchema.safeParse({
-      context: request.context,
-      knowledgeSnapshot: request.knowledgeSnapshot,
-    });
-    if (!legacy.success) {
+    try {
+      parseTicketAiKnowledgeSnapshot(request.knowledgeSnapshot, request.context.ticket.market);
+    } catch {
       issue.addIssue({ code: "custom", path: ["knowledgeSnapshot"], message: "request_context_invalid" });
     }
+    assertContextAttachmentManifest(request.context, request.source, issue);
   });
 
 export type NativeBokDaktelaDecisionRequestV2 = z.infer<
@@ -199,4 +206,46 @@ function abortableSleep(milliseconds: number, signal: AbortSignal): Promise<void
     signal.addEventListener("abort", onAbort, { once: true });
     if (signal.aborted) onAbort();
   });
+}
+
+function assertContextAttachmentManifest(
+  context: z.infer<typeof nativeBokDaktelaDecisionContextV2Schema>,
+  source: z.infer<typeof nativeBokDaktelaDecisionSourceSchema>,
+  issue: z.core.$RefinementCtx<unknown>,
+): void {
+  const expected = new Map(source.attachments.map((attachment) => [
+    `${attachment.messageId}\u0000${attachment.attachmentId}`,
+    attachment,
+  ]));
+  const covered = new Set<string>();
+  for (const message of context.conversation) {
+    if (!("attachments" in message)) continue;
+    for (const attachment of message.attachments) {
+      const contentType = attachment.contentType?.split(";", 1)[0]?.trim().toLowerCase() ?? null;
+      if (attachment.status === "read" || contentType === "text/plain") continue;
+      const key = `${message.id}\u0000${attachment.id}`;
+      const sourceAttachment = expected.get(key);
+      if (
+        !sourceAttachment
+        || sourceAttachment.fileName !== attachment.fileName
+        || sourceAttachment.sizeBytes !== attachment.sizeBytes
+        || (contentType !== null && sourceAttachment.contentType !== contentType)
+      ) {
+        issue.addIssue({
+          code: "custom",
+          path: ["context", "conversation"],
+          message: "context_attachment_source_mismatch",
+        });
+        return;
+      }
+      covered.add(key);
+    }
+  }
+  if (covered.size !== expected.size) {
+    issue.addIssue({
+      code: "custom",
+      path: ["source", "attachments"],
+      message: "source_attachment_context_mismatch",
+    });
+  }
 }

@@ -162,6 +162,16 @@ test("native i entrypoint Discord używają byte-identycznego shared pipeline or
         }
       },
     );
+    const mismatchedContext = decisionContext(source);
+    mismatchedContext.conversation[0]!.attachments[0]!.fileName = "different.png";
+    await assert.rejects(engine.decide({
+      context: mismatchedContext,
+      knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+      source,
+    }, new AbortController().signal), /context_attachment_source_mismatch/);
+    assert.equal(primary.inputs.length, 1, "mismatched carrier must be rejected before the model");
+    assert.equal(reviewer.inputs.length, 1);
+
     let releaseNative!: () => void;
     const nativeGate = new Promise<void>((resolve) => { releaseNative = resolve; });
     let markNativeStarted!: () => void;
@@ -172,7 +182,7 @@ test("native i entrypoint Discord używają byte-identycznego shared pipeline or
       return JSON.stringify(agentOutput());
     });
     const nativePromise = engine.decide({
-      context: structuredClone(NATIVE_BOK_CONTEXT),
+      context: decisionContext(source),
       knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
       source,
     }, new AbortController().signal);
@@ -249,7 +259,8 @@ test("guidance ML dostaje immutable receipt, wchodzi tylko do ticketu i nie twor
     );
     await engine.verifyDaktelaReadiness();
     const content = "To nie są nasze standardy; bezpłatnie doślij uszkodzone produkty.";
-    const context = structuredClone(NATIVE_BOK_CONTEXT);
+    const validSource = decisionSource();
+    const context = decisionContext(validSource);
     context.operatorGuidance = {
       schemaVersion: 1,
       id: "99cadcda-8862-4ab7-9a73-729e2c7701f7",
@@ -259,7 +270,6 @@ test("guidance ML dostaje immutable receipt, wchodzi tylko do ticketu i nie twor
       contentHash: sha256(content),
       createdAt: "2026-09-02T20:01:00.000Z",
     };
-    const validSource = decisionSource();
     const wrongSourceBase = {
       ...validSource,
       externalTicketId: "100329",
@@ -371,7 +381,7 @@ function decisionSource(): NativeBokDaktelaDecisionSource {
     latestInboundExternalEventId: "activity_123456",
     queueExternalId: "email_pl",
     attachments: [{
-      messageId: "10310b54-06c2-4c1f-84a5-bc19f7c83b10",
+      messageId: NATIVE_BOK_CONTEXT.conversation[0]!.id,
       attachmentId: ATTACHMENT_ID,
       externalEventId: "activity_123456",
       fileName: "damage.png",
@@ -381,6 +391,43 @@ function decisionSource(): NativeBokDaktelaDecisionSource {
     }],
   };
   return { ...base, snapshotHash: nativeBokDaktelaSourceSnapshotHash(base) };
+}
+
+function decisionContext(source: NativeBokDaktelaDecisionSource) {
+  const context = structuredClone(NATIVE_BOK_CONTEXT);
+  const attachment = source.attachments[0]!;
+  return {
+    ...context,
+    conversation: context.conversation.map((message, index) => ({
+      ...message,
+      attachmentCount: index === 0 ? 1 : 0,
+      attachments: index === 0
+        ? [{
+            id: attachment.attachmentId,
+            fileName: attachment.fileName,
+            contentType: attachment.contentType,
+            sizeBytes: attachment.sizeBytes,
+            status: "unsupported" as const,
+            extractor: null,
+            text: null,
+          }]
+        : [],
+    })),
+    attachmentCoverage: {
+      policyVersion: "verified-text-v1" as const,
+      coverageHash: "f".repeat(64),
+      totalCount: 1,
+      readCount: 0,
+      operatorRequiredCount: 1,
+    },
+    policy: {
+      customerContentTrust: "untrusted" as const,
+      attachmentContentTrust: "untrusted" as const,
+      factsSource: "verifiedFactsOnly" as const,
+      tools: "readOnly" as const,
+      neverRevealInternalContext: true as const,
+    },
+  };
 }
 
 function png(width: number, height: number): Uint8Array {
