@@ -621,6 +621,10 @@ test("claim o zamówieniu do 19:00 i dostawie jutro wymaga przewoźnika oraz prz
     "Według kuriera przesyłka miała być jutro, ale nadal jej nie ma. Zamówienie 480033739.",
     "DPD podało termin dostawy. Paczka miała dotrzeć jutro, ale nie dotarła. Zamówienie 480033739.",
     "Termin pochodzi ze śledzenia DPD. Przesyłka miała być jutro, ale nadal jej nie ma. Zamówienie 480033739.",
+    "Na stronie DPD napisano, że dostawa zamówienia 480033739 będzie jutro, ale paczka nie dotarła.",
+    "Strona przewoźnika DPD wskazała termin dostawy jutro, ale zamówienie 480033739 nie dotarło.",
+    "Na webu DPD bylo uvedeno, že objednávka 480033739 dorazí zítra, ale zásilka nedorazila.",
+    "DPD veebilehel teatati, et tellimus 480033739 saabub homme, kuid pakk ei saabunud.",
   ]) {
     assert.notDeepEqual(requiredMasterlinkResearch([{ ...message, content: unrelatedTomorrow }], output), {
       orderNumbers: ["480033739"],
@@ -631,6 +635,20 @@ test("claim o zamówieniu do 19:00 i dostawie jutro wymaga przewoźnika oraz prz
     "DPD podało status przesyłki. Zamówienie 480033739 złożyłam do 19:00 i miało być jutro, ale nadal go nie ma.",
     "DPD napisało do mnie. Zamówienie 480033739 złożyłam do 19:00 i miało być jutro, ale nadal go nie ma.",
     "Według DPD paczka jest w sortowni. Zamówienie 480033739 złożyłam do 19:00 i miało być jutro, ale nadal go nie ma.",
+    "Sprzedawca zapewnił, że kurier dostarczy zamówienie 480033739 jutro, ale paczka nie dotarła.",
+    "Wasz konsultant obiecał, że kurier dostarczy zamówienie 480033739 jutro, ale paczka nie dotarła.",
+    "Prodejce slíbil, že kurýr doručí objednávku 480033739 zítra, ale zásilka nedorazila.",
+    "Müüja lubas, et kuller toimetab tellimuse 480033739 homme, kuid pakk ei saabunud.",
+    "Zamówienie 480033739 złożyłam do 19, dostawa jutro, a paczki nadal nie ma.",
+    "Zamówiłam zamówienie 480033739 o 18:30, bo pisaliście „dostawa jutro”, ale nie mam paczki.",
+    "Objednávku 480033739 jsem podala do 19, doručení zítra, ale zásilku jsem nedostala.",
+    "Tellimus 480033739 esitati enne kella 19, tarne homme, aga ma ei saanud pakki.",
+    "Na stronie DPD status się nie zmienia. Zamówienie 480033739 złożyłam do 19:00 i miało być jutro, ale paczki nie ma.",
+    "Na webu DPD se stav nemění. Objednávku 480033739 jsem podala do 19:00 a měla dorazit zítra, ale zásilka nedorazila.",
+    "DPD veebis ei ole staatus muutunud. Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme, kuid pakk ei saabunud.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro i nadal go nie ma.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra a stále čekám.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme ja ootan endiselt.",
   ]) {
     assert.deepEqual(requiredMasterlinkResearch([{ ...message, content: storePromiseAfterCarrierContext }], output), {
       orderNumbers: ["480033739"],
@@ -657,6 +675,10 @@ test("claim o zamówieniu do 19:00 i dostawie jutro wymaga przewoźnika oraz prz
     "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Dodávka stále chybí.",
     "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme, kuid ma ei ole pakki saanud.",
     "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Saadetis on ikka puudu.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Zásilku jsem nedostala.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Balík mi nepřišel.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Ma ei saanud pakki.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Ma pole pakki kätte saanud.",
   ]) {
     assert.deepEqual(requiredMasterlinkResearch([{ ...message, content: foreignComplaint }], output), {
       orderNumbers: ["480033739"],
@@ -672,7 +694,9 @@ test("claim o zamówieniu do 19:00 i dostawie jutro wymaga przewoźnika oraz prz
     requiredTools: ["ml_get_delivery_details", "ml_get_shipments", "ml_get_fulfillment"],
   });
   for (const failureWording of [
+    "Nie mam paczki.",
     "Do dziś nie dostałam paczki.",
+    "Paczka do mnie nie doszła.",
     "Paczka nie przyszła.",
     "Paczki brak.",
     "Gdzie jest moja paczka?",
@@ -700,11 +724,44 @@ test("claim o zamówieniu do 19:00 i dostawie jutro wymaga przewoźnika oraz prz
     "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Nebyla doručena včas, ale nakonec dorazila.",
     "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Algul pakk ei saabunud, aga nüüd on see kohal, aitäh.",
     "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Ma ei saanud pakki õigel ajal, kuid lõpuks jõudis see kohale.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Początkowo paczka nie dotarła, ale teraz jest już u mnie.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Nie dostałam jej na czas, ale finalnie kurier ją dostarczył.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Nejdřív nedorazila, ale teď ji mám.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Nebyla doručena včas, ale už jsem ji převzala.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Algul ei saabunud, aga nüüd sain selle kätte.",
   ]) {
     assert.notDeepEqual(requiredMasterlinkResearch([{ ...message, content: noFailure }], output), {
       orderNumbers: ["480033739"],
       requiredTools: ["ml_get_delivery_details", "ml_get_shipments", "ml_get_fulfillment"],
     }, noFailure);
+  }
+  for (const mixedResolvedAndActive of [
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Pierwsza paczka początkowo nie dotarła, ale teraz już ją mam. Druga paczka nadal nie dotarła.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. První zásilka nejdřív nedorazila, ale už ji mám. Druhá zásilka stále nedorazila.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Esimene pakk algul ei saabunud, aga nüüd on see kohal. Teine pakk on ikka puudu.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Pierwsza paczka początkowo nie dotarła, ale teraz już ją mam, natomiast przesyłki numer 2 nadal nie ma.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Paczka A początkowo nie dotarła, ale teraz już ją mam, a paczka B nie dotarła.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. První zásilka nejdřív nedorazila, ale už ji mám, zatímco zásilka číslo 2 stále nedorazila.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Pakk A ei saabunud algul, aga nüüd on see kohal; pakk number 2 on ikka puudu.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Pierwsza paczka nadal nie dotarła, ale druga już dotarła.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. První zásilka stále nedorazila, ale druhá už dorazila.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Esimene pakk ei ole saabunud, aga teine jõudis kohale.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Jedna paczka nadal nie dotarła, ale pozostała już dotarła.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Paczka czerwona nie dotarła, ale niebieska dotarła.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Jedna zásilka stále nedorazila, ale zbývající dorazila.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Üks pakk ei saabunud, aga ülejäänud jõudis kohale.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Moja paczka utknęła, ale poprzednia już dotarła.",
+    "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Status tej paczki stoi w miejscu, choć wcześniejsza została doręczona.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Tato zásilka se zasekla, předchozí už dorazila.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. See pakk on kinni jäänud, eelmine on juba kohal.",
+  ]) {
+    assert.deepEqual(requiredMasterlinkResearch(
+      [{ ...message, content: mixedResolvedAndActive }],
+      output,
+    ), {
+      orderNumbers: ["480033739"],
+      requiredTools: ["ml_get_delivery_details", "ml_get_shipments", "ml_get_fulfillment"],
+    }, mixedResolvedAndActive);
   }
   for (const policyQuestion of [
     "Czy jeśli zamówię do 19:00, paczka będzie jutro?",
@@ -946,6 +1003,51 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
     JSON.stringify(invalidatedEvidence),
   ).join("\n"), /Brak jednoznacznie zweryfikowanego stanu przesyłki/);
 
+  for (const malformedInvalidatedAt of ["not-a-date", "false", "0", false, 0]) {
+    const malformedInvalidationEvidence = JSON.parse(evidence("dpd"));
+    malformedInvalidationEvidence[1].result.facts.shipments.push({
+      ...malformedInvalidationEvidence[1].result.facts.shipments[0],
+      shipment_id: "shp-malformed",
+      tracking_number: "TRACK-MALFORMED",
+      canonical: false,
+      invalidated_at: malformedInvalidatedAt,
+    });
+    malformedInvalidationEvidence[1].result.facts.shipment_count = 2;
+    assert.equal(buildVerifiedDeliveryPromiseFallback(
+      daktelaJob,
+      [complaint],
+      result("Błędny draft"),
+      JSON.stringify(malformedInvalidationEvidence),
+    ), null, String(malformedInvalidatedAt));
+  }
+
+  for (const malformedShipmentCount of ["1", -1, 1.5, null]) {
+    const malformedCountEvidence = JSON.parse(evidence("dpd"));
+    malformedCountEvidence[1].result.facts.shipment_count = malformedShipmentCount;
+    assert.equal(buildVerifiedDeliveryPromiseFallback(
+      daktelaJob,
+      [complaint],
+      result("Błędny draft"),
+      JSON.stringify(malformedCountEvidence),
+    ), null, `shipment_count=${String(malformedShipmentCount)}`);
+  }
+
+  const replacedShipmentEvidence = JSON.parse(evidence("dpd"));
+  replacedShipmentEvidence[1].result.facts.shipments.push({
+    ...replacedShipmentEvidence[1].result.facts.shipments[0],
+    shipment_id: "shp-old",
+    tracking_number: "TRACK-CITED-BY-CUSTOMER",
+    canonical: false,
+    invalidated_at: "2026-09-02T18:00:00.000Z",
+  });
+  replacedShipmentEvidence[1].result.facts.shipment_count = 2;
+  assert.equal(buildVerifiedDeliveryPromiseFallback(
+    daktelaJob,
+    [{ ...complaint, content: `${complaint.content} Tracking: TRACK-CITED-BY-CUSTOMER.` }],
+    result("Błędny draft"),
+    JSON.stringify(replacedShipmentEvidence),
+  ), null, "stary cytowany tracking nie może zostać po cichu zastąpiony nowym");
+
   const stalePointerEvidence = JSON.parse(evidence("dpd"));
   stalePointerEvidence[1].result.facts.shipments.unshift({
     shipment_id: "old",
@@ -1036,6 +1138,33 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
     JSON.stringify(noPointerTopConflict),
   ).join("\n"), /Brak jednoznacznie zweryfikowanego stanu przesyłki/);
 
+  const activeSecondPackage = JSON.parse(evidence("dpd"));
+  activeSecondPackage[1].result.facts.current_shipment_status = "delivered";
+  activeSecondPackage[1].result.facts.shipments[0].status = "delivered";
+  activeSecondPackage[1].result.facts.shipments.push({
+    ...activeSecondPackage[1].result.facts.shipments[0],
+    shipment_id: "shp-2",
+    tracking_number: "SECOND-TRACKING",
+    status: "not_yet_delivered",
+    canonical: false,
+  });
+  activeSecondPackage[1].result.facts.shipment_count = 2;
+  const secondPackageComplaint = {
+    ...complaint,
+    content: `${complaint.content} Pierwszą paczkę już mam, ale druga paczka nadal nie dotarła.`,
+  };
+  assert.equal(buildVerifiedDeliveryPromiseFallback(
+    daktelaJob,
+    [secondPackageComplaint],
+    result("Błędny draft"),
+    JSON.stringify(activeSecondPackage),
+  ), null);
+  assert.match(deliveryPromiseResolutionIssues(
+    [secondPackageComplaint],
+    result("Dzień dobry, status wskazuje, że przesyłka została doręczona."),
+    JSON.stringify(activeSecondPackage),
+  ).join("\n"), /Brak jednoznacznie zweryfikowanego stanu przesyłki/);
+
   for (const latestExceptionalStatus of ["parcel_lost", "damaged", "refused"]) {
     const exceptionalEvidence = JSON.parse(evidence("dpd"));
     exceptionalEvidence[1].result.facts.shipments[0].scans = [{
@@ -1114,10 +1243,61 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
     "not_invalidated",
     "not_failed",
     "not_delayed",
+    "not_lost",
+    "not_missing",
+    "not_damaged",
+    "not_refused",
+    "parcel_not_lost",
+    "package_not_lost",
+    "parcel_not_missing",
+    "package_not_missing",
+    "parcel_not_damaged",
+    "package_not_damaged",
+    "parcel_not_refused",
+    "package_not_refused",
+    "Parcel could not be returned",
+    "not successfully returned",
+    "shipment was not actually cancelled",
+    "not successfully cancelled",
+    "label was not successfully created",
+    "parcel is not actually in transit",
+    "parcel was not really delivered",
+    "parcel has not been delivered",
+    "not failed to deliver",
+    "not unable to deliver",
+    "did not fail to deliver",
+    "bez uszkodzeń",
+    "without any damage",
+    "nieuszkodzona",
+    "nepoškozena",
+    "kahjustamata",
+    "pakk ilma kahjustuseta",
+    "kahjustusteta",
+    "viivituseta",
+    "nie zaginęła",
+    "nie uszkodzona",
+    "není poškozena",
+    "není ztracena",
+    "ei ole kadunud",
+    "ei ole kahjustatud",
     "nie_anulowana",
     "nie_opóźniona",
     "není_zrušena",
     "ei_ole_tühistatud",
+    "delivery exception resolved",
+    "problem resolved",
+    "delay cleared",
+    "lost parcel found",
+    "opóźnienie usunięte",
+    "problem rozwiązany",
+    "przesyłka odnaleziona po zaginięciu",
+    "poškození nepotvrzeno",
+    "kahjustus puudub",
+    "Brak problemów z doręczeniem",
+    "Brak uszkodzeń",
+    "Doręczenie nie było nieudane",
+    "Doručení nebylo neúspěšné",
+    "Tarne ei olnud ebaõnnestunud",
   ]) {
     const negativeEvidence = JSON.parse(evidence("dpd"));
     negativeEvidence[1].result.facts.current_shipment_status = negativeStatus;
@@ -1133,6 +1313,45 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
       result("Dzień dobry, przepraszamy. Dostawa jutro dotyczy wyłącznie InPost, wybrano DPD."),
       JSON.stringify(negativeEvidence),
     ).join("\n"), /nie daje jeszcze bezpiecznego/, negativeStatus);
+  }
+  for (const failedDeliveryStatus of [
+    "Parcel could not be delivered",
+    "not successfully delivered",
+    "not yet successfully delivered",
+    "unable to be delivered",
+    "Nie udało się doręczyć przesyłki",
+    "Zásilku se nepodařilo doručit",
+    "Saadetist ei õnnestunud kohale toimetada",
+    "Delivery attempt unsuccessful",
+    "Nie można było doręczyć",
+    "Próba doręczenia nie powiodła się",
+    "Zásilku nebylo možné doručit",
+    "Neúspěšný pokus o doručení",
+    "Doručení se nezdařilo",
+    "Ebaõnnestunud kohaletoimetamise katse",
+    "Kohale toimetamine ebaõnnestus",
+    "Kohale toimetamine nurjus",
+  ]) {
+    const failedEvidence = JSON.parse(evidence("dpd"));
+    failedEvidence[1].result.facts.current_shipment_status = failedDeliveryStatus;
+    failedEvidence[1].result.facts.shipments[0].status = failedDeliveryStatus;
+    const failedFallback = buildVerifiedDeliveryPromiseFallback(
+      daktelaJob,
+      [complaint],
+      result("Błędny draft"),
+      JSON.stringify(failedEvidence),
+    );
+    assert.ok(failedFallback, failedDeliveryStatus);
+    assert.match(
+      failedFallback.proposedActions[0]?.payload ?? "",
+      /problem z doręczeniem/,
+      failedDeliveryStatus,
+    );
+    assert.deepEqual(deliveryPromiseResolutionIssues(
+      [complaint],
+      failedFallback,
+      JSON.stringify(failedEvidence),
+    ), [], failedDeliveryStatus);
   }
   for (const invalidScanTime of [null, "", "not-a-date"]) {
     const invalidScanEvidence = JSON.parse(evidence("dpd"));
@@ -1270,6 +1489,57 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
       false,
       `drugi wątek nie może zamienić blokady jakości w terminalny retry: ${additionalQuestion}`,
     );
+  }
+  for (const secondIntent of [
+    "proszę usunąć moje konto",
+    "proszę usunąć moje dane",
+    "proszę przekazać skargę na konsultanta kierownikowi",
+    "chcę zrezygnować z marketingu",
+    "czy macie sklep stacjonarny",
+    "kiedy jesteście otwarci",
+    "interesuje mnie współpraca hurtowa",
+    "zmieniłam nazwisko",
+    "proszę o kontakt telefoniczny",
+  ]) {
+    const sameSentenceMultiIntent = {
+      ...complaint,
+      content: `Zamówienie 480033739 złożyłam do 19:00 i miało być jutro, ale paczki nadal nie ma i ${secondIntent}.`,
+    };
+    assert.equal(buildVerifiedDeliveryPromiseFallback(
+      daktelaJob,
+      [sameSentenceMultiIntent],
+      result("Błędny draft"),
+      evidence("dpd"),
+    ), null, secondIntent);
+    assert.equal(
+      deliveryPromiseMustResolveWithoutHuman([sameSentenceMultiIntent], evidence("dpd")),
+      false,
+      secondIntent,
+    );
+  }
+  for (const alternateConnector of [
+    "natomiast proszę usunąć moje konto",
+    "lecz chcę usunąć moje dane",
+    "tylko proszę przekazać sprawę kierownikowi",
+    "plus składam skargę na konsultanta",
+    "avšak smažte můj účet",
+    "ent palun kustutage minu andmed",
+  ]) {
+    const sameSentenceMultiIntent = {
+      ...complaint,
+      content: `Zamówienie 480033739 złożyłam do 19:00 i miało być jutro, ale paczki nadal nie ma, ${alternateConnector}.`,
+    };
+    assert.equal(
+      deliveryPromiseMustResolveWithoutHuman([sameSentenceMultiIntent], evidence("dpd")),
+      false,
+      alternateConnector,
+    );
+    assert.equal(buildVerifiedDeliveryPromiseFallback(
+      daktelaJob,
+      [sameSentenceMultiIntent],
+      result("Błędny draft"),
+      evidence("dpd"),
+    ), null, alternateConnector);
   }
 
   const languageCases: Array<{ language: string; complaint: StoredMessage }> = [{

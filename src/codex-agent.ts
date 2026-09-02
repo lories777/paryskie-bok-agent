@@ -1093,23 +1093,75 @@ function isDeliveryPromiseClaim(value: string): boolean {
       etaSource.test(previous) && !carrierEtaNegated.test(previous);
     return localAttribution || adjacentAttribution;
   });
-  const cutoffClaim = /(?:\bdo|\bprzed|\benne(?:\s+kella)?)\s*19\s*[:.]\s*00/u.test(text);
-  const promisedNextDay = /(?:mia(?:ł|ła|ło|ły)\w*|obiecał\w*|obiecan\w*|zapewn\w*|mě[lt]o?\w*|sl[ií]ben\w*|pidi|lubat\w*)[^.!?]{0,90}(?:jutro|nast[eę]pnego\s+dnia|z[ií]tra|n[aá]sleduj[ií]c[ií]\s+den|homme|j[aä]rgmisel\s+p[aä]eval)/u.test(text);
-  const shopAttributedPromise = /(?:sklep\w*|stron\w*|ofert\w*|reklam\w*|baner\w*|komunikat\w*|obchod\w*|web\w*|nab[ií]dk\w*|e-?shop\w*|e-?pood\w*|veeb\w*|pakkumis\w*)[^.!?]{0,80}(?:obiecał\w*|obiecan\w*|zapewnił\w*|informował\w*|wskazywał\w*|sl[ií]bil\w*|uv[aá]děl\w*|informoval\w*|lubas\w*|teatas\w*|n[aä]itas\w*|dostaw\w*|doručen\w*|tarne\w*|kohaletoimet\w*)[^.!?]{0,90}(?:jutro|nast[eę]pnego\s+dnia|z[ií]tra|n[aá]sleduj[ií]c[ií]\s+den|homme|j[aä]rgmisel\s+p[aä]eval)/u.test(text);
-  if (carrierAttributedNextDay && !cutoffClaim && !shopAttributedPromise) return false;
-  return (cutoffClaim || promisedNextDay || shopAttributedPromise) &&
+  const cutoffClaim = /(?:\bdo|\bprzed|\benne(?:\s+kella)?)\s*19(?:\s*[:.]\s*00)?\b/u.test(text);
+  const promisedNextDay = /(?:mia(?:ł|ła|ło|ły)\w*|obiecał\w*|obiecan\w*|zapewn\w*|mě[lt]o?\w*|sl[ií]b(?:en|il)\w*|pidi|lubat\w*)[^.!?]{0,90}(?:jutro|nast[eę]pnego\s+dnia|z[ií]tra|n[aá]sleduj[ií]c[ií]\s+den|homme|j[aä]rgmisel\s+p[aä]eval)/u.test(text);
+  const shopAttributedPromise = /(?:sklep\w*|sprzedawc\w*|konsultant\w*|obsług\w*\s+sklep\w*|(?:nasz\w*\s+stron\w*|stron\w*\s+sklep\w*)|ofert\w*|reklam\w*|baner\w*|komunikat\w*\s+sklep\w*|obchod\w*|prodejc\w*|(?:n[aá]š\w*\s+web\w*|web\w*\s+obchod\w*)|nab[ií]dk\w*|e-?shop\w*|e-?pood\w*|m[uü][uü]j\w*|klienditeenind\w*|(?:meie\s+veeb\w*|veeb\w*\s+e-?poe\w*)|pakkumis\w*)[^.!?]{0,80}(?:obiecał\w*|obiecan\w*|zapewnił\w*|informował\w*|wskazywał\w*|sl[ií]bil\w*|uv[aá]děl\w*|informoval\w*|lubas\w*|teatas\w*|n[aä]itas\w*|dostaw\w*|doručen\w*|tarne\w*|kohaletoimet\w*)[^.!?]{0,90}(?:jutro|nast[eę]pnego\s+dnia|z[ií]tra|n[aá]sleduj[ií]c[ií]\s+den|homme|j[aä]rgmisel\s+p[aä]eval)/u.test(text);
+  const directSellerPromise = /(?:pisaliście|informowaliście|obiecywaliście|zapewnialiście|sl[ií]bili\s+jste|uv[aá]děli\s+jste|informovali\s+jste|kirjutasite|lubasite|teatasite)[^.!?]{0,90}(?:jutro|nast[eę]pnego\s+dnia|z[ií]tra|n[aá]sleduj[ií]c[ií]\s+den|homme|j[aä]rgmisel\s+p[aä]eval)/u.test(text);
+  const carrierPortalSource = /(?:(?:stron\w*|web\w*|veeb\w*)[^.!?]{0,35}(?:dpd|kurier\w*|przewoźnik\w*|dopravce|vedaja)|(?:dpd|kurier\w*|przewoźnik\w*|dopravce|vedaja)[^.!?]{0,35}(?:stron\w*|web\w*|veeb\w*))/u.test(text);
+  if (
+    carrierPortalSource &&
+    !cutoffClaim &&
+    !promisedNextDay &&
+    !shopAttributedPromise &&
+    !directSellerPromise
+  ) return false;
+  if (carrierAttributedNextDay && !cutoffClaim && !shopAttributedPromise && !directSellerPromise) return false;
+  return (cutoffClaim || promisedNextDay || shopAttributedPromise || directSellerPromise) &&
     /(?:zamów|dostaw|doręcz|przesył|paczk|objedn[aá]v|doruč|z[aá]sil|bal[ií]k|tellim|tarne|kohaletoimet|saadet|pakk)/u.test(text);
 }
 
 function isDeliveryFailureText(value: string): boolean {
-  if (/(?:początkowo|wcześniej|na\s+początku)?[^.!?]{0,60}(?:nie\s+(?:dotar\w*|dosta\w*|dostarcz\w*|doręcz\w*))[^.!?]{0,80}(?:ale|jednak|ostatecznie|finalnie|teraz)[^.!?]{0,55}(?:już\s+(?:ją|go|je)?\s*mam|dotar\w*|został\w*\s+(?:dostarcz\w*|doręcz\w*)|odebrał\w*)|(?:nejdř[ií]v|zpoč[aá]tku)?[^.!?]{0,60}(?:nedoraz\w*|nebyl\w*\s+doručen\w*)[^.!?]{0,80}(?:ale|nakonec|nyn[ií]|už)[^.!?]{0,55}(?:už\s+(?:ji\s+)?m[aá]m|doraz\w*|doručen\w*)|(?:algul|varem)?[^.!?]{0,60}(?:ei\s+(?:ole\s+)?saabun\w*|ei\s+saanud\w*)[^.!?]{0,80}(?:aga|kuid|lõpuks|nüüd)[^.!?]{0,55}(?:on\s+(?:see\s+)?kohal|jõud\w*\s+kohale|sain\s+k[aä]tte)/iu.test(value)) {
-    return false;
-  }
-  if (/(?:nadal\s+(?:jej|go|paczki|przesyłki)?\s*nie\s+ma|(?:paczki|przesyłki|zamówienia)\s+(?:wci[aą]ż\s+|nadal\s+)?nie\s+ma|nie\s+(?:został\w*\s+)?(?:dotar\w*|dostarczon\w*|doręcz\w*|otrzyma\w*|dosta\w*|przysz\w*)|(?:paczki|przesyłki)\s+brak|brak\s+(?:paczki|przesyłki|dostaw\w*)|dostaw\w*\s+(?:do\s+dziś\s+)?brak|gdzie\s+(?:jest\s+)?(?:moja\s+|mój\s+)?(?:paczka|przesyłka)|termin\w*[^.!?]{0,25}min[aą]ł\w*|wci[aą]ż\s+czek|co\s+się\s+dzieje|nedoraz\w*|nebyl\w*\s+doručen\w*|(?:st[aá]le\s+)?(?:jsem\s+)?(?:ji\s+)?neobdrž\w*|dod[aá]vk\w*\s+(?:st[aá]le\s+)?chyb[ií]\w*|st[aá]le\s+ček|pole\s+(?:saabun|kohale\s+jõud)|ei\s+(?:ole\s+)?(?:saabun|kohale\s+jõud)|(?:ma\s+)?ei\s+ole[^.!?]{0,30}(?:pakki|saadetist)[^.!?]{0,20}saanud|(?:saadetis|pakk)\s+(?:on\s+)?(?:ikka\s+)?puudu|ootan\s+endiselt)/iu.test(value)) {
-    return true;
-  }
-  return responseSentences(value).some((sentence) =>
-    hasAffirmedPhrase(sentence, /(?:opóźn\w*|zpožděn\w*|viivitu\w*)/iu));
+  const normalized = normalizedEvidencePhrase(value);
+  const mentionsShipment = /(?:pacz|przesył|z[aá]sil|bal[ií]k|pakk|saadet)/iu.test(normalized);
+  const mentionsMultipleShipments = mentionsShipment && (
+    (
+      /(?:pierwsz|prvn[ií]|esimene)/iu.test(normalized) &&
+      /(?:drug|druh[aá]|teine)/iu.test(normalized)
+    ) ||
+    (
+      /(?:pacz\p{L}*|przesył\p{L}*|z[aá]sil\p{L}*|bal[ií]k\p{L}*|pakk\p{L}*|saadet\p{L}*)\s+a(?:\s|$)/iu.test(normalized) &&
+      /(?:pacz\p{L}*|przesył\p{L}*|z[aá]sil\p{L}*|bal[ií]k\p{L}*|pakk\p{L}*|saadet\p{L}*)\s+b(?:\s|$)/iu.test(normalized)
+    ) ||
+    (
+      /(?:nr|numer|number|č[ií]slo)\s*1(?:\s|$)/iu.test(normalized) &&
+      /(?:nr|numer|number|č[ií]slo)\s*2(?:\s|$)/iu.test(normalized)
+    )
+  );
+  const segments = responseSentences(value).flatMap((sentence) =>
+    sentence.split(
+      /\s*;\s*|(?=\b(?:druga|kolejna)\s+(?:paczka|przesyłka)|\b(?:druh[aá]|dalš[ií])\s+(?:z[aá]silka|bal[ií]k)|\b(?:teine|j[aä]rgmine)\s+(?:pakk|saadetis))/iu,
+    ).filter(Boolean));
+  let sawResolvedSingleShipment = false;
+  const activeFailure = segments.some((segment) => {
+    // Usuwamy wyłącznie zakres już rozwiązanego zdarzenia. Późniejsza
+    // aktywna druga paczka w tej samej wiadomości/klauzuli nadal musi wygrać.
+    // Przy wielu nazwanych paczkach nie łączymy zdarzenia "nie dotarła" dla
+    // jednej z późniejszym "dotarła" innej. Bez wspólnego identyfikatora takie
+    // parowanie jest nieudowodnione, więc wymuszamy pełny odczyt przesyłek.
+    const unresolved = mentionsMultipleShipments
+      ? segment
+      : segment.replace(
+          /(?:początkowo|wcześniej|na\s+początku)?[^.!?]{0,60}?(?:nie\s+(?:dotar\w*|dosta\w*|dostarcz\w*|doręcz\w*))[^.!?]{0,80}?(?:ale|jednak)\s+(?:(?:teraz\s+)?już\s+(?:ją|go|je)\s+mam|teraz\s+jest\s+już\s+u\s+mnie|(?:ostatecznie|finalnie)\s+(?:kurier\w*\s+)?(?:ją|go|je)\s+dostarcz\w*|(?:ostatecznie|finalnie)\s+został\w*\s+(?:dostarcz\w*|doręcz\w*))|(?:nejdř[ií]v|zpoč[aá]tku)?[^.!?]{0,60}?(?:nedoraz\w*|nebyl\w*\s+doručen\w*)[^.!?]{0,80}?ale\s+(?:(?:teď|nyn[ií]|už)\s+ji\s+m[aá]m|už\s+jsem\s+ji\s+převzal\w*|nakonec\s+(?:doraz\w*|byl\w*\s+doručen\w*))|(?:algul|varem)?[^.!?]{0,60}?(?:ei\s+(?:ole\s+)?saabun\w*|ei\s+saanud\w*)[^.!?]{0,80}?(?:aga|kuid)\s+(?:nüüd\s+on\s+see\s+kohal|lõpuks\s+jõud\w*\s+see\s+kohale|nüüd\s+sain\s+selle\s+k[aä]tte)/giu,
+          (resolved) => {
+            sawResolvedSingleShipment = true;
+            return " ".repeat(resolved.length);
+          },
+        );
+    if (/(?:nadal\s+(?:jej|go|paczki|przesyłki)?\s*nie\s+ma|(?:paczki|przesyłki|zamówienia)(?:\s+(?:nr|numer)\s*\d+)?\s+(?:wci[aą]ż\s+|nadal\s+)?nie\s+ma|nie\s+mam[^.!?]{0,20}(?:paczki|przesyłki|zamówienia)|(?:paczka|przesyłka|zamówienie)[^.!?]{0,25}(?:nie\s+(?:dosz\w*|przysz\w*|dotar\w*)|utknę\w*|stoi\s+w\s+miejscu)|nie\s+(?:został\w*\s+)?(?:dotar\w*|dostarczon\w*|doręcz\w*|otrzyma\w*|dosta\w*|przysz\w*)|(?:paczki|przesyłki)\s+brak|brak\s+(?:paczki|przesyłki|dostaw\w*)|dostaw\w*\s+(?:do\s+dziś\s+)?brak|gdzie\s+(?:jest\s+)?(?:moja\s+|mój\s+)?(?:paczka|przesyłka)|termin\w*[^.!?]{0,25}min[aą]ł\w*|wci[aą]ż\s+czek|co\s+się\s+dzieje|nedoraz\w*|nebyl\w*\s+doručen\w*|(?:z[aá]silku|bal[ií]k)\s+(?:jsem\s+)?(?:neobdrž\w*|nedostal\w*)|(?:z[aá]silka|bal[ií]k)[^.!?]{0,25}(?:nepřiš\w*|nedoraz\w*|se\s+zasekl\w*)|(?:st[aá]le\s+)?(?:jsem\s+)?(?:ji\s+)?neobdrž\w*|dod[aá]vk\w*\s+(?:st[aá]le\s+)?chyb[ií]\w*|st[aá]le\s+ček|pole\s+(?:saabun|kohale\s+jõud)|ei\s+(?:ole\s+)?(?:saabun|kohale\s+jõud)|(?:ma\s+)?ei\s+saanud[^.!?]{0,20}(?:pakki|saadetist)|(?:ma\s+)?pole[^.!?]{0,30}(?:pakki|saadetist)[^.!?]{0,20}(?:k[aä]tte\s+)?saanud|(?:ma\s+)?ei\s+ole[^.!?]{0,30}(?:pakki|saadetist)[^.!?]{0,20}saanud|(?:saadetis|pakk)(?:\s+(?:number|nr)\s*\d+)?\s+(?:on\s+)?(?:ikka\s+)?(?:puudu|kinni\s+j[aä][aä]nud)|ootan\s+endiselt)/iu.test(unresolved)) {
+      return true;
+    }
+    return hasAffirmedPhrase(unresolved, /(?:opóźn\w*|zpožděn\w*|viivitu\w*)/iu);
+  });
+  if (activeFailure) return true;
+  if (sawResolvedSingleShipment) return false;
+  const directSuccessfulDelivery = /(?:zamówienie\s+\d{6,}[^.!?]{0,100}(?:dotar(?:ł|ła|ło|ły)\p{L}*|został\p{L}*\s+(?:dostarczon\p{L}*|doręczon\p{L}*))|objedn[aá]vk\p{L}*\s+\d{6,}[^.!?]{0,100}(?:dorazil\p{L}*|byl\p{L}*\s+doručen\p{L}*)|tellimus\s+\d{6,}[^.!?]{0,100}(?:jõud\p{L}*\s+kohale|on\s+kohal))/iu.test(value);
+  if (directSuccessfulDelivery) return false;
+  // Historyczna, przypisana do konkretnego orderu obietnica jest reklamacją
+  // domyślnie. Nie próbujemy utrzymywać nieskończonego słownika wariantów
+  // „status stoi / utknęła / nie mam”; tylko jawny future FAQ albo dowiedzione
+  // rozwiązanie pojedynczej paczki wyłącza obowiązkowy research.
+  return /\b\d{6,}\b/u.test(value) &&
+    /(?:złożył\p{L}*|zamówił\p{L}*|mia(?:ł|ła|ło|ły)\p{L}*|obiecał\p{L}*|obiecan\p{L}*|objednal\p{L}*|byl\p{L}*\s+pod[aá]n\p{L}*|mě(?:l|la|lo|ly)\p{L}*|sl[ií]ben\p{L}*|esitati|tegin\s+tellimuse|pidi|lubati)/iu.test(value);
 }
 
 function isDeliveryPromiseText(value: string): boolean {
@@ -1153,18 +1205,27 @@ function deliveryPromiseAdditionalSentences(
   const relevant = [turns[promiseIndex], turns.at(-1)].filter(
     (value, index, values): value is string => Boolean(value) && values.indexOf(value) === index,
   ).join("\n");
-  const sentences = responseSentences(relevant);
+  const sentences = responseSentences(relevant).flatMap((sentence) =>
+    sentence.split(
+      /\s*(?:,|;)?\s+\b(?:i|oraz|ale|a|natomiast|lecz|tylko|plus|and|but|however|also|také|avšak|ja|ning|aga|kuid|ent)\b\s+/iu,
+    ).map((clause) => clause.trim()).filter(Boolean));
   const deliveryVocabulary = /(?:dostaw|doręcz|przesył|paczk|kurier|przewoźnik|inpost|dpd|tracking|śledzen|status\s+zamów|dotrze|zamów\w*[^.!?]{0,80}(?:19|jutro|dostaw|pacz)|objedn[aá]v\w*[^.!?]{0,80}(?:19|z[ií]tra|doruč|z[aá]sil)|doruč|z[aá]sil|bal[ií]k|dopravce|sledov[aá]n|stav\s+objedn|tellim\w*[^.!?]{0,80}(?:19|homme|tarne|saadet)|tarne|saadet|pakk|kuller|j[aä]lgimi|tellimuse\s+staatus)/iu;
-  const genericDeliveryFollowUp = /^(?:(?:proszę|pros[ií]m|palun)\s+)?(?:co\s+się\s+dzieje|co\s+dalej|kiedy\s+dotrze|jak\s+długo\s+mam\s+czekać|co\s+se\s+d[eě]je|co\s+d[aá]l|kdy\s+doraz[ií]|mis\s+toimub|mis\s+edasi|millal\s+(?:jõuab|saabub))[?.!]*$/iu;
+  const deliveryPromiseFragment = /^(?:(?:mia(?:ł|ła|ło|ły)\p{L}*|obiecan\p{L}*|zapewn\p{L}*)[^.!?]{0,50}(?:jutro|nast[eę]pnego\s+dnia)|(?:mě(?:l|la|lo|ly)\p{L}*|sl[ií]b\p{L}*)[^.!?]{0,50}(?:z[ií]tra|n[aá]sleduj[ií]c[ií]\s+den)|(?:pidi|lubat\p{L}*)[^.!?]{0,50}(?:homme|j[aä]rgmisel\s+p[aä]eval)|(?:do|przed|enne(?:\s+kella)?)\s*19(?:\s*[:.]\s*00)?)[,.!?]*$/iu;
+  const genericDeliveryFollowUp = /^(?:(?:proszę|pros[ií]m|palun)\s+)?(?:co\s+się\s+dzieje|co\s+dalej|kiedy\s+dotrze|jak\s+długo\s+mam\s+czekać|nadal\s+(?:go|jej|jej\s+nie|paczki|przesyłki)?\s*nie\s+ma|co\s+se\s+d[eě]je|co\s+d[aá]l|kdy\s+doraz[ií]|st[aá]le\s+ček[aá]m(?:\s+na\s+(?:ni|z[aá]silku|bal[ií]k))?|mis\s+toimub|mis\s+edasi|millal\s+(?:jõuab|saabub)|ootan\s+endiselt(?:\s+(?:seda|saadetist|pakki))?)[?.!]*$/iu;
   const courtesyOnly = /^(?:dzień\s+dobry|dobr[yý]\s+den|tere|proszę\s+(?:o\s+)?(?:pomoc|odpowiedź)|pros[ií]m\s+o\s+(?:pomoc|odpověď)|palun\s+(?:abi|vastust))[,.!?]*$/iu;
   const explicitOtherDomain = /(?:atomizer|flakon|perfum|produkt|kosmetycz|paragon|faktur|punkt\w*\s+lojal|punkty|nalicz|zwrot|refund|płatno|zapłat|adres(?:u|em)?\s+(?:dostaw|wysył)|punkt\w*\s+odbior|paczkomat|uszkod|rozlan|przeciek|brakuj\w*\s+(?:produkt|flakon|pr[oó]bk)|anul|kod\w*\s+rabat|rabat|\bN\s*[°ºo]?\s*\d{1,4}\b|pr[oó]bk|wysył\w*\s+(?:do|za\s+granic)|formularz\w*\s+(?:reklamac|zwrot)|účtenk|faktur|produkt|parf[eé]m|body|vr[aá]cen[ií]\s+peněz|poškozen|zruš|kviitung|arve|toode|punktid|raha\s+tagast|kahjust|t[uü]hista)/iu;
   return sentences.filter((sentence) => {
-    if (courtesyOnly.test(sentence) || genericDeliveryFollowUp.test(sentence)) return false;
+    if (
+      courtesyOnly.test(sentence) ||
+      genericDeliveryFollowUp.test(sentence) ||
+      isDeliveryFailureText(sentence) ||
+      isShortDeliveryFollowUp(sentence)
+    ) return false;
     if (explicitOtherDomain.test(sentence)) return true;
     // Fail closed: deterministic single-intent fallback wolno zastosować tylko,
     // gdy każda merytoryczna fraza jawnie dotyczy dostawy. Nieznany drugi temat
     // pozostaje dla normalnego shared engine zamiast zostać po cichu usunięty.
-    return !deliveryVocabulary.test(sentence);
+    return !deliveryVocabulary.test(sentence) && !deliveryPromiseFragment.test(sentence);
   });
 }
 
@@ -1758,6 +1819,10 @@ function verifiedShipmentState(
   const rawShipments = nestedValue(shipmentRead.result, "shipments");
   if (!Array.isArray(rawShipments)) return undefined;
   const shipmentCount = nestedValue(shipmentRead.result, "shipment_count");
+  if (
+    shipmentCount !== undefined &&
+    (!Number.isInteger(shipmentCount) || (shipmentCount as number) < 0)
+  ) return { kind: "ambiguous" };
   if (rawShipments.length === 0) {
     const currentTrackingNumber = nonEmptyEvidenceString(
       nestedValue(shipmentRead.result, "current_tracking_number"),
@@ -1777,10 +1842,32 @@ function verifiedShipmentState(
   const shipments = rawShipments.map(shipmentRecord);
   if (shipments.some((shipment) => shipment === null)) return undefined;
   const records = shipments as Record<string, unknown>[];
+  const invalidationStates = records.map((shipment) => {
+    const raw = shipment.invalidated_at;
+    if (raw === undefined || raw === null || (typeof raw === "string" && !raw.trim())) {
+      return "active" as const;
+    }
+    if (
+      typeof raw !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(raw) ||
+      !Number.isFinite(Date.parse(raw))
+    ) return "malformed" as const;
+    return "invalidated" as const;
+  });
+  if (invalidationStates.includes("malformed")) return { kind: "ambiguous" };
+  // Bez jawnego związania intencji klienta z rekordem nie przełączamy się z
+  // cytowanej starej paczki na nowszy tracking. Każdy dodatkowy rekord wymaga
+  // pełnej ścieżki shared engine zamiast deterministycznej odpowiedzi.
+  if (records.length !== 1) return { kind: "ambiguous" };
   const currentTrackingNumber = nonEmptyEvidenceString(
     nestedValue(shipmentRead.result, "current_tracking_number"),
   );
-  const validRecords = records.filter((shipment) => !nonEmptyEvidenceString(shipment.invalidated_at));
+  const validRecords = records.filter((_shipment, index) =>
+    invalidationStates[index] === "active");
+  // Treść klienta nie jest związana kryptograficznie z konkretnym rekordem
+  // przesyłki. Przy kilku aktywnych paczkach `current`/`canonical` może wskazywać
+  // inną (np. już doręczoną) niż ta, której klient nadal nie otrzymał.
+  if (validRecords.length !== 1) return { kind: "ambiguous" };
   const trackingMatches = currentTrackingNumber
     ? validRecords.filter((shipment) =>
         nonEmptyEvidenceString(shipment.tracking_number) === currentTrackingNumber
@@ -2007,24 +2094,29 @@ type ShipmentStatusClass =
   | "cancelled"
   | "unknown";
 
+// Jednoznaczne pełne komunikaty przewoźnika o nieudanej próbie. Opisy
+// naturalnym językiem spoza tej allowlisty pozostają `unknown`: nie próbujemy
+// odgadywać stanu po samym podciągu `doručen` / `kohale toimet`.
+const FAILED_DELIVERY_STATUS = /^(?:(?:parcel\s+)?could\s+not\s+be\s+delivered|not(?:\s+yet)?\s+successfully\s+delivered|unable\s+to\s+be\s+delivered|delivery\s+attempt\s+unsuccessful|nie\s+uda\p{L}*\s+się\s+doręcz\p{L}*(?:\s+przesyłk\p{L}*)?|nie\s+można\s+było\s+doręcz\p{L}*|próba\s+doręczen\p{L}*\s+nie\s+powiodła\s+się|z[aá]silk\p{L}*\s+se\s+nepodař\p{L}*\s+doruč\p{L}*|z[aá]silk\p{L}*\s+nebylo\s+možné\s+doruč\p{L}*|ne[uú]spěšn\p{L}*\s+pokus\s+o\s+doručen\p{L}*|doručen\p{L}*\s+se\s+nezdař\p{L}*|saadet\p{L}*\s+ei\s+õnnest\p{L}*\s+kohale\s+toimet\p{L}*|ebaõnnestun\p{L}*\s+kohaletoimetamise\s+katse|kohale\s+toimet\p{L}*\s+(?:ebaõnnest\p{L}*|nurju\p{L}*))$/iu;
+
+// Aktywny problem nie może zostać wywnioskowany ze statusu, który wprost go
+// neguje, zamyka albo odwołuje. Ta bramka działa przed allowlistą klas.
+const NEGATED_OR_RESOLVED_SHIPMENT_STATUS = /^(?:(?:not|never|no|without|non)(?:\s+[\p{L}\p{N}-]+){0,5}|(?:brak|bez|nie|nigdy\s+nie|nen[ií]|nebyl\p{L}*|nepotvrzen\p{L}*|ei(?:\s+ole|\s+olnud)?|pole|ilma)(?:\s+[\p{L}\p{N}-]+){0,5}|(?:undelivered|unreturned|uncancelled|uncanceled|undamaged|niedoręcz\p{L}*|niedostarcz\p{L}*|niezwr[oó]c\p{L}*|niezagin\p{L}*|nieuszkodz\p{L}*|nieodmow\p{L}*|nedoruč\p{L}*|nevr[aá]cen\p{L}*|nepoškoz\p{L}*|neztrac\p{L}*|nezrušen\p{L}*|tagastamata\p{L}*|toimetamata\p{L}*|kahjustamata\p{L}*|kadumata\p{L}*|t[uü]histamata\p{L}*|kahjustusteta|viivituseta|probleemideta|kadudeta))$/iu;
+const RESOLVED_OR_ABSENT_SHIPMENT_EXCEPTION_STATUS = /^(?:(?:delivery\s+)?(?:exception|problem|delay|failure|damage|refusal|loss)(?:\s+[\p{L}\p{N}-]+){0,3}\s+(?:resolved|cleared|closed|removed|fixed|not\s+confirmed|unconfirmed|ruled\s+out)|(?:lost|missing)(?:\s+[\p{L}\p{N}-]+){0,3}\s+(?:found|recovered|located)|(?:opóźn|problem|awari|uszkodz|zagini|zagub|odmow)\p{L}*(?:\s+[\p{L}\p{N}-]+){0,3}\s+(?:usunięt|rozwiązan|wyjaśnion|niepotwierdzon|odwołan)\p{L}*|(?:pacz|przesył)\p{L}*(?:\s+[\p{L}\p{N}-]+){0,3}\s+(?:odnalezion|znalezion)\p{L}*(?:\s+[\p{L}\p{N}-]+){0,3}\s+(?:zagini|zagub)\p{L}*|(?:zpožd|probl[eé]m|poškozen|ztr[aá]t|odm[ií]tnut)\p{L}*(?:\s+[\p{L}\p{N}-]+){0,3}\s+(?:vyřešen|odstraněn|nepotvrzen|vyloučen|nalezen)\p{L}*|(?:kahjust|viivitu|probleem|kadum|keeld)\p{L}*(?:\s+[\p{L}\p{N}-]+){0,3}\s+(?:puudub|lahendatud|kõrvaldatud|kinnitamata|leitud)|(?:kahjustusteta|viivituseta|probleemideta|kadudeta))$/iu;
+
 function shipmentStatusClass(value: string): ShipmentStatusClass {
   const status = normalizedEvidencePhrase(value);
-  if (
-    /(?:^|\s)(?:(?:not(?:\s+yet)?|never|non)\s+(?:out\s+for\s+delivery|in\s+transit|transit|delivered|returned|ready(?:\s+for\s+pickup)?|pickup|created|registered|prepared|label|new|cancelled|canceled|invalidated|delay(?:ed)?|exception|problem|failed|failure)|(?:undelivered|unreturned|uncancelled|uncanceled)|(?:nie|nigdy\s+nie|nen[ií]|nebyl\w*|nedošl\w*|ei(?:\s+ole)?|pole)[^.!?]{0,35}(?:doręcz|dostarcz|doručen|kohale\s+toimet|vr[aá]cen|tagast|gotow|připraven|valmis|anul|zrušen|t[uü]hist|opóź|zpožd|viivitu|problem|failed|utworzon|vytvořen|loodud|w\s+drodze|na\s+cestě|teel)|(?:niedoręcz|niedostarcz|niezwr[oó]c|nedoruč|nevr[aá]cen|tagastamata|toimetamata))[\p{L}\p{N}-]*(?:\s|$)/iu.test(status)
-  ) {
-    return "unknown";
-  }
-  if (/(?:cancel|invalid|anul|unieważn)/i.test(status)) return "cancelled";
-  if (/(?:return|zwrot|wraca)/i.test(status)) return "returned";
-  if (/(?:delay|exception|problem|failed|failure|lost|missing|damage|refus|opóź|nieudan|zagin|uszkodz|odmow|poškoz|ztrac|ztr[aá]t|kadun|kahjust|keeld)/i.test(status)) return "exception";
-  if (/(?:delivered|doręczon|dostarczon|odebran)/i.test(status)) return "delivered";
-  if (/(?:pickup|ready\s+for|awaiting\s+collection|gotow)/i.test(status)) return "pickup";
-  if (/(?:pre\s+transit|created|label|registered|prepared|new|utworzon)/i.test(status)) return "created";
-  if (/(?:not\s+in\s+transit|nie\s+(?:jest|znajduje\s+się)[^.!?]{0,20}(?:w\s+drodze|w\s+transpor))/i.test(status)) {
-    return "unknown";
-  }
-  if (/(?:out\s+for\s+delivery|wydan\w*\s+do\s+doręcz)/i.test(status)) return "out_for_delivery";
-  if (/(?:^|\s)(?:in\s+transit|transit|transport|linehaul)(?:\s|$)|w\s+drodze|sortown/i.test(status)) return "transit";
+  if (RESOLVED_OR_ABSENT_SHIPMENT_EXCEPTION_STATUS.test(status)) return "unknown";
+  if (FAILED_DELIVERY_STATUS.test(status)) return "exception";
+  if (NEGATED_OR_RESOLVED_SHIPMENT_STATUS.test(status)) return "unknown";
+  if (/^(?:cancelled|canceled|invalidated|anulowan\p{L}*|unieważnion\p{L}*|zrušen\p{L}*|stornov[aá]n\p{L}*|t[uü]histatud)$/iu.test(status)) return "cancelled";
+  if (/^(?:returned|return\s+to\s+sender|returned\s+to\s+sender|rts|zwrot|wraca\s+do\s+nadawcy|zwracan\p{L}*|vrac[ií]\s+se|vr[aá]cen\p{L}*|tagastatud|teel\s+tagasi)$/iu.test(status)) return "returned";
+  if (/^(?:(?:delivery|parcel|package|shipment|paczka|przesyłka|z[aá]silka|bal[ií]k|pakk|saadetis)\s+)?(?:failed|failure|delayed|exception|lost|missing|damaged|refused|opóźnion\p{L}*|nieudan\p{L}*|zaginion\p{L}*|uszkodzon\p{L}*|odmow\p{L}*|zpožděn\p{L}*|ne[uú]spěšn\p{L}*|poškozen\p{L}*|ztracen\p{L}*|viivitus|ebaõnnestun\p{L}*|kadunud|kahjustatud|keeldutud)$/iu.test(status)) return "exception";
+  if (/^(?:delivered|doręczon\p{L}*|dostarczon\p{L}*|odebran\p{L}*|doručen\p{L}*|převzat\p{L}*|kohale\s+toimetatud|k[aä]tte\s+saadud)$/iu.test(status)) return "delivered";
+  if (/^(?:pickup|ready\s+for\s+pickup|awaiting\s+collection|gotow\p{L}*\s+do\s+odbioru|připraven\p{L}*\s+k\s+vyzvednut[ií]|j[aä]reletul|valmis\s+j[aä]reletulemiseks)$/iu.test(status)) return "pickup";
+  if (/^(?:pre\s+transit|created|label\s+created|registered|prepared|new|utworzon\p{L}*|vytvořen\p{L}*|zaregistrov[aá]n\p{L}*|loodud|registreeritud)$/iu.test(status)) return "created";
+  if (/^(?:out\s+for\s+delivery|wydan\p{L}*\s+do\s+doręczen\p{L}*|před[aá]n\p{L}*\s+k\s+doručen[ií]|kohaletoimetamisel)$/iu.test(status)) return "out_for_delivery";
+  if (/^(?:in\s+transit|transit|transport|linehaul|w\s+drodze|w\s+transporcie|w\s+sortowni|na\s+cestě|v\s+přepravě|v\s+tranzitu|teel|transiidis)$/iu.test(status)) return "transit";
   return "unknown";
 }
 

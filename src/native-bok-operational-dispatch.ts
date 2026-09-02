@@ -149,7 +149,7 @@ export interface NativeOperationalDiscordPort {
     destination: TicketTeamEscalationDestination;
     content: string;
     nonce: string;
-  }): Promise<string>;
+  }, sendGuard?: NativeOperationalActionSendGuard): Promise<string>;
 }
 
 export class NativeOperationalActionDispatchError extends Error {
@@ -177,6 +177,13 @@ export interface NativeOperationalActionSendGuard {
    * przed nieodwracalnym POST-em do Discorda.
    */
   beforeIrreversibleSend(): Promise<void>;
+}
+
+class NativeOperationalActionSendGuardRejected extends Error {
+  constructor(readonly reason: unknown) {
+    super("operational_action_send_guard_rejected");
+    this.name = "NativeOperationalActionSendGuardRejected";
+  }
 }
 
 export class NativeOperationalActionDispatcher {
@@ -336,15 +343,23 @@ export class NativeOperationalActionDispatcher {
     deduplicated: boolean,
     sendGuard?: NativeOperationalActionSendGuard,
   ): Promise<NativeOperationalActionDispatchResult> {
-    // Nie wolno zamieniać odmowy guarda w `pending`: jeszcze nic nie zostało
-    // wysłane, więc reconciliation nie jest potrzebne i mogłoby ukryć utratę lease.
-    await sendGuard?.beforeIrreversibleSend();
+    const protectedGuard = sendGuard
+      ? {
+          beforeIrreversibleSend: async () => {
+            try {
+              await sendGuard.beforeIrreversibleSend();
+            } catch (error) {
+              throw new NativeOperationalActionSendGuardRejected(error);
+            }
+          },
+        }
+      : undefined;
     try {
       const externalReference = await this.discord.sendOperationalAction({
         destination,
         content,
         nonce: nativeOperationalActionNonce(envelope.idempotencyKey),
-      });
+      }, protectedGuard);
       if (!DISCORD_MESSAGE_ID.test(externalReference)) {
         throw new Error("discord_reference_invalid");
       }
@@ -354,7 +369,11 @@ export class NativeOperationalActionDispatcher {
         externalReference,
       });
       return sentResult(envelope.idempotencyKey, destination, externalReference, deduplicated);
-    } catch {
+    } catch (error) {
+      // Guard jest wykonywany przez DiscordGateway dopiero po async rozwiązaniu
+      // kanału, bezpośrednio przed `channel.send`. Jego odmowa następuje przed
+      // POST-em, więc nie wolno maskować jej jako niepewnego `pending`.
+      if (error instanceof NativeOperationalActionSendGuardRejected) throw error.reason;
       // POST do Discorda mógł zostać przyjęty przed błędem transportu lub zapisu SQLite.
       // Najpierw dokładny readback; brak lub awaria readbacku oznacza pending, nigdy ślepy resend.
       const reconciled = await this.reconcile(destination, proof, content, envelope, payloadHash);

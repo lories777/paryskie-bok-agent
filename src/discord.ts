@@ -16,6 +16,7 @@ import {
 import type { AppConfig } from "./config.js";
 import type {
   NativeOperationalDiscordPort,
+  NativeOperationalActionSendGuard,
   OperationalActionProofResult,
 } from "./native-bok-operational-dispatch.js";
 import {
@@ -241,9 +242,10 @@ export class DiscordGateway implements ReplySink, NativeOperationalDiscordPort {
     destination: TicketTeamEscalationDestination;
     content: string;
     nonce: string;
-  }): Promise<string> {
+  }, sendGuard?: NativeOperationalActionSendGuard): Promise<string> {
     if (input.content.length > 2_000) throw new Error("Discord operational message is too long.");
     const channel = await this.operationalActionChannel(input.destination);
+    await sendGuard?.beforeIrreversibleSend();
     const sent = await channel.send({
       content: input.content,
       allowedMentions: { parse: [] },

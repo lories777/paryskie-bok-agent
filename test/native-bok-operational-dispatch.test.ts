@@ -18,6 +18,7 @@ import {
   nativeOperationalActionRequestHash,
   renderNativeOperationalAction,
   type NativeOperationalActionEnvelope,
+  type NativeOperationalActionSendGuard,
   type NativeOperationalDiscordPort,
   type OperationalActionProofResult,
 } from "../src/native-bok-operational-dispatch.js";
@@ -144,9 +145,11 @@ class FakeDiscord implements NativeOperationalDiscordPort {
     destination: TicketTeamEscalationDestination;
     content: string;
     nonce: string;
-  }): Promise<string> {
-    this.sendCalls += 1;
+  }, sendGuard?: NativeOperationalActionSendGuard): Promise<string> {
+    // Symuluje async `operationalActionChannel()` w realnym DiscordGateway.
     await this.beforeSend?.();
+    await sendGuard?.beforeIrreversibleSend();
+    this.sendCalls += 1;
     if (this.failSendBeforeCommit) {
       this.failSendBeforeCommit = false;
       throw new Error("network before POST");
@@ -477,6 +480,10 @@ test("zewnętrzny permit jest sprawdzany po reconciliation i przed retry Discord
   const { dir, store } = withStore();
   const discord = new FakeDiscord();
   discord.failSendBeforeCommit = true;
+  let channelResolutions = 0;
+  discord.beforeSend = async () => {
+    channelResolutions += 1;
+  };
   let clock = Date.now();
   try {
     const dispatcher = new NativeOperationalActionDispatcher(readyConfig(), store, discord, {
@@ -494,12 +501,14 @@ test("zewnętrzny permit jest sprawdzany po reconciliation i przed retry Discord
       dispatcher.dispatch(request, {
         beforeIrreversibleSend: async () => {
           permitCalls += 1;
+          assert.equal(channelResolutions, 2, "permit musi nastąpić po async channel lookup");
           throw new Error("dispatch_lease_invalid");
         },
       }),
       /dispatch_lease_invalid/,
     );
     assert.equal(permitCalls, 1);
+    assert.equal(channelResolutions, 2);
     assert.equal(discord.findCalls, 2);
     assert.equal(discord.sendCalls, 1);
     assert.equal(discord.messages.size, 0);
