@@ -78,6 +78,15 @@ const envSchema = z.object({
   BOK_NATIVE_API_TOKEN: optionalSecretFromEnv,
   BOK_NATIVE_API_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
   BOK_NATIVE_API_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(120_000).default(110_000),
+  BOK_NATIVE_OUTBOUND_ENABLED: booleanFromEnv,
+  BOK_NATIVE_OUTBOUND_URL: optionalUrlFromEnv,
+  BOK_NATIVE_OUTBOUND_TOKEN: optionalSecretFromEnv,
+  BOK_NATIVE_OUTBOUND_POLL_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(60_000)
+    .default(5_000),
   BOK_NATIVE_OPERATIONAL_DISPATCH_ENABLED: booleanFromEnv,
   BOK_NATIVE_DISCORD_GUILD_ID: optionalSnowflakeFromEnv,
   BOK_NATIVE_DISCORD_CATEGORY_ID: optionalSnowflakeFromEnv,
@@ -131,6 +140,10 @@ export interface AppConfig {
   nativeApiToken?: string;
   nativeApiMaxConcurrency: number;
   nativeApiTimeoutMs: number;
+  nativeOutboundEnabled: boolean;
+  nativeOutboundUrl?: string;
+  nativeOutboundToken?: string;
+  nativeOutboundPollIntervalMs: number;
   nativeOperationalDispatchEnabled: boolean;
   nativeOperationalDiscordGuildId?: string;
   nativeOperationalDiscordCategoryId?: string;
@@ -213,6 +226,14 @@ export function loadConfig(
       : {}),
     nativeApiMaxConcurrency: parsed.BOK_NATIVE_API_MAX_CONCURRENCY,
     nativeApiTimeoutMs: parsed.BOK_NATIVE_API_TIMEOUT_MS,
+    nativeOutboundEnabled: parsed.BOK_NATIVE_OUTBOUND_ENABLED,
+    ...(parsed.BOK_NATIVE_OUTBOUND_URL
+      ? { nativeOutboundUrl: parsed.BOK_NATIVE_OUTBOUND_URL }
+      : {}),
+    ...(parsed.BOK_NATIVE_OUTBOUND_TOKEN
+      ? { nativeOutboundToken: parsed.BOK_NATIVE_OUTBOUND_TOKEN }
+      : {}),
+    nativeOutboundPollIntervalMs: parsed.BOK_NATIVE_OUTBOUND_POLL_INTERVAL_MS,
     nativeOperationalDispatchEnabled: parsed.BOK_NATIVE_OPERATIONAL_DISPATCH_ENABLED,
     ...(parsed.BOK_NATIVE_DISCORD_GUILD_ID
       ? { nativeOperationalDiscordGuildId: parsed.BOK_NATIVE_DISCORD_GUILD_ID }
@@ -283,6 +304,10 @@ export function assertLiveConfig(config: AppConfig): asserts config is AppConfig
   }
   if (config.nativeOperationalDispatchEnabled) {
     errors.push(...nativeOperationalDispatchConfigurationErrors(config));
+  }
+  if (config.nativeOutboundEnabled) {
+    if (!config.nativeOutboundUrl) errors.push("BOK_NATIVE_OUTBOUND_URL");
+    if (!config.nativeOutboundToken) errors.push("BOK_NATIVE_OUTBOUND_TOKEN");
   }
   if (errors.length > 0) {
     throw new Error(`Brak wymaganej konfiguracji trybu live: ${errors.join(", ")}`);

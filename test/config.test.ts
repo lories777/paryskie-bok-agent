@@ -175,3 +175,33 @@ test("dispatch fail-closed odrzuca duplikat kanału, kolizję z kategorią i zł
   assert.match(nativeOperationalDispatchConfigurationErrors(collision).join(","), /kolizja/);
   assert.throws(() => loadConfig({ BOK_NATIVE_DISCORD_GUILD_ID: "123" }, "/tmp/project"));
 });
+
+test("outbound bridge wymaga dedykowanego URL i tokenu, nie credentiali raportu", () => {
+  const common = {
+    DISCORD_BOT_TOKEN: "test-token",
+    BOK_AGENT_COMMAND_CHANNEL_IDS: "1",
+    BOK_AGENT_ALLOWED_USER_IDS: "10",
+    BOK_NATIVE_OUTBOUND_ENABLED: "true",
+  };
+  const reportOnly = loadConfig({
+    ...common,
+    MASTERLINK_REPORT_URL: "https://ml.example/api/agent/v1/report",
+    MASTERLINK_REPORT_TOKEN: "legacy-report-token",
+  }, "/tmp/project");
+  assert.throws(
+    () => assertLiveConfig(reportOnly),
+    /BOK_NATIVE_OUTBOUND_URL.*BOK_NATIVE_OUTBOUND_TOKEN/,
+  );
+
+  const ready = loadConfig({
+    ...common,
+    BOK_NATIVE_OUTBOUND_URL: "https://ml.example",
+    BOK_NATIVE_OUTBOUND_TOKEN: "dedicated-outbound-token-at-least-32",
+    BOK_NATIVE_OUTBOUND_POLL_INTERVAL_MS: "5000",
+  }, "/tmp/project");
+  assert.doesNotThrow(() => assertLiveConfig(ready));
+  assert.equal(ready.nativeOutboundUrl, "https://ml.example");
+  assert.equal(ready.nativeOutboundToken, "dedicated-outbound-token-at-least-32");
+  assert.equal(ready.nativeOutboundPollIntervalMs, 5_000);
+  assert.throws(() => loadConfig({ BOK_NATIVE_OUTBOUND_TOKEN: "short" }, "/tmp/project"));
+});

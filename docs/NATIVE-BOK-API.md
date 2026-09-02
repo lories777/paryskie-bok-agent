@@ -160,10 +160,38 @@ blokuje resend. Ten zapis przeżywa restart procesu i ten sam klucz z innym payl
 fail-closed.
 
 Lokalny `POST /v1/bok/actions/dispatch` jest adapterem testowym/loopback. W topologii produkcyjnej
-Railway nie ma trasy przychodzącej do VPS-a. Produkcyjny transport musi więc działać outbound:
-ten proces pobiera trwałe joby z MasterLinka i przekazuje ich exact typed envelope bezpośrednio
-do tej samej instancji dispatchera. Samo wystawienie portu loopback nie jest dowodem połączenia
-E2E.
+Railway nie ma trasy przychodzącej do VPS-a. Produkcyjny transport działa więc outbound: ten
+proces pobiera trwałe joby z MasterLinka i przekazuje ich exact typed envelope bezpośrednio do
+tej samej instancji dispatchera. Samo wystawienie portu loopback nie jest dowodem połączenia E2E.
+
+## Outbound lease/result
+
+Poller korzysta z dedykowanych endpointów `POST /api/bok-runtime/v1/lease`,
+`POST /api/bok-runtime/v1/heartbeat` i `POST /api/bok-runtime/v1/result`. Nie używa
+credentiali raportu: bot ma osobny `BOK_NATIVE_OUTBOUND_TOKEN`, a MasterLink osobny
+`BOK_RUNTIME_PULL_TOKEN`.
+
+Każdy lease przekazuje pełny exact runtime status, losowy identyfikator procesu i czas jego
+startu. MasterLink zwraca najwyżej jeden trwały lease na 300 sekund. Po otrzymaniu joba poller
+nie pobiera następnego: co 10 sekund wysyła niezależny heartbeat z tą samą tożsamością i
+aktualnym runtime statusem, aż terminalny wynik zostanie potwierdzony. Długie generate/judge nie
+oznacza więc fałszywego offline:
+
+- `decision` ma jawne etapy `generate → judge`; oba przebiegi używają tej samej instancji
+  `NativeBokInference`, tego samego requestu, snapshotu, `contextHash`, `sourceRevision` i
+  `operatorGuidanceHash`, a wynik trafia do jednego terminalnego CAS;
+- `dispatch` ma jeden etap i wywołuje bezpośrednio tę samą instancję
+  `NativeOperationalActionDispatcher`; MasterLink nie wydaje go, gdy exact dispatch readiness
+  jest fałszywe.
+
+Poller ponownie wylicza kanoniczne hashe i odrzuca obcy etap, rewizję, kontekst, guidance lub
+request przed uruchomieniem modelu/Discorda. Przerywa pracę z marginesem przed końcem lease.
+Niepewny `pending` dispatch jest reconciliowany przed kolejną próbą i nigdy nie jest raportowany
+jako `completed`; tylko exact `sent` z receiptem może domknąć job. Utracony ACK `/result` ponawia
+identyczne body. Strict `409 { error: "lease_lost" }` kończy próbę bez ponownego wykonania akcji,
+ale `result_conflict` jest nieretryowalnym błędem spójności, a nie maskowaną utratą lease.
+Odpowiedzi sterujące są czytane z twardym limitem rozmiaru. Błędy połączenia mają ograniczony
+exponential backoff i nie logują requestu, tokenu ani danych klienta.
 
 ## Uruchomienie
 
@@ -176,6 +204,11 @@ BOK_NATIVE_API_PORT=8787
 BOK_NATIVE_API_TOKEN=<losowy-sekret-minimum-32-znaki>
 BOK_NATIVE_API_MAX_CONCURRENCY=2
 BOK_NATIVE_API_TIMEOUT_MS=110000
+
+BOK_NATIVE_OUTBOUND_ENABLED=true
+BOK_NATIVE_OUTBOUND_URL=https://ml.paryskie.pl
+BOK_NATIVE_OUTBOUND_TOKEN=<osobny-sekret-minimum-32-znaki>
+BOK_NATIVE_OUTBOUND_POLL_INTERVAL_MS=5000
 
 BOK_AGENT_EXTERNAL_ACTIONS=true
 BOK_NATIVE_OPERATIONAL_DISPATCH_ENABLED=true
@@ -194,8 +227,9 @@ npm start -- run
 
 Start API, Discorda i workera jest jednym lifecycle. Błąd bindu portu zatrzymuje start runtime;
 SIGTERM zamyka monitor, Discord i API. Lokalnego procesu Node nie wystawia się na `0.0.0.0`.
-Brama dispatch jest niezależna od włączenia lokalnego API, ponieważ produkcyjny transport używa
-połączenia wychodzącego do MasterLinka.
+Brama dispatch i outbound connector są niezależne od włączenia lokalnego API. Decision jobs mogą
+działać przy wyłączonych akcjach zewnętrznych; dispatch jobs są lease'owane dopiero po pełnym
+readiness serwerowych tras Discord.
 
 Bezpieczna kolejność: zweryfikować `/healthz` i uwierzytelniony `/v1/bok/runtime`, porównać zmianę
 `store.identity` z procesem Discorda oraz zmianę `corrections.revision` po testowej korekcie

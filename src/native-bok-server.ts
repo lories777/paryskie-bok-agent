@@ -30,6 +30,7 @@ import {
   TICKET_TEAM_ESCALATION_ACTION_TYPES,
   TICKET_TEAM_ESCALATION_DESTINATIONS,
 } from "./native-bok-operational-catalog.js";
+import { fullNativeBokRuntimeStatus } from "./native-bok-runtime.js";
 
 interface NativeBokInferencePort {
   readonly generatorModel: string;
@@ -126,11 +127,7 @@ export function createNativeBokHttpServerForConfig(
           sendError(response, 405, "method_not_allowed");
           return;
         }
-        sendJson(response, 200, {
-          ok: true,
-          ...inference.runtimeStatus(),
-          operationalActionDispatch: operationalDispatcher.runtimeStatus(),
-        });
+        sendJson(response, 200, fullNativeBokRuntimeStatus(inference, operationalDispatcher));
         return;
       }
       if (
