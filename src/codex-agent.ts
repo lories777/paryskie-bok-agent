@@ -1102,7 +1102,7 @@ function isDeliveryPromiseClaim(value: string): boolean {
 }
 
 function isDeliveryFailureText(value: string): boolean {
-  if (/(?:początkowo|wcześniej|na\s+początku)?[^.!?]{0,60}(?:nie\s+(?:dotar\w*|dosta\w*|dostarcz\w*|doręcz\w*))[^.!?]{0,80}(?:ale|jednak|ostatecznie|finalnie|teraz)[^.!?]{0,55}(?:już\s+(?:ją|go|je)?\s*mam|dotar\w*|został\w*\s+(?:dostarcz\w*|doręcz\w*)|odebrał\w*)/iu.test(value)) {
+  if (/(?:początkowo|wcześniej|na\s+początku)?[^.!?]{0,60}(?:nie\s+(?:dotar\w*|dosta\w*|dostarcz\w*|doręcz\w*))[^.!?]{0,80}(?:ale|jednak|ostatecznie|finalnie|teraz)[^.!?]{0,55}(?:już\s+(?:ją|go|je)?\s*mam|dotar\w*|został\w*\s+(?:dostarcz\w*|doręcz\w*)|odebrał\w*)|(?:nejdř[ií]v|zpoč[aá]tku)?[^.!?]{0,60}(?:nedoraz\w*|nebyl\w*\s+doručen\w*)[^.!?]{0,80}(?:ale|nakonec|nyn[ií]|už)[^.!?]{0,55}(?:už\s+(?:ji\s+)?m[aá]m|doraz\w*|doručen\w*)|(?:algul|varem)?[^.!?]{0,60}(?:ei\s+(?:ole\s+)?saabun\w*|ei\s+saanud\w*)[^.!?]{0,80}(?:aga|kuid|lõpuks|nüüd)[^.!?]{0,55}(?:on\s+(?:see\s+)?kohal|jõud\w*\s+kohale|sain\s+k[aä]tte)/iu.test(value)) {
     return false;
   }
   if (/(?:nadal\s+(?:jej|go|paczki|przesyłki)?\s*nie\s+ma|(?:paczki|przesyłki|zamówienia)\s+(?:wci[aą]ż\s+|nadal\s+)?nie\s+ma|nie\s+(?:został\w*\s+)?(?:dotar\w*|dostarczon\w*|doręcz\w*|otrzyma\w*|dosta\w*|przysz\w*)|(?:paczki|przesyłki)\s+brak|brak\s+(?:paczki|przesyłki|dostaw\w*)|dostaw\w*\s+(?:do\s+dziś\s+)?brak|gdzie\s+(?:jest\s+)?(?:moja\s+|mój\s+)?(?:paczka|przesyłka)|termin\w*[^.!?]{0,25}min[aą]ł\w*|wci[aą]ż\s+czek|co\s+się\s+dzieje|nedoraz\w*|nebyl\w*\s+doručen\w*|(?:st[aá]le\s+)?(?:jsem\s+)?(?:ji\s+)?neobdrž\w*|dod[aá]vk\w*\s+(?:st[aá]le\s+)?chyb[ií]\w*|st[aá]le\s+ček|pole\s+(?:saabun|kohale\s+jõud)|ei\s+(?:ole\s+)?(?:saabun|kohale\s+jõud)|(?:ma\s+)?ei\s+ole[^.!?]{0,30}(?:pakki|saadetist)[^.!?]{0,20}saanud|(?:saadetis|pakk)\s+(?:on\s+)?(?:ikka\s+)?puudu|ootan\s+endiselt)/iu.test(value)) {
@@ -1822,6 +1822,14 @@ function verifiedShipmentState(
     : Number.NaN;
   const latestScans = scans.filter((scan) =>
     Date.parse(nonEmptyEvidenceString(scan.occurred_at) ?? "") === latestScanAt);
+  if (latestScans.some((scan) => {
+    const scanValues = [
+      nonEmptyEvidenceString(scan.description),
+      nonEmptyEvidenceString(scan.status),
+    ].filter((value): value is string => Boolean(value));
+    return scanValues.length === 0 || scanValues.every((value) =>
+      shipmentStatusClass(value) === "unknown");
+  })) return { kind: "ambiguous" };
   const latestScan = latestScans[0] ?? null;
   const selectedTrackingNumber = nonEmptyEvidenceString(selected.tracking_number);
   const selectedStatus = nonEmptyEvidenceString(selected.status)
@@ -1835,9 +1843,7 @@ function verifiedShipmentState(
     nonEmptyEvidenceString(scan.status),
   ]).filter((value): value is string => Boolean(value));
   const statusClasses = [
-    ...(currentTrackingNumber && selectedTrackingNumber === currentTrackingNumber
-      ? [topLevelStatus]
-      : []),
+    topLevelStatus,
     selectedStatus,
     ...latestScanValues,
   ]
@@ -1845,9 +1851,7 @@ function verifiedShipmentState(
     .map(shipmentStatusClass)
     .filter((value) => value !== "unknown");
   if (new Set(statusClasses).size > 1) return { kind: "ambiguous" };
-  const status = currentTrackingNumber && selectedTrackingNumber === currentTrackingNumber
-    ? topLevelStatus ?? selectedStatus
-    : selectedStatus;
+  const status = topLevelStatus ?? selectedStatus;
   return {
     kind: "shipment",
     status,
@@ -2012,7 +2016,7 @@ function shipmentStatusClass(value: string): ShipmentStatusClass {
   }
   if (/(?:cancel|invalid|anul|unieważn)/i.test(status)) return "cancelled";
   if (/(?:return|zwrot|wraca)/i.test(status)) return "returned";
-  if (/(?:delay|exception|problem|failed|failure|opóź|nieudan)/i.test(status)) return "exception";
+  if (/(?:delay|exception|problem|failed|failure|lost|missing|damage|refus|opóź|nieudan|zagin|uszkodz|odmow|poškoz|ztrac|ztr[aá]t|kadun|kahjust|keeld)/i.test(status)) return "exception";
   if (/(?:delivered|doręczon|dostarczon|odebran)/i.test(status)) return "delivered";
   if (/(?:pickup|ready\s+for|awaiting\s+collection|gotow)/i.test(status)) return "pickup";
   if (/(?:pre\s+transit|created|label|registered|prepared|new|utworzon)/i.test(status)) return "created";

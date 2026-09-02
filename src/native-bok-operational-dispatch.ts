@@ -171,6 +171,14 @@ export interface NativeOperationalActionDispatcherOptions {
   now?: () => number;
 }
 
+export interface NativeOperationalActionSendGuard {
+  /**
+   * Ostatni zewnętrzny fence wykonywany po reconciliation i bezpośrednio
+   * przed nieodwracalnym POST-em do Discorda.
+   */
+  beforeIrreversibleSend(): Promise<void>;
+}
+
 export class NativeOperationalActionDispatcher {
   private readonly retryAfterMs: number;
   private readonly now: () => number;
@@ -219,7 +227,10 @@ export class NativeOperationalActionDispatcher {
     };
   }
 
-  async dispatch(untrustedEnvelope: unknown): Promise<NativeOperationalActionDispatchResult> {
+  async dispatch(
+    untrustedEnvelope: unknown,
+    sendGuard?: NativeOperationalActionSendGuard,
+  ): Promise<NativeOperationalActionDispatchResult> {
     if (!this.runtimeStatus().ready) {
       throw new NativeOperationalActionDispatchError(503, "capability_unavailable");
     }
@@ -267,7 +278,15 @@ export class NativeOperationalActionDispatcher {
       if (!claimed) return pendingResult(envelope.idempotencyKey, destination, true);
     }
 
-    return this.sendAndRecord(envelope, destination, proof, content, payloadHash, reservation.status !== "created");
+    return this.sendAndRecord(
+      envelope,
+      destination,
+      proof,
+      content,
+      payloadHash,
+      reservation.status !== "created",
+      sendGuard,
+    );
   }
 
   private async reconcile(
@@ -315,7 +334,11 @@ export class NativeOperationalActionDispatcher {
     content: string,
     payloadHash: string,
     deduplicated: boolean,
+    sendGuard?: NativeOperationalActionSendGuard,
   ): Promise<NativeOperationalActionDispatchResult> {
+    // Nie wolno zamieniać odmowy guarda w `pending`: jeszcze nic nie zostało
+    // wysłane, więc reconciliation nie jest potrzebne i mogłoby ukryć utratę lease.
+    await sendGuard?.beforeIrreversibleSend();
     try {
       const externalReference = await this.discord.sendOperationalAction({
         destination,

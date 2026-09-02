@@ -696,6 +696,10 @@ test("claim o zamówieniu do 19:00 i dostawie jutro wymaga przewoźnika oraz prz
     "Zamówienie 480033739 złożyłam do 19:00 i dotarło jutro bez opóźnienia.",
     "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Początkowo nie dotarło, ale już je mam, dziękuję.",
     "Zamówienie 480033739 złożyłam do 19:00 i miało być jutro. Nie dostałam go na czas, jednak ostatecznie zostało dostarczone.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Nejdřív nedorazila, ale už ji mám, děkuji.",
+    "Objednávka 480033739 byla podána do 19:00 a měla dorazit zítra. Nebyla doručena včas, ale nakonec dorazila.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Algul pakk ei saabunud, aga nüüd on see kohal, aitäh.",
+    "Tellimus 480033739 esitati enne kella 19:00 ja pidi saabuma homme. Ma ei saanud pakki õigel ajal, kuid lõpuks jõudis see kohale.",
   ]) {
     assert.notDeepEqual(requiredMasterlinkResearch([{ ...message, content: noFailure }], output), {
       orderNumbers: ["480033739"],
@@ -1016,6 +1020,54 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
     result("Dzień dobry, przepraszamy. Dostawa jutro dotyczy wyłącznie InPost; wybrano DPD. Paczka jest w drodze. Status można śledzić pod numerem 00340434123456789012."),
     JSON.stringify(conflictingStatusEvidence),
   ).join("\n"), /Brak jednoznacznie zweryfikowanego stanu przesyłki/);
+
+  const noPointerTopConflict = JSON.parse(evidence("dpd"));
+  noPointerTopConflict[1].result.facts.current_tracking_number = null;
+  noPointerTopConflict[1].result.facts.current_shipment_status = "delivered";
+  assert.equal(buildVerifiedDeliveryPromiseFallback(
+    daktelaJob,
+    [complaint],
+    result("Błędny draft"),
+    JSON.stringify(noPointerTopConflict),
+  ), null);
+  assert.match(deliveryPromiseResolutionIssues(
+    [complaint],
+    result("Dzień dobry, przesyłka jest w drodze."),
+    JSON.stringify(noPointerTopConflict),
+  ).join("\n"), /Brak jednoznacznie zweryfikowanego stanu przesyłki/);
+
+  for (const latestExceptionalStatus of ["parcel_lost", "damaged", "refused"]) {
+    const exceptionalEvidence = JSON.parse(evidence("dpd"));
+    exceptionalEvidence[1].result.facts.shipments[0].scans = [{
+      status: latestExceptionalStatus,
+      description: latestExceptionalStatus,
+      occurred_at: "2026-09-02T20:00:00.000Z",
+    }];
+    assert.equal(buildVerifiedDeliveryPromiseFallback(
+      daktelaJob,
+      [complaint],
+      result("Błędny draft"),
+      JSON.stringify(exceptionalEvidence),
+    ), null, latestExceptionalStatus);
+    assert.match(deliveryPromiseResolutionIssues(
+      [complaint],
+      result("Dzień dobry, przesyłka jest w drodze."),
+      JSON.stringify(exceptionalEvidence),
+    ).join("\n"), /Brak jednoznacznie zweryfikowanego stanu przesyłki/, latestExceptionalStatus);
+  }
+
+  const unknownLatestScan = JSON.parse(evidence("dpd"));
+  unknownLatestScan[1].result.facts.shipments[0].scans = [{
+    status: "provider_code_x91",
+    description: "provider_code_x91",
+    occurred_at: "2026-09-02T20:00:00.000Z",
+  }];
+  assert.equal(buildVerifiedDeliveryPromiseFallback(
+    daktelaJob,
+    [complaint],
+    result("Błędny draft"),
+    JSON.stringify(unknownLatestScan),
+  ), null, "nieznany najnowszy skan musi być fail-closed");
 
   const contradictoryEmpty = JSON.parse(evidence("dpd"));
   contradictoryEmpty[1].result.facts.shipments = [];

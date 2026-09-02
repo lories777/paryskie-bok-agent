@@ -10,6 +10,7 @@ import {
   nativeOperationalActionEnvelopeSchema,
   type NativeOperationalActionDispatchResult,
   type NativeOperationalActionDispatchRuntimeStatus,
+  type NativeOperationalActionSendGuard,
 } from "./native-bok-operational-dispatch.js";
 import {
   fullNativeBokRuntimeStatus,
@@ -197,7 +198,10 @@ export interface NativeBokOutboundInferencePort {
 
 export interface NativeBokOutboundDispatcherPort {
   runtimeStatus(): NativeOperationalActionDispatchRuntimeStatus;
-  dispatch(envelope: unknown): Promise<NativeOperationalActionDispatchResult>;
+  dispatch(
+    envelope: unknown,
+    sendGuard: NativeOperationalActionSendGuard,
+  ): Promise<NativeOperationalActionDispatchResult>;
 }
 
 export interface NativeBokOutboundPollerOptions {
@@ -410,17 +414,29 @@ export class NativeBokOutboundPoller {
     lease: Extract<NativeBokOutboundLease, { kind: "dispatch" }>,
     signal: AbortSignal,
   ): Promise<Extract<NativeBokOutboundResult["outcome"], { status: "completed" }>> {
-    while (!signal.aborted) {
+    const assertLeaseValid = async (): Promise<void> => {
+      if (signal.aborted) throw new NativeBokDispatchLeaseInvalid();
       const leaseValid = await this.postHeartbeat(signal, {
         jobId: lease.jobId,
         leaseToken: lease.leaseToken,
         kind: lease.kind,
         requestHash: lease.requestHash,
       });
-      // Ostatni server-side fence jest wykonywany bezpośrednio przed każdym
-      // nieodwracalnym Discord POST, także przed retry wyniku pending.
-      if (leaseValid !== true) throw new NativeBokDispatchLeaseInvalid();
-      const result = await this.dispatcher.dispatch(lease.request);
+      // Abort/deadline może nastąpić w trakcie odpowiedzi heartbeat. Samo
+      // dodatnie ACK nie jest wtedy pozwoleniem na rozpoczęcie nowego POST-u.
+      if (signal.aborted || leaseValid !== true) {
+        throw new NativeBokDispatchLeaseInvalid();
+      }
+    };
+
+    while (!signal.aborted) {
+      // Pierwszy fence chroni wejście do dispatchera. Drugi, przekazany jako
+      // guard, jest wykonywany przez wspólny dispatcher dopiero po ewentualnym
+      // proof readback/reconciliation, tuż przed rzeczywistym Discord POST-em.
+      await assertLeaseValid();
+      const result = await this.dispatcher.dispatch(lease.request, {
+        beforeIrreversibleSend: assertLeaseValid,
+      });
       if (result.status === "sent") return { status: "completed", result };
       await this.sleep(this.dispatchRetryMs, signal);
     }

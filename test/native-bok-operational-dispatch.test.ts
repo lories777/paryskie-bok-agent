@@ -473,6 +473,42 @@ test("retry po pewnym braku proof używa tego samego nonce i trwałego rekordu",
   }
 });
 
+test("zewnętrzny permit jest sprawdzany po reconciliation i przed retry Discord POST", async () => {
+  const { dir, store } = withStore();
+  const discord = new FakeDiscord();
+  discord.failSendBeforeCommit = true;
+  let clock = Date.now();
+  try {
+    const dispatcher = new NativeOperationalActionDispatcher(readyConfig(), store, discord, {
+      retryAfterMs: 1_000,
+      now: () => clock,
+    });
+    const request = envelope({ idempotencyKey: "8740967a-8a6a-4e8b-bf0b-2c213f46adf0" });
+    assert.equal((await dispatcher.dispatch(request)).status, "pending");
+    const firstAttemptAt = store.operationalActionDispatch(request.idempotencyKey)?.lastAttemptAt;
+    assert.ok(firstAttemptAt);
+    clock = Date.parse(firstAttemptAt) + 1_001;
+
+    let permitCalls = 0;
+    await assert.rejects(
+      dispatcher.dispatch(request, {
+        beforeIrreversibleSend: async () => {
+          permitCalls += 1;
+          throw new Error("dispatch_lease_invalid");
+        },
+      }),
+      /dispatch_lease_invalid/,
+    );
+    assert.equal(permitCalls, 1);
+    assert.equal(discord.findCalls, 2);
+    assert.equal(discord.sendCalls, 1);
+    assert.equal(discord.messages.size, 0);
+    assert.equal(store.operationalActionDispatch(request.idempotencyKey)?.attempts, 2);
+  } finally {
+    cleanup(dir, store);
+  }
+});
+
 test("HTTP dispatch wymaga Bearera i zwraca exact provider/result bez routingu requestu", async () => {
   const { dir, store } = withStore();
   const discord = new FakeDiscord();
