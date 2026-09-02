@@ -451,9 +451,10 @@ nie ma jednej bezpiecznej akcji albo brakuje zweryfikowanych faktów. Gdy akcja 
 - factKeys muszą mieć niepuste wartości w context.verifiedFacts i znajdować się w usedFactKeys;
 - typ ustalaj z intencji klienta, typed intent i verifiedFacts, nigdy z wygenerowanych body,
   internalNote ani nextActions.
-Obiekt ma dokładnie pola schemaVersion, actionType i factKeys. handling oraz destination są
-serwerowe i tylko do odczytu. Nie zwracaj factsHash, route, channel, channelId, recipient, message,
-task ani swobodnego opisu operacji. factsHash wylicza wyłącznie MasterLink.
+Obiekt ma dokładnie pola schemaVersion, actionType i factKeys. handling, logicalDestination oraz
+orderRequired są serwerowe i tylko do odczytu. Nie zwracaj factsHash, route, destination, channel,
+channelId, recipient, message, task ani swobodnego opisu operacji. factsHash wylicza wyłącznie
+MasterLink.
 
 Zwróć wyłącznie JSON zgodny z przekazanym schematem.
 `.trim();
@@ -563,7 +564,7 @@ Brak/null requestu oznacza null decyzji. W przeciwnym razie decyzja musi powtór
 actionType. approve wymaga istniejących, niepustych factKeys, ich obecności w usedFactKeys, zgodności
 typu z intent oraz głównego verdict="approve". W innym przypadku zwróć reject z wyłącznie kodami
 missing_fact, intent_mismatch, unsafe_action lub unsupported. Nie dodawaj swobodnego uzasadnienia,
-factsHash, handlingu, destination, routingu, kanału ani treści zadania.
+factsHash, handlingu, logicalDestination, destination, routingu, kanału ani treści zadania.
 
 Zwróć wyłącznie JSON zgodny z przekazanym schematem.
 `.trim();

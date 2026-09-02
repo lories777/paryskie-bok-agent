@@ -119,6 +119,8 @@ test("strict request i decyzja odrzucają typ spoza enum oraz pola routingu lub 
     ["factsHash", "0".repeat(64)],
     ["handling", "team_escalation"],
     ["destination", "current_affairs"],
+    ["logicalDestination", "current_affairs"],
+    ["orderRequired", true],
     ["channelId", "1072488471895220244"],
     ["message", "wyślij na Discord"],
     ["task", "odnajdź paczkę"],
@@ -232,7 +234,7 @@ test("safety hash katalogu jest kanoniczny i nie zawiera pól UI ani channel ID"
   assert.match(operationalActionCatalogHash(), /^[a-f0-9]{64}$/);
   assert.equal(
     operationalActionCatalogHash(),
-    "ba9500f346a3bfea5f29213ac194799c84b99ca7ba4ac22a2362c71ed7767b2c",
+    "9c6f8e5341d775d05875fc29afda2911b4e2346e2fdb7c92f5983929d6ca0d6b",
   );
 });
 
@@ -256,6 +258,8 @@ test("prompty wiążą typed request bez ujawnienia prywatnych pól judge", () =
 
   assert.match(generatorPrompt, /"actionType":"order\.stop"/);
   assert.match(generatorPrompt, /"handling":"masterlink"/);
+  assert.match(generatorPrompt, /"logicalDestination":"masterlink"/);
+  assert.match(generatorPrompt, /"orderRequired":true/);
   assert.match(generatorPrompt, /nigdy z wygenerowanych body,\s+internalNote ani nextActions/);
   assert.match(generatorPrompt, /Nie zwracaj factsHash/);
   assert.match(judgePrompt, /"operationalActionRequest":\{"schemaVersion":2/);

@@ -313,7 +313,8 @@ export function operationalActionCatalogJson(): string {
         label: definition.label,
         allowedIntents: definition.allowedAiIntents,
         handling: definition.handling,
-        destination: definition.destination,
+        logicalDestination: definition.destination,
+        orderRequired: definition.orderRequired,
       };
     }),
   );
@@ -333,7 +334,7 @@ export function operationalActionCatalogContract() {
         return {
           actionType,
           handling: definition.handling,
-          destination: definition.destination,
+          logicalDestination: definition.destination,
           orderRequired: definition.orderRequired,
           allowedAiIntents: [...definition.allowedAiIntents].sort(),
         };
