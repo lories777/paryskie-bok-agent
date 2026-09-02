@@ -387,7 +387,10 @@ export class BokCodexAgent {
     visualEvidence?: NativeBokRenderedAttachmentEvidence,
     signal?: AbortSignal,
   ): Promise<string[]> {
-    const blockedIssues = catalogRecommendationResolutionIssues(output, businessContext);
+    const blockedIssues = [
+      ...catalogRecommendationResolutionIssues(output, businessContext),
+      ...deliveryPromiseResolutionIssues(messages, output, verifiedToolEvidence),
+    ];
     const drafts = output.proposedActions.filter((action) => action.kind === "reply_customer");
     for (const action of drafts) {
       const deterministicIssues = [
@@ -911,7 +914,7 @@ export function requiredMasterlinkResearch(
   if (!needsWork || orderNumbers.length === 0) return null;
 
   const text = messages.map(customerIntentText).join("\n").toLocaleLowerCase("pl");
-  const deliveryQuestion = /adres|punkt(?:u|em)?\s+odbior|paczkomat|żabka|miejsce\s+przesyłki|dostaw|doręcz/.test(text);
+  const deliveryQuestion = /adres|punkt(?:u|em)?\s+odbior|paczkomat|żabka|miejsce\s+przesyłki|dostaw|doręcz|przesył|paczk|kurier|inpost|dpd|19\s*[:.]\s*00|następn(?:ego|y)\s+dzień|\bjutro\b/.test(text);
   return {
     orderNumbers,
     requiredTool: deliveryQuestion ? "ml_get_delivery_details" : "any_read",
@@ -1087,6 +1090,100 @@ export function formatVerifiedToolEvidence(items: ThreadItem[]): string | undefi
     }));
   const evidence = [...mcpEvidence, ...catalogCommands, ...browserEvidence];
   return evidence.length > 0 ? JSON.stringify(evidence).slice(0, 30_000) : undefined;
+}
+
+function nextDayDeliveryPromiseComplaint(
+  messages: ReturnType<AgentStore["recentMessages"]>,
+): boolean {
+  const text = messages.map(customerIntentText).join("\n").toLocaleLowerCase("pl-PL");
+  return /(?:19\s*[:.]\s*00|\bjutro\b|następn(?:ego|y)\s+dzień)/.test(text) &&
+    /(?:zamów|dostaw|przesył|paczk)/.test(text);
+}
+
+function nestedValue(value: unknown, key: string, depth = 0): unknown {
+  if (depth > 8 || value === null || value === undefined) return undefined;
+  if (typeof value === "string") {
+    try {
+      return nestedValue(JSON.parse(value), key, depth + 1);
+    } catch {
+      return undefined;
+    }
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = nestedValue(item, key, depth + 1);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (Object.hasOwn(record, key)) return record[key];
+  for (const item of Object.values(record)) {
+    const found = nestedValue(item, key, depth + 1);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function verifiedDeliveryCarrier(verifiedToolEvidence?: string): string | null | undefined {
+  if (!verifiedToolEvidence) return undefined;
+  try {
+    const evidence = JSON.parse(verifiedToolEvidence);
+    if (!Array.isArray(evidence)) return undefined;
+    const deliveryRead = evidence.find((item) =>
+      item && typeof item === "object" && item.tool === "ml_get_delivery_details"
+    );
+    if (!deliveryRead) return undefined;
+    const carrier = nestedValue(deliveryRead.result, "carrier_code");
+    return typeof carrier === "string" && carrier.trim() ? carrier.trim().toLocaleLowerCase("pl-PL") : null;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasApology(value: string): boolean {
+  return /\b(?:przeprasz\w*|sorry|apolog\w*|omlouv\w*|vaband\w*|atsipra\w*|ne pare rău)\b/i.test(value);
+}
+
+/** Deterministyczny eval nad wynikiem modelu; fakty nadal pochodzą wyłącznie z odczytu MasterLink. */
+export function deliveryPromiseResolutionIssues(
+  messages: ReturnType<AgentStore["recentMessages"]>,
+  output: AgentTurnOutput,
+  verifiedToolEvidence?: string,
+): string[] {
+  if (!nextDayDeliveryPromiseComplaint(messages)) return [];
+  const carrier = verifiedDeliveryCarrier(verifiedToolEvidence);
+  const drafts = output.proposedActions.filter((action) => action.kind === "reply_customer");
+  if (carrier === undefined || carrier === null) {
+    return drafts.length > 0
+      ? ["Brak potwierdzonego przewoźnika; nie wolno zgadywać wariantu obietnicy dostawy następnego dnia."]
+      : [];
+  }
+  if (drafts.length === 0) {
+    return [
+      `Przewoźnik ${carrier} jest potwierdzony; zastosuj regułę samodzielnie i przygotuj kompletny draft zamiast pytać BOK.`,
+    ];
+  }
+  const body = drafts.map((draft) => draft.payload).join("\n");
+  const carrierFamily = /inpost/i.test(carrier)
+    ? "inpost"
+    : /dpd/i.test(carrier)
+      ? "dpd"
+      : /orlen/i.test(carrier)
+        ? "orlen"
+        : carrier;
+  const issues: string[] = [];
+  if (!hasApology(body)) issues.push("Draft nie zawiera wymaganych, krótkich przeprosin.");
+  if (carrierFamily !== "inpost") {
+    if (!body.toLocaleLowerCase("pl-PL").includes(carrierFamily)) {
+      issues.push(`Draft nie nazywa potwierdzonego przewoźnika ${carrier}.`);
+    }
+    if (!/inpost/i.test(body) || !/(?:dotycz\w*|obejm\w*|wyłącznie|tylko)/i.test(body)) {
+      issues.push("Draft nie wyjaśnia, że komunikat dostawy następnego dnia dotyczy wyłącznie InPost.");
+    }
+  }
+  return issues;
 }
 
 export function catalogSelectionIntegrityIssues(

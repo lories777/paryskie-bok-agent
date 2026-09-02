@@ -14,6 +14,7 @@ import {
   catalogSelectionIntegrityIssues,
   catalogRecommendationResolutionIssues,
   draftReviewIntegrityIssues,
+  deliveryPromiseResolutionIssues,
   extractExplicitOrderNumbers,
   assertDaktelaTicketIntegrity,
   correctionEscalationIsActionable,
@@ -459,6 +460,57 @@ test("ticket z numerem i pytaniem o punkt wymaga dokładnego odczytu dostawy", (
     orderNumbers: ["480033739"],
     requiredTool: "ml_get_delivery_details",
   });
+});
+
+test("claim o zamówieniu do 19:00 i dostawie jutro wymaga odczytu przewoźnika", () => {
+  const deliveryPromiseComplaint: StoredMessage = {
+    ...message,
+    content: "Zamówienie 480033739 złożyłam do 19:00. Miało być jutro, a nadal go nie ma.",
+  };
+  assert.deepEqual(requiredMasterlinkResearch([deliveryPromiseComplaint], output), {
+    orderNumbers: ["480033739"],
+    requiredTool: "ml_get_delivery_details",
+  });
+});
+
+test("eval claimu dostawy rozstrzyga DPD i InPost bez człowieka, a brak przewoźnika blokuje draft", () => {
+  const complaint: StoredMessage = {
+    ...message,
+    content: "Zamówienie 480033739 złożyłam do 19:00 i miało dotrzeć jutro.",
+  };
+  const result = (payload: string, caseState: AgentTurnOutput["caseState"] = "action_proposed") => ({
+    ...output,
+    caseState,
+    proposedActions: caseState === "action_proposed" ? [{
+      ...output.proposedActions[0]!,
+      payload,
+    }] : [],
+  });
+  const evidence = (carrier: string | null) => JSON.stringify([{
+    tool: "ml_get_delivery_details",
+    result: { found: true, facts: { delivery: { carrier_code: carrier } } },
+  }]);
+
+  assert.deepEqual(deliveryPromiseResolutionIssues(
+    [complaint],
+    result("Dzień dobry, przepraszamy za niejasność. Oferta dostawy jutro dotyczy wyłącznie InPost, a w tym zamówieniu wybrano DPD. Pozdrawiamy, Zespół Paryskie Perfumy"),
+    evidence("dpd"),
+  ), []);
+  assert.deepEqual(deliveryPromiseResolutionIssues(
+    [complaint],
+    result("Dzień dobry, przepraszamy, że przesyłka InPost nie dotarła w obiecanym terminie. Paczka jest nadal w drodze. Pozdrawiamy, Zespół Paryskie Perfumy"),
+    evidence("inpost"),
+  ), []);
+  assert.match(deliveryPromiseResolutionIssues(
+    [complaint],
+    result("Który wariant odpowiedzi mamy zastosować?", "waiting_for_human"),
+    evidence("dpd"),
+  )[0] ?? "", /zastosuj regułę samodzielnie/);
+  assert.match(deliveryPromiseResolutionIssues(
+    [complaint],
+    result("Dzień dobry, oferta nie obejmuje Państwa przewoźnika."),
+    evidence(null),
+  )[0] ?? "", /Brak potwierdzonego przewoźnika/);
 });
 
 test("jawny siedmiocyfrowy numer zamówienia również wymusza odczyt MasterLink", () => {

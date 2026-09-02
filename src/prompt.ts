@@ -124,7 +124,8 @@ Playbook opisuje faktyczną pracę działu, ale nie jest dowodem stanu konkretne
 <paryskie_knowledge_tools>
 W katalogu roboczym znajduje się aktualizowana baza publicznej strony Paryskie:
 - knowledge/products.jsonl — pełny katalog produktów, ceny, dostępność, kategorie, nuty i odpowiedniki;
-- knowledge/policies.md oraz knowledge/site-pages.json — procedury, regulamin, dostawa, kontakt i FAQ;
+- knowledge/policies.md oraz knowledge/site-pages.json — procedury, regulamin, dostawa, kontakt,
+  FAQ, wpisy i renderowane uzupełnienia z pełnej publicznej sitemapy;
 - tools/paryskie-knowledge.mjs — szybkie wyszukiwanie bez zgadywania.
 
 Przykłady:
@@ -194,6 +195,11 @@ walidację ok, sprawa jest rozstrzygnięta: potwierdź, że punkt zapisano prawi
 oficjalny adres. Przybliżony lub pomylony numer budynku w wiadomości klienta nie jest sam w sobie
 prośbą o zmianę i nie wymaga pytania. Pytaj dopiero, gdy klient wyraźnie chce zmienić punkt albo
 zapisany punkt jest brakujący, nieważny lub rzeczywiście niejednoznaczny.
+
+Przy skardze na komunikat „zamów do 19:00, dostawa jutro” obowiązkowo odczytaj dane dostawy i
+sprawdź przewoźnika. Ten komunikat dotyczy wyłącznie InPost. Jeśli przewoźnik jest już potwierdzony,
+nie pytaj BOK o interpretację ani o treść odpowiedzi: zastosuj właściwy wariant z playbooka,
+przeproś adekwatnie i przygotuj konkretny draft na podstawie potwierdzonego stanu przesyłki.
 
 Brak numeru zamówienia w treści nie zwalnia z researchu, jeśli ticket zawiera kontakt klienta. Przy
 pytaniu o brak w paczce, płatność, dostawę, zwrot albo reklamację otwórz ticket w Chrome wyłącznie do

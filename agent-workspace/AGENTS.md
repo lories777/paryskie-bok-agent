@@ -85,7 +85,8 @@ na kanale. Decyzję o gotowym tekście człowiek podejmuje przyciskiem, bez iden
 - `knowledge/products.jsonl` zawiera aktualizowany katalog Paryskie z WooCommerce: produkty,
   odpowiedniki, nuty, kategorie, ceny i dostępność. Nie czytaj całego pliku do kontekstu. Używaj
   `node tools/paryskie-knowledge.mjs product <numer/SKU/nazwa>` albo `search-products <fraza>`.
-- `knowledge/policies.md` i `knowledge/site-pages.json` zawierają aktualne publiczne procedury sklepu.
+- `knowledge/policies.md` i `knowledge/site-pages.json` zawierają aktualne publiczne procedury,
+  strony, wpisy oraz renderowane uzupełnienia wykryte przez pełną publiczną sitemapę sklepu.
   Używaj `node tools/paryskie-knowledge.mjs page <temat>` albo `search-pages <fraza>`.
 - Szczegółowa strona procesu i regulamin mają pierwszeństwo przed ogólnym FAQ. Zmienną cenę,
   dostępność lub promocję potwierdź na stronie na żywo przez Chrome.

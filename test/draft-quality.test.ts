@@ -156,6 +156,9 @@ test("kontrola jakości wymaga researchu wewnętrznego zamiast odpytywania klien
   assert.match(prompt, /naturalnym powitaniem w języku klienta/);
   assert.match(prompt, /Sama standardowa procedura[\s\S]*nie dowodzi wykonania operacji/);
   assert.match(prompt, /dosyłka przygotowana czy wysłana/);
+  assert.match(prompt, /zamów do 19:00, dostawa jutro/);
+  assert.match(prompt, /Komunikat dotyczy wyłącznie InPost/);
+  assert.match(prompt, /nie może przerzucać interpretacji reguły/);
 });
 
 test("kontroler może poprawić draft bez zmiany propozycji działania", () => {

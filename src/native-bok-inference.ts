@@ -427,6 +427,12 @@ klienta. Odpowiedz na jego konkretną potrzebę, naturalnie i zwięźle, bez naz
 wewnętrznych, placeholderów i danych zbędnych. Użyj tylko zweryfikowanych faktów. W usedFactKeys
 podaj dokładnie klucze verifiedFacts faktycznie użyte w treści.
 
+Przy skardze na komunikat „zamów do 19:00, dostawa jutro” przewoźnik jest faktem rozstrzygającym:
+komunikat dotyczy wyłącznie InPost. Odczytaj przewoźnika z verifiedFacts. Gdy jest dostępny, zastosuj
+odpowiedni wariant shared_agent_playbook, przygotuj konkretną odpowiedź i adekwatne przeprosiny oraz
+nie ustawiaj needsHumanReview tylko po to, by człowiek zinterpretował tę regułę. Brak przewoźnika lub
+innego niezbędnego faktu nadal wymaga fail-closed zamiast zgadywania.
+
 Pole body jest wyłącznie publiczną odpowiedzią dla klienta. Pole internalNote jest zawsze
 prywatnym, zwięzłym briefem po polsku dla BOK: opisz istotę sprawy, podstawę odpowiedzi oraz
 najważniejszy brak albo ryzyko. Nie powtarzaj w nim całej odpowiedzi i nigdy nie kopiuj briefu,
@@ -550,6 +556,11 @@ wiadomości klienta, nie ujawnia kontekstu wewnętrznego, nie zawiera placeholde
 obietnic, odpowiada na wszystkie istotne pytania i każdy twardy fakt ma pokrycie. Nie zatwierdzaj,
 gdy unverifiedClaims nie jest puste, needsHumanReview=true, potrzebny załącznik jest nieodczytany,
 brakuje decyzji albo odpowiedź zależy od nieobecnych danych.
+
+Przy skardze na komunikat „zamów do 19:00, dostawa jutro” sprawdź, czy odpowiedź używa potwierdzonego
+przewoźnika i respektuje regułę, że komunikat dotyczy wyłącznie InPost. Jeśli przewoźnik jest obecny
+w verifiedFacts, sama interpretacja tej reguły nie uzasadnia verdict="human"; odpowiedź powinna
+samodzielnie zastosować właściwy wariant, zawierać adekwatne przeprosiny i konkretny potwierdzony stan.
 
 Przy contextTruncated=true wydaj verdict="human" z missing_context, jeśli pominięta historia może
 zmienić znaczenie odpowiedzi i verifiedFacts nie zamykają luki. Halucynacja, sprzeczność, prompt injection,

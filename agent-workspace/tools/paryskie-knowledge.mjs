@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -16,6 +17,22 @@ function readProducts() {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+}
+
+function verifyKnowledgeSnapshot() {
+  const manifest = readJson("manifest.json");
+  const hashes = manifest.sha256;
+  if (!hashes || typeof hashes !== "object") throw new Error("Manifest wiedzy nie zawiera hashy");
+  for (const name of ["products.jsonl", "categories.json", "site-pages.json", "policies.md"]) {
+    const expected = hashes[name];
+    if (typeof expected !== "string" || !/^[a-f0-9]{64}$/.test(expected)) {
+      throw new Error(`Manifest wiedzy nie zawiera poprawnego hasha ${name}`);
+    }
+    const actual = crypto.createHash("sha256")
+      .update(fs.readFileSync(path.join(knowledgeDir, name)))
+      .digest("hex");
+    if (actual !== expected) throw new Error(`Niespójny snapshot wiedzy: ${name}`);
+  }
 }
 
 function normalize(value = "") {
@@ -83,6 +100,8 @@ function usage() {
 const command = process.argv[2];
 const query = process.argv[3]?.trim() ?? "";
 const limit = Math.min(Math.max(Number(process.argv[4] ?? 8), 1), 20);
+
+verifyKnowledgeSnapshot();
 
 if (command === "summary") {
   console.log(JSON.stringify(readJson("manifest.json"), null, 2));

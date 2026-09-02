@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -68,6 +69,37 @@ test("zwykła sprawa bez rekomendacji nie ładuje katalogu do promptu", () => {
     createdAt: "2026-08-26T20:00:00.000Z",
   }]);
   assert.equal(context, undefined);
+});
+
+test("katalog odrzuca częściowo opublikowany snapshot niezgodny z manifestem", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "bok-knowledge-manifest-"));
+  const knowledge = path.join(workspace, "knowledge");
+  fs.mkdirSync(knowledge);
+  const products = `${JSON.stringify({
+    perfumeNumber: "340",
+    sku: "340P",
+    name: "N° 340",
+    inStock: true,
+    categories: [{ name: "Paris Perfumes" }, { name: "Damskie" }, { name: "Bestsellery" }],
+  })}\n`;
+  fs.writeFileSync(path.join(knowledge, "products.jsonl"), products);
+  fs.writeFileSync(path.join(knowledge, "manifest.json"), JSON.stringify({
+    sha256: { "products.jsonl": createHash("sha256").update("starsza wersja").digest("hex") },
+  }));
+  try {
+    const context = buildParyskieRecommendationContext(workspace, [{
+      id: 1,
+      conversationId: 1,
+      role: "human",
+      authorId: "bok",
+      authorName: "BOK",
+      content: "Poleć damskie perfumy.",
+      createdAt: "2026-09-02T20:00:00.000Z",
+    }]) ?? "";
+    assert.match(context, /ERROR — Niespójny snapshot wiedzy: products\.jsonl/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
 });
 
 test("pytanie o konkretny numer dostaje płeć i charakter zapachu z katalogu", () => {
