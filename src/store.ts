@@ -16,6 +16,22 @@ import type {
 
 type SqlValue = string | number | bigint | null;
 
+interface OperationalActionDispatchRow {
+  idempotency_key: string;
+  request_hash: string;
+  payload_hash: string;
+  action_type: string;
+  destination: string;
+  route_identity: string;
+  status: "sending" | "sent";
+  external_reference: string | null;
+  attempts: number;
+  last_attempt_at: string;
+  created_at: string;
+  updated_at: string;
+  sent_at: string | null;
+}
+
 export interface DaktelaTicketObservation {
   ticketId: string;
   title: string;
@@ -49,6 +65,36 @@ export interface ClaimedDelivery {
   attempts: number;
 }
 
+export interface OperationalActionDispatchRecord {
+  idempotencyKey: string;
+  requestHash: string;
+  payloadHash: string;
+  actionType: string;
+  destination: string;
+  routeIdentity: string;
+  status: "sending" | "sent";
+  externalReference: string | null;
+  attempts: number;
+  lastAttemptAt: string;
+  createdAt: string;
+  updatedAt: string;
+  sentAt: string | null;
+}
+
+export interface ReserveOperationalActionDispatchInput {
+  idempotencyKey: string;
+  requestHash: string;
+  payloadHash: string;
+  actionType: string;
+  destination: string;
+  routeIdentity: string;
+}
+
+export type ReserveOperationalActionDispatchResult =
+  | { status: "created"; record: OperationalActionDispatchRecord }
+  | { status: "existing"; record: OperationalActionDispatchRecord }
+  | { status: "conflict" };
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -58,6 +104,40 @@ function fingerprintsDiffer(previous: string, current: string): boolean {
   // tylko migruje istniejący zapis, żeby nie zakolejkować ponownie całej otwartej kolejki.
   if (/^v7:/.test(current) && !/^v\d+:/.test(previous)) return false;
   return previous !== current;
+}
+
+function toOperationalActionDispatchRecord(
+  row: OperationalActionDispatchRow,
+): OperationalActionDispatchRecord {
+  return {
+    idempotencyKey: row.idempotency_key,
+    requestHash: row.request_hash,
+    payloadHash: row.payload_hash,
+    actionType: row.action_type,
+    destination: row.destination,
+    routeIdentity: row.route_identity,
+    status: row.status,
+    externalReference: row.external_reference,
+    attempts: row.attempts,
+    lastAttemptAt: row.last_attempt_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    sentAt: row.sent_at,
+  };
+}
+
+function operationalDispatchMatches(
+  record: OperationalActionDispatchRecord,
+  input: ReserveOperationalActionDispatchInput,
+): boolean {
+  return record.requestHash === input.requestHash &&
+    record.payloadHash === input.payloadHash &&
+    record.actionType === input.actionType &&
+    record.destination === input.destination &&
+    // Po potwierdzonym wysłaniu zapisany receipt pozostaje prawdą także po świadomej
+    // zmianie kanału w konfiguracji. Rekordu niepewnego nie wolno natomiast przenieść
+    // na nową fizyczną trasę, bo stary POST mógł już zostać przyjęty przez Discord.
+    (record.status === "sent" || record.routeIdentity === input.routeIdentity);
 }
 
 export class AgentStore {
@@ -231,6 +311,26 @@ export class AgentStore {
         value TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS operational_action_dispatches (
+        idempotency_key TEXT PRIMARY KEY,
+        request_hash TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        route_identity TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('sending', 'sent')),
+        external_reference TEXT,
+        attempts INTEGER NOT NULL DEFAULT 1 CHECK(attempts >= 1),
+        last_attempt_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sent_at TEXT,
+        CHECK(
+          (status = 'sending' AND external_reference IS NULL AND sent_at IS NULL)
+          OR (status = 'sent' AND external_reference IS NOT NULL AND sent_at IS NOT NULL)
+        )
+      );
+
       CREATE INDEX IF NOT EXISTS jobs_status_id_idx ON jobs(status, id);
       CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id, id);
       CREATE INDEX IF NOT EXISTS actions_status_id_idx ON actions(status, id);
@@ -241,6 +341,8 @@ export class AgentStore {
       CREATE INDEX IF NOT EXISTS deliveries_status_id_idx ON deliveries(status, id);
       CREATE INDEX IF NOT EXISTS learned_rules_updated_idx
         ON learned_rules(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS operational_action_dispatches_status_idx
+        ON operational_action_dispatches(status, updated_at);
     `);
     this.db.prepare(`
       INSERT OR IGNORE INTO runtime_metadata(key, value)
@@ -306,6 +408,128 @@ export class AgentStore {
       throw new Error("Brak tożsamości wspólnego AgentStore.");
     }
     return row.value;
+  }
+
+  reserveOperationalActionDispatch(
+    input: ReserveOperationalActionDispatchInput,
+  ): ReserveOperationalActionDispatchResult {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.operationalActionDispatch(input.idempotencyKey);
+      if (existing) {
+        this.db.exec("COMMIT");
+        return operationalDispatchMatches(existing, input)
+          ? { status: "existing", record: existing }
+          : { status: "conflict" };
+      }
+      const timestamp = now();
+      this.db
+        .prepare(`
+          INSERT INTO operational_action_dispatches(
+            idempotency_key, request_hash, payload_hash, action_type, destination,
+            route_identity, status, attempts, last_attempt_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'sending', 1, ?, ?, ?)
+        `)
+        .run(
+          input.idempotencyKey,
+          input.requestHash,
+          input.payloadHash,
+          input.actionType,
+          input.destination,
+          input.routeIdentity,
+          timestamp,
+          timestamp,
+          timestamp,
+        );
+      const created = this.operationalActionDispatch(input.idempotencyKey);
+      if (!created) throw new Error("operational_dispatch_insert_missing");
+      this.db.exec("COMMIT");
+      return { status: "created", record: created };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  operationalActionDispatch(idempotencyKey: string): OperationalActionDispatchRecord | null {
+    const row = this.db
+      .prepare(`
+        SELECT idempotency_key, request_hash, payload_hash, action_type, destination,
+               route_identity, status, external_reference, attempts, last_attempt_at,
+               created_at, updated_at, sent_at
+        FROM operational_action_dispatches
+        WHERE idempotency_key = ?
+      `)
+      .get(idempotencyKey) as OperationalActionDispatchRow | undefined;
+    return row ? toOperationalActionDispatchRecord(row) : null;
+  }
+
+  claimOperationalActionDispatchRetry(input: {
+    idempotencyKey: string;
+    payloadHash: string;
+    retryBefore: string;
+  }): boolean {
+    const timestamp = now();
+    const updated = this.db
+      .prepare(`
+        UPDATE operational_action_dispatches
+        SET attempts = attempts + 1, last_attempt_at = ?, updated_at = ?
+        WHERE idempotency_key = ?
+          AND payload_hash = ?
+          AND status = 'sending'
+          AND last_attempt_at <= ?
+      `)
+      .run(
+        timestamp,
+        timestamp,
+        input.idempotencyKey,
+        input.payloadHash,
+        input.retryBefore,
+      );
+    return updated.changes === 1;
+  }
+
+  completeOperationalActionDispatch(input: {
+    idempotencyKey: string;
+    payloadHash: string;
+    externalReference: string;
+  }): OperationalActionDispatchRecord {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.operationalActionDispatch(input.idempotencyKey);
+      if (!existing || existing.payloadHash !== input.payloadHash) {
+        throw new Error("operational_dispatch_completion_mismatch");
+      }
+      if (existing.status === "sent") {
+        if (existing.externalReference !== input.externalReference) {
+          throw new Error("operational_dispatch_receipt_conflict");
+        }
+        this.db.exec("COMMIT");
+        return existing;
+      }
+      const timestamp = now();
+      const updated = this.db
+        .prepare(`
+          UPDATE operational_action_dispatches
+          SET status = 'sent', external_reference = ?, sent_at = ?, updated_at = ?
+          WHERE idempotency_key = ? AND payload_hash = ? AND status = 'sending'
+        `)
+        .run(
+          input.externalReference,
+          timestamp,
+          timestamp,
+          input.idempotencyKey,
+          input.payloadHash,
+        );
+      if (updated.changes !== 1) throw new Error("operational_dispatch_completion_lost");
+      const completed = this.operationalActionDispatch(input.idempotencyKey);
+      if (!completed) throw new Error("operational_dispatch_completion_missing");
+      this.db.exec("COMMIT");
+      return completed;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   private ensureColumn(

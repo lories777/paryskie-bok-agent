@@ -1,6 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertLiveConfig, assertNativeBokApiConfig, loadConfig } from "../src/config.js";
+import {
+  assertLiveConfig,
+  assertNativeBokApiConfig,
+  loadConfig,
+  nativeOperationalDispatchConfigurationErrors,
+} from "../src/config.js";
+
+const OPERATIONAL_ROUTE_ENV = {
+  BOK_NATIVE_DISCORD_PAYMENTS_CHANNEL_ID: "100000000000000101",
+  BOK_NATIVE_DISCORD_ALLEGRO_CHANNEL_ID: "100000000000000102",
+  BOK_NATIVE_DISCORD_COMPLAINTS_CHANNEL_ID: "100000000000000103",
+  BOK_NATIVE_DISCORD_CURRENT_AFFAIRS_CHANNEL_ID: "100000000000000104",
+  BOK_NATIVE_DISCORD_RETURNS_UNRECEIVED_CHANNEL_ID: "100000000000000105",
+  BOK_NATIVE_DISCORD_CANCELLED_CHANNEL_ID: "100000000000000106",
+  BOK_NATIVE_DISCORD_WHOLESALERS_CHANNEL_ID: "100000000000000107",
+  BOK_NATIVE_DISCORD_UPSELL_CHANNEL_ID: "100000000000000108",
+  BOK_NATIVE_DISCORD_PROMO_CHANNEL_ID: "100000000000000109",
+  BOK_NATIVE_DISCORD_BOK_CHANNEL_ID: "100000000000000110",
+  BOK_NATIVE_DISCORD_ORIGINALS_CHANNEL_ID: "100000000000000111",
+  BOK_NATIVE_DISCORD_UNSUBSCRIBE_CHANNEL_ID: "100000000000000112",
+  BOK_NATIVE_DISCORD_RUFUS_BOK_CHANNEL_ID: "100000000000000113",
+  BOK_NATIVE_DISCORD_BOK_MARKETING_CHANNEL_ID: "100000000000000114",
+} as const;
 
 test("konfiguracja rozdziela listy i domyślnie blokuje działania zewnętrzne", () => {
   const config = loadConfig(
@@ -100,4 +122,56 @@ test("współdzielone API jest loopback-only i działa wyłącznie w procesie li
     BOK_NATIVE_API_ENABLED: "true",
   }, "/tmp/project");
   assert.throws(() => assertLiveConfig(liveWithoutToken), /BOK_NATIVE_API_TOKEN/);
+});
+
+test("dispatch operacyjny jest domyślnie wyłączony i nie dziedziczy przypadkowych tras", () => {
+  const config = loadConfig({}, "/tmp/project");
+  assert.equal(config.nativeOperationalDispatchEnabled, false);
+  assert.equal(config.nativeOperationalDiscordChannelIds.size, 0);
+  assert.ok(nativeOperationalDispatchConfigurationErrors(config).includes("BOK_AGENT_EXTERNAL_ACTIONS"));
+});
+
+test("dispatch wymaga osobnej bramki write, jednej kategorii i pełnej mapy tras", () => {
+  const incomplete = loadConfig({
+    BOK_NATIVE_OPERATIONAL_DISPATCH_ENABLED: "true",
+    BOK_NATIVE_DISCORD_GUILD_ID: "100000000000000001",
+    BOK_NATIVE_DISCORD_CATEGORY_ID: "100000000000000002",
+  }, "/tmp/project");
+  const errors = nativeOperationalDispatchConfigurationErrors(incomplete);
+  assert.ok(errors.includes("BOK_AGENT_EXTERNAL_ACTIONS"));
+  assert.ok(errors.includes("BOK_NATIVE_DISCORD_PAYMENTS_CHANNEL_ID"));
+  assert.throws(() => assertLiveConfig(incomplete), /BOK_AGENT_EXTERNAL_ACTIONS/);
+
+  const complete = loadConfig({
+    DISCORD_BOT_TOKEN: "test-token",
+    BOK_AGENT_COMMAND_CHANNEL_IDS: "1",
+    BOK_AGENT_ALLOWED_USER_IDS: "10",
+    BOK_AGENT_EXTERNAL_ACTIONS: "true",
+    BOK_NATIVE_OPERATIONAL_DISPATCH_ENABLED: "true",
+    BOK_NATIVE_DISCORD_GUILD_ID: "100000000000000001",
+    BOK_NATIVE_DISCORD_CATEGORY_ID: "100000000000000002",
+    ...OPERATIONAL_ROUTE_ENV,
+  }, "/tmp/project");
+  assert.deepEqual(nativeOperationalDispatchConfigurationErrors(complete), []);
+  assert.doesNotThrow(() => assertLiveConfig(complete));
+});
+
+test("dispatch fail-closed odrzuca duplikat kanału, kolizję z kategorią i zły snowflake", () => {
+  const duplicate = loadConfig({
+    BOK_AGENT_EXTERNAL_ACTIONS: "true",
+    BOK_NATIVE_DISCORD_GUILD_ID: "100000000000000001",
+    BOK_NATIVE_DISCORD_CATEGORY_ID: "100000000000000002",
+    ...OPERATIONAL_ROUTE_ENV,
+    BOK_NATIVE_DISCORD_ALLEGRO_CHANNEL_ID: OPERATIONAL_ROUTE_ENV.BOK_NATIVE_DISCORD_PAYMENTS_CHANNEL_ID,
+  }, "/tmp/project");
+  assert.match(nativeOperationalDispatchConfigurationErrors(duplicate).join(","), /duplikat/);
+
+  const collision = loadConfig({
+    BOK_AGENT_EXTERNAL_ACTIONS: "true",
+    BOK_NATIVE_DISCORD_GUILD_ID: "100000000000000001",
+    BOK_NATIVE_DISCORD_CATEGORY_ID: OPERATIONAL_ROUTE_ENV.BOK_NATIVE_DISCORD_PAYMENTS_CHANNEL_ID,
+    ...OPERATIONAL_ROUTE_ENV,
+  }, "/tmp/project");
+  assert.match(nativeOperationalDispatchConfigurationErrors(collision).join(","), /kolizja/);
+  assert.throws(() => loadConfig({ BOK_NATIVE_DISCORD_GUILD_ID: "123" }, "/tmp/project"));
 });

@@ -8,6 +8,7 @@ import { assertLiveConfig, assertNativeBokApiConfig, loadConfig } from "./config
 import { DiscordGateway } from "./discord.js";
 import { DaktelaMonitor } from "./daktela-monitor.js";
 import { MasterLinkReportClient } from "./masterlink.js";
+import { NativeOperationalActionDispatcher } from "./native-bok-operational-dispatch.js";
 import { createNativeBokHttpServer } from "./native-bok-server.js";
 import { AgentStore } from "./store.js";
 import type { ClaimedJob, IncomingMessage } from "./types.js";
@@ -66,6 +67,11 @@ async function main(): Promise<void> {
       const discord = new DiscordGateway(config, store);
       const core = new BokAgentCore(config, store);
       const agent = new BokCodexAgent(core, masterlink);
+      const operationalDispatcher = new NativeOperationalActionDispatcher(
+        config,
+        store,
+        discord,
+      );
       const worker = new JobWorker(store, agent, discord);
       const daktela = config.daktelaMonitorEnabled
         ? new DaktelaMonitor(config, store)
@@ -86,19 +92,21 @@ async function main(): Promise<void> {
       const shutdown = () => controller.abort();
       process.once("SIGINT", shutdown);
       process.once("SIGTERM", shutdown);
-      const nativeServer = config.nativeApiEnabled
-        ? await startSharedNativeApi(config, agent)
-        : undefined;
+      let nativeServer: ReturnType<typeof createNativeBokHttpServer> | undefined;
       let discordStarted = false;
       try {
         await discord.start();
         discordStarted = true;
+        await operationalDispatcher.initialize();
+        nativeServer = config.nativeApiEnabled
+          ? await startSharedNativeApi(config, agent, operationalDispatcher)
+          : undefined;
         await daktela?.start();
         await worker.runForever(controller.signal);
       } finally {
         await daktela?.stop();
-        if (discordStarted) await discord.stop();
         await stopSharedNativeApi(nativeServer);
+        if (discordStarted) await discord.stop();
       }
       return;
     }
@@ -119,9 +127,14 @@ Paryskie BOK Agent
 async function startSharedNativeApi(
   config: ReturnType<typeof loadConfig>,
   agent: BokCodexAgent,
+  operationalDispatcher: NativeOperationalActionDispatcher,
 ) {
   assertNativeBokApiConfig(config);
-  const server = createNativeBokHttpServer(config, agent.nativeInference);
+  const server = createNativeBokHttpServer(
+    config,
+    agent.nativeInference,
+    operationalDispatcher,
+  );
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(config.nativeApiPort, config.nativeApiHost, () => {

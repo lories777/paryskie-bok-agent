@@ -1,15 +1,27 @@
+import { createHash } from "node:crypto";
 import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
   Client,
   Events,
   GatewayIntentBits,
   Partials,
+  PermissionFlagsBits,
   type Interaction,
   type Message,
+  type TextChannel,
 } from "discord.js";
 import type { AppConfig } from "./config.js";
+import type {
+  NativeOperationalDiscordPort,
+  OperationalActionProofResult,
+} from "./native-bok-operational-dispatch.js";
+import {
+  TICKET_TEAM_ESCALATION_DESTINATIONS,
+  type TicketTeamEscalationDestination,
+} from "./native-bok-operational-catalog.js";
 import type { AgentStore } from "./store.js";
 import type { ClaimedJob, IncomingMessage } from "./types.js";
 import type { StoredAction } from "./types.js";
@@ -100,10 +112,11 @@ export function isDiscordUnknownMessage(error: unknown): boolean {
 type ApprovedActionExecutor = (job: ClaimedJob) => Promise<ActionExecution | null>;
 type StatusProvider = () => Promise<string> | string;
 
-export class DiscordGateway implements ReplySink {
+export class DiscordGateway implements ReplySink, NativeOperationalDiscordPort {
   readonly client: Client;
   private approvedActionExecutor?: ApprovedActionExecutor;
   private statusProvider?: StatusProvider;
+  private operationalIdentityVerified = false;
 
   constructor(
     private readonly config: AppConfig & { discordToken: string },
@@ -138,6 +151,7 @@ export class DiscordGateway implements ReplySink {
   }
 
   async stop(): Promise<void> {
+    this.operationalIdentityVerified = false;
     this.client.destroy();
   }
 
@@ -147,6 +161,125 @@ export class DiscordGateway implements ReplySink {
 
   setStatusProvider(provider: StatusProvider): void {
     this.statusProvider = provider;
+  }
+
+  async verifyOperationalActionRoutes(): Promise<void> {
+    this.operationalIdentityVerified = false;
+    const guildId = this.config.nativeOperationalDiscordGuildId;
+    const categoryId = this.config.nativeOperationalDiscordCategoryId;
+    if (!this.client.isReady() || !guildId || !categoryId) {
+      throw new Error("Discord operational identity is not configured or connected.");
+    }
+    if (
+      TICKET_TEAM_ESCALATION_DESTINATIONS.some(
+        (destination) => !this.config.nativeOperationalDiscordChannelIds.has(destination),
+      )
+    ) {
+      throw new Error("Discord operational route map is incomplete.");
+    }
+    const guild = await this.client.guilds.fetch(guildId);
+    const category = await guild.channels.fetch(categoryId);
+    if (!category || category.type !== ChannelType.GuildCategory) {
+      throw new Error("Configured Discord operational category is invalid.");
+    }
+    const member = guild.members.me ?? await guild.members.fetchMe();
+    for (const destination of TICKET_TEAM_ESCALATION_DESTINATIONS) {
+      const channel = await this.operationalActionChannel(destination);
+      const permissions = channel.permissionsFor(member);
+      if (!permissions?.has([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ])) {
+        throw new Error(`Discord operational route ${destination} has insufficient permissions.`);
+      }
+    }
+    this.operationalIdentityVerified = true;
+  }
+
+  operationalActionIdentityVerified(): boolean {
+    return this.operationalIdentityVerified;
+  }
+
+  operationalActionReady(): boolean {
+    return this.operationalIdentityVerified && this.client.isReady();
+  }
+
+  operationalActionRouteIdentity(destination: TicketTeamEscalationDestination): string | null {
+    const guildId = this.config.nativeOperationalDiscordGuildId;
+    const categoryId = this.config.nativeOperationalDiscordCategoryId;
+    const channelId = this.config.nativeOperationalDiscordChannelIds.get(destination);
+    if (!this.operationalIdentityVerified || !guildId || !categoryId || !channelId) return null;
+    return createHash("sha256")
+      .update(JSON.stringify({ guildId, categoryId, destination, channelId }), "utf8")
+      .digest("hex");
+  }
+
+  async findOperationalActionProof(input: {
+    destination: TicketTeamEscalationDestination;
+    proof: string;
+    expectedContent: string;
+  }): Promise<OperationalActionProofResult> {
+    const channel = await this.operationalActionChannel(input.destination);
+    const ownId = this.client.user?.id;
+    if (!ownId) throw new Error("Discord bot identity is unavailable.");
+    const messages = await channel.messages.fetch({ limit: 100 });
+    const matchingProof = [...messages.values()].filter(
+      (message) => message.author.id === ownId && message.content.includes(input.proof),
+    );
+    if (matchingProof.length === 0) return { status: "missing" };
+    if (
+      matchingProof.length !== 1 ||
+      matchingProof[0]?.content !== input.expectedContent
+    ) {
+      return { status: "conflict" };
+    }
+    return { status: "found", externalReference: matchingProof[0].id };
+  }
+
+  async sendOperationalAction(input: {
+    destination: TicketTeamEscalationDestination;
+    content: string;
+    nonce: string;
+  }): Promise<string> {
+    if (input.content.length > 2_000) throw new Error("Discord operational message is too long.");
+    const channel = await this.operationalActionChannel(input.destination);
+    const sent = await channel.send({
+      content: input.content,
+      allowedMentions: { parse: [] },
+      nonce: input.nonce,
+      enforceNonce: true,
+    });
+    const confirmed = await sent.fetch();
+    if (
+      confirmed.author.id !== this.client.user?.id ||
+      confirmed.channelId !== channel.id ||
+      confirmed.content !== input.content
+    ) {
+      throw new Error("Discord did not confirm the exact operational message.");
+    }
+    return confirmed.id;
+  }
+
+  private async operationalActionChannel(
+    destination: TicketTeamEscalationDestination,
+  ): Promise<TextChannel> {
+    if (!this.client.isReady()) throw new Error("Discord client is not ready.");
+    const guildId = this.config.nativeOperationalDiscordGuildId;
+    const categoryId = this.config.nativeOperationalDiscordCategoryId;
+    const channelId = this.config.nativeOperationalDiscordChannelIds.get(destination);
+    if (!guildId || !categoryId || !channelId) throw new Error("Discord route is not configured.");
+    const channel = await this.client.channels.fetch(channelId);
+    if (
+      !channel ||
+      channel.type !== ChannelType.GuildText ||
+      channel.guildId !== guildId ||
+      channel.parentId !== categoryId
+    ) {
+      this.operationalIdentityVerified = false;
+      throw new Error(`Discord operational route ${destination} changed identity.`);
+    }
+    return channel;
   }
 
   async sendSystemMessage(channelId: string, message: string): Promise<string> {

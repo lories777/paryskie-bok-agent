@@ -46,11 +46,32 @@ export const TICKET_AI_OPERATIONAL_ACTION_DECISION_REASONS = [
 export type TicketOperationalActionHandling = "masterlink" | "team_escalation";
 export const TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION = 2 as const;
 
+export const TICKET_OPERATIONAL_ACTION_DESTINATIONS = [
+  "masterlink",
+  "payments",
+  "allegro",
+  "complaints",
+  "current_affairs",
+  "returns_unreceived",
+  "cancelled",
+  "wholesalers",
+  "upsell",
+  "promo",
+  "bok",
+  "originals",
+  "unsubscribe",
+  "rufus_bok",
+  "bok_marketing",
+] as const;
+
+export type TicketOperationalActionDestination =
+  (typeof TICKET_OPERATIONAL_ACTION_DESTINATIONS)[number];
+
 interface TicketOperationalActionDefinition {
   readonly actionType: TicketOperationalActionType;
   readonly label: string;
   readonly handling: TicketOperationalActionHandling;
-  readonly destination: string;
+  readonly destination: TicketOperationalActionDestination;
   readonly orderRequired: boolean;
   readonly allowedAiIntents: readonly TicketAiIntent[];
 }
@@ -265,6 +286,20 @@ export const TICKET_OPERATIONAL_ACTION_DEFINITIONS = {
     allowedAiIntents: TICKET_AI_INTENTS,
   },
 } as const satisfies Record<TicketOperationalActionType, TicketOperationalActionDefinition>;
+
+export const TICKET_TEAM_ESCALATION_ACTION_TYPES = Object.freeze(
+  TICKET_OPERATIONAL_ACTION_TYPES.filter(
+    (actionType) =>
+      TICKET_OPERATIONAL_ACTION_DEFINITIONS[actionType].handling === "team_escalation",
+  ),
+);
+
+export const TICKET_TEAM_ESCALATION_DESTINATIONS = Object.freeze(
+  TICKET_OPERATIONAL_ACTION_DESTINATIONS.filter((destination) => destination !== "masterlink"),
+);
+
+export type TicketTeamEscalationDestination =
+  (typeof TICKET_TEAM_ESCALATION_DESTINATIONS)[number];
 
 export function ticketOperationalActionAcceptsAiIntent(
   actionType: TicketOperationalActionType,

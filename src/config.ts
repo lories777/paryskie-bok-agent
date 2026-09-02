@@ -1,6 +1,10 @@
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import {
+  TICKET_TEAM_ESCALATION_DESTINATIONS,
+  type TicketTeamEscalationDestination,
+} from "./native-bok-operational-catalog.js";
 
 const booleanFromEnv = z
   .string()
@@ -27,6 +31,11 @@ const optionalUrlFromEnv = z.preprocess(
 const optionalSecretFromEnv = z.preprocess(
   (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
   z.string().min(32).max(4096).optional(),
+);
+
+const optionalSnowflakeFromEnv = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().regex(/^[1-9][0-9]{16,21}$/).optional(),
 );
 
 const loopbackHost = z
@@ -69,6 +78,23 @@ const envSchema = z.object({
   BOK_NATIVE_API_TOKEN: optionalSecretFromEnv,
   BOK_NATIVE_API_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
   BOK_NATIVE_API_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(120_000).default(110_000),
+  BOK_NATIVE_OPERATIONAL_DISPATCH_ENABLED: booleanFromEnv,
+  BOK_NATIVE_DISCORD_GUILD_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_CATEGORY_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_PAYMENTS_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_ALLEGRO_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_COMPLAINTS_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_CURRENT_AFFAIRS_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_RETURNS_UNRECEIVED_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_CANCELLED_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_WHOLESALERS_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_UPSELL_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_PROMO_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_BOK_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_ORIGINALS_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_UNSUBSCRIBE_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_RUFUS_BOK_CHANNEL_ID: optionalSnowflakeFromEnv,
+  BOK_NATIVE_DISCORD_BOK_MARKETING_CHANNEL_ID: optionalSnowflakeFromEnv,
 });
 
 export interface AppConfig {
@@ -105,6 +131,10 @@ export interface AppConfig {
   nativeApiToken?: string;
   nativeApiMaxConcurrency: number;
   nativeApiTimeoutMs: number;
+  nativeOperationalDispatchEnabled: boolean;
+  nativeOperationalDiscordGuildId?: string;
+  nativeOperationalDiscordCategoryId?: string;
+  nativeOperationalDiscordChannelIds: ReadonlyMap<TicketTeamEscalationDestination, string>;
 }
 
 export function loadConfig(
@@ -112,6 +142,28 @@ export function loadConfig(
   cwd: string = process.cwd(),
 ): AppConfig {
   const parsed = envSchema.parse(env);
+  const nativeOperationalDiscordChannelIds = new Map<
+    TicketTeamEscalationDestination,
+    string
+  >();
+  for (const [destination, channelId] of [
+    ["payments", parsed.BOK_NATIVE_DISCORD_PAYMENTS_CHANNEL_ID],
+    ["allegro", parsed.BOK_NATIVE_DISCORD_ALLEGRO_CHANNEL_ID],
+    ["complaints", parsed.BOK_NATIVE_DISCORD_COMPLAINTS_CHANNEL_ID],
+    ["current_affairs", parsed.BOK_NATIVE_DISCORD_CURRENT_AFFAIRS_CHANNEL_ID],
+    ["returns_unreceived", parsed.BOK_NATIVE_DISCORD_RETURNS_UNRECEIVED_CHANNEL_ID],
+    ["cancelled", parsed.BOK_NATIVE_DISCORD_CANCELLED_CHANNEL_ID],
+    ["wholesalers", parsed.BOK_NATIVE_DISCORD_WHOLESALERS_CHANNEL_ID],
+    ["upsell", parsed.BOK_NATIVE_DISCORD_UPSELL_CHANNEL_ID],
+    ["promo", parsed.BOK_NATIVE_DISCORD_PROMO_CHANNEL_ID],
+    ["bok", parsed.BOK_NATIVE_DISCORD_BOK_CHANNEL_ID],
+    ["originals", parsed.BOK_NATIVE_DISCORD_ORIGINALS_CHANNEL_ID],
+    ["unsubscribe", parsed.BOK_NATIVE_DISCORD_UNSUBSCRIBE_CHANNEL_ID],
+    ["rufus_bok", parsed.BOK_NATIVE_DISCORD_RUFUS_BOK_CHANNEL_ID],
+    ["bok_marketing", parsed.BOK_NATIVE_DISCORD_BOK_MARKETING_CHANNEL_ID],
+  ] as const) {
+    if (channelId) nativeOperationalDiscordChannelIds.set(destination, channelId);
+  }
   return {
     ...(parsed.DISCORD_BOT_TOKEN ? { discordToken: parsed.DISCORD_BOT_TOKEN } : {}),
     commandChannelIds: parsed.BOK_AGENT_COMMAND_CHANNEL_IDS,
@@ -161,7 +213,38 @@ export function loadConfig(
       : {}),
     nativeApiMaxConcurrency: parsed.BOK_NATIVE_API_MAX_CONCURRENCY,
     nativeApiTimeoutMs: parsed.BOK_NATIVE_API_TIMEOUT_MS,
+    nativeOperationalDispatchEnabled: parsed.BOK_NATIVE_OPERATIONAL_DISPATCH_ENABLED,
+    ...(parsed.BOK_NATIVE_DISCORD_GUILD_ID
+      ? { nativeOperationalDiscordGuildId: parsed.BOK_NATIVE_DISCORD_GUILD_ID }
+      : {}),
+    ...(parsed.BOK_NATIVE_DISCORD_CATEGORY_ID
+      ? { nativeOperationalDiscordCategoryId: parsed.BOK_NATIVE_DISCORD_CATEGORY_ID }
+      : {}),
+    nativeOperationalDiscordChannelIds,
   };
+}
+
+export function nativeOperationalDispatchConfigurationErrors(config: AppConfig): string[] {
+  const errors: string[] = [];
+  if (!config.externalActionsEnabled) errors.push("BOK_AGENT_EXTERNAL_ACTIONS");
+  if (!config.nativeOperationalDiscordGuildId) errors.push("BOK_NATIVE_DISCORD_GUILD_ID");
+  if (!config.nativeOperationalDiscordCategoryId) errors.push("BOK_NATIVE_DISCORD_CATEGORY_ID");
+  for (const destination of TICKET_TEAM_ESCALATION_DESTINATIONS) {
+    if (!config.nativeOperationalDiscordChannelIds.has(destination)) {
+      errors.push(`BOK_NATIVE_DISCORD_${destination.toUpperCase()}_CHANNEL_ID`);
+    }
+  }
+  const channelIds = [...config.nativeOperationalDiscordChannelIds.values()];
+  if (new Set(channelIds).size !== channelIds.length) {
+    errors.push("BOK_NATIVE_DISCORD_*_CHANNEL_ID (duplikat)");
+  }
+  if (
+    config.nativeOperationalDiscordCategoryId &&
+    channelIds.includes(config.nativeOperationalDiscordCategoryId)
+  ) {
+    errors.push("BOK_NATIVE_DISCORD_CATEGORY_ID (kolizja)");
+  }
+  return errors;
 }
 
 export function assertNativeBokApiConfig(config: AppConfig): asserts config is AppConfig & {
@@ -197,6 +280,9 @@ export function assertLiveConfig(config: AppConfig): asserts config is AppConfig
     } catch {
       errors.push("BOK_NATIVE_API_TOKEN");
     }
+  }
+  if (config.nativeOperationalDispatchEnabled) {
+    errors.push(...nativeOperationalDispatchConfigurationErrors(config));
   }
   if (errors.length > 0) {
     throw new Error(`Brak wymaganej konfiguracji trybu live: ${errors.join(", ")}`);

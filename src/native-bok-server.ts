@@ -18,6 +18,18 @@ import {
   NativeBokCorrectionBindingError,
   type NativeBokInference,
 } from "./native-bok-inference.js";
+import {
+  MAX_NATIVE_OPERATIONAL_DISPATCH_BYTES,
+  NATIVE_OPERATIONAL_DISPATCH_SCHEMA_VERSION,
+  NativeOperationalActionDispatchError,
+  type NativeOperationalActionDispatcher,
+  type NativeOperationalActionDispatchResult,
+  type NativeOperationalActionDispatchRuntimeStatus,
+} from "./native-bok-operational-dispatch.js";
+import {
+  TICKET_TEAM_ESCALATION_ACTION_TYPES,
+  TICKET_TEAM_ESCALATION_DESTINATIONS,
+} from "./native-bok-operational-catalog.js";
 
 interface NativeBokInferencePort {
   readonly generatorModel: string;
@@ -38,6 +50,30 @@ interface NativeBokServerConfig {
   readonly timeoutMs: number;
 }
 
+interface NativeOperationalActionDispatcherPort {
+  runtimeStatus(): NativeOperationalActionDispatchRuntimeStatus;
+  dispatch(value: unknown): Promise<NativeOperationalActionDispatchResult>;
+}
+
+const DISABLED_OPERATIONAL_DISPATCHER: NativeOperationalActionDispatcherPort = {
+  runtimeStatus: () => ({
+    schemaVersion: NATIVE_OPERATIONAL_DISPATCH_SCHEMA_VERSION,
+    provider: NATIVE_BOK_PROVIDER,
+    enabled: false,
+    configurationReady: false,
+    identityVerified: false,
+    ready: false,
+    kinds: ["team_escalation"],
+    actionTypes: [...TICKET_TEAM_ESCALATION_ACTION_TYPES],
+    routeKeys: [...TICKET_TEAM_ESCALATION_DESTINATIONS],
+    delivery: "discord-gateway",
+    receipt: "shared-agent-store",
+  }),
+  async dispatch() {
+    throw new NativeOperationalActionDispatchError(503, "capability_unavailable");
+  },
+};
+
 class SafeHttpError extends Error {
   constructor(
     readonly status: number,
@@ -51,6 +87,7 @@ class SafeHttpError extends Error {
 export function createNativeBokHttpServer(
   config: AppConfig & { nativeApiToken: string },
   inference: NativeBokInference | NativeBokInferencePort,
+  operationalDispatcher?: NativeOperationalActionDispatcher,
 ): Server {
   return createNativeBokHttpServerForConfig(
     {
@@ -59,12 +96,14 @@ export function createNativeBokHttpServer(
       timeoutMs: config.nativeApiTimeoutMs,
     },
     inference,
+    operationalDispatcher,
   );
 }
 
 export function createNativeBokHttpServerForConfig(
   config: NativeBokServerConfig,
   inference: NativeBokInferencePort,
+  operationalDispatcher: NativeOperationalActionDispatcherPort = DISABLED_OPERATIONAL_DISPATCHER,
 ): Server {
   let activeRequests = 0;
   const server = http.createServer(async (request, response) => {
@@ -90,10 +129,18 @@ export function createNativeBokHttpServerForConfig(
         sendJson(response, 200, {
           ok: true,
           ...inference.runtimeStatus(),
+          operationalActionDispatch: operationalDispatcher.runtimeStatus(),
         });
         return;
       }
-      if (url.search !== "" || !["/v1/bok/generate", "/v1/bok/judge"].includes(url.pathname)) {
+      if (
+        url.search !== "" ||
+        ![
+          "/v1/bok/generate",
+          "/v1/bok/judge",
+          "/v1/bok/actions/dispatch",
+        ].includes(url.pathname)
+      ) {
         sendError(response, 404, "not_found");
         return;
       }
@@ -108,7 +155,13 @@ export function createNativeBokHttpServerForConfig(
         return;
       }
 
-      const body = await readJsonBody(request);
+      const isOperationalDispatch = url.pathname === "/v1/bok/actions/dispatch";
+      const body = await readJsonBody(
+        request,
+        isOperationalDispatch
+          ? MAX_NATIVE_OPERATIONAL_DISPATCH_BYTES
+          : MAX_NATIVE_BOK_REQUEST_BYTES,
+      );
       const disconnect = new AbortController();
       const timeout = AbortSignal.timeout(config.timeoutMs);
       const signal = AbortSignal.any([disconnect.signal, timeout]);
@@ -120,6 +173,15 @@ export function createNativeBokHttpServerForConfig(
 
       activeRequests += 1;
       try {
+        if (isOperationalDispatch) {
+          const result = await operationalDispatcher.dispatch(body);
+          sendJson(response, 200, {
+            ok: true,
+            provider: NATIVE_BOK_PROVIDER,
+            result,
+          });
+          return;
+        }
         if (url.pathname === "/v1/bok/generate") {
           const parsed = parseGenerateRequest(body);
           const result = parseGeneratorOutput(
@@ -154,8 +216,12 @@ export function createNativeBokHttpServerForConfig(
           sendError(response, 409, error.code);
           return;
         }
+        if (error instanceof NativeOperationalActionDispatchError) {
+          sendError(response, error.status, error.code);
+          return;
+        }
         // Szczegóły modelu mogą zawierać treść klienta albo dane runtime. Nie trafiają do HTTP/logu.
-        sendError(response, 502, "inference_failed");
+        sendError(response, 502, isOperationalDispatch ? "dispatch_failed" : "inference_failed");
       } finally {
         activeRequests -= 1;
       }
@@ -199,7 +265,7 @@ function authorized(header: string | undefined, token: string): boolean {
   return timingSafeEqual(actual, expected);
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+async function readJsonBody(request: IncomingMessage, maximumBytes: number): Promise<unknown> {
   const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") throw new SafeHttpError(415, "json_required");
   const contentEncoding = request.headers["content-encoding"]?.trim().toLowerCase();
@@ -210,7 +276,7 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   if (!Number.isFinite(declared) || declared < 0) {
     throw new SafeHttpError(400, "invalid_content_length");
   }
-  if (declared > MAX_NATIVE_BOK_REQUEST_BYTES) {
+  if (declared > maximumBytes) {
     request.resume();
     throw new SafeHttpError(413, "request_too_large");
   }
@@ -220,7 +286,7 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   for await (const chunk of request) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
     total += bytes.byteLength;
-    if (total > MAX_NATIVE_BOK_REQUEST_BYTES) {
+    if (total > maximumBytes) {
       request.resume();
       throw new SafeHttpError(413, "request_too_large");
     }
