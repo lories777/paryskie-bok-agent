@@ -2,8 +2,9 @@
 
 API MasterLink nie jest osobnym agentem ani stateless mirrorem. Uruchamia się wyłącznie wewnątrz
 komendy `run`, czyli w tym samym procesie co Discord i monitor Dakteli. Korzysta z tej samej
-instancji `AgentStore`, tego samego `bok-agent.sqlite`, workspace, playbooka, modelu i zalogowanej
-sesji Codexa.
+instancji `AgentStore`, tego samego `bok-agent.sqlite`, workspace, playbooka, modelu oraz
+tożsamości uwierzytelnienia i konfiguracji `CODEX_HOME`. Generate, judge i worker uruchamiają
+osobne klienty i nowe wątki inferencji; nie współdzielą ukrytej historii rozmowy modelu.
 
 Oba wejścia dostają tę samą instancję `BokAgentCore`. Core jest właścicielem modelu, playbooka,
 czytnika wersjonowanych korekt i profili narzędzi. Profil HTTP jest celowo węższy: read-only,

@@ -29,6 +29,10 @@ import type {
   StoredMessage,
   VerifiedHumanCorrectionSnapshot,
 } from "./types.js";
+import {
+  renderVerifiedCorrectionsForPrompt,
+  VERIFIED_CORRECTION_POLICY,
+} from "./verified-corrections-prompt.js";
 
 const EMPTY_VERIFIED_CORRECTIONS: VerifiedHumanCorrectionSnapshot = {
   revision: 0,
@@ -84,8 +88,8 @@ export class NativeBokInference {
     readonly core: BokAgentCore,
     options: NativeBokInferenceOptions = {},
   ) {
-    // ML i Discord korzystają z dokładnie tego samego wyboru modelu i tej samej
-    // odziedziczonej sesji Codexa. Nie istnieje osobny override dla portu HTTP.
+    // ML i Discord korzystają z tego samego core, wyboru modelu oraz tożsamości auth/config
+    // w CODEX_HOME. Każdy przebieg inferencji pozostaje osobnym klientem i nowym wątkiem.
     this.generatorModel = core.model;
     this.judgeModel = this.generatorModel;
     this.runner = options.runner ?? new CodexNativeBokModelRunner(
@@ -344,26 +348,6 @@ function escapeData(value: string): string {
     .replaceAll(">", "&gt;");
 }
 
-function verifiedCorrectionsForPrompt(snapshot: VerifiedHumanCorrectionSnapshot) {
-  return snapshot.corrections.map((correction) => ({
-    source: {
-      trust: "authorized_human_correction",
-      content: correction.sourceContent,
-      sourceRevision: correction.sourceRevision,
-      sourceKind: correction.sourceKind,
-      sourceExternalMessageId: correction.sourceExternalMessageId,
-      sourceChannelId: correction.sourceChannelId,
-      replyToBotMessageId: correction.replyToBotMessageId,
-      authorizationKind: correction.authorizationKind,
-    },
-    derivedIndex: {
-      trust: "untrusted_model_summary",
-      situation: correction.derivedSituation,
-      instruction: correction.derivedInstruction,
-    },
-  }));
-}
-
 export function buildNativeBokGeneratorPrompt(
   context: TicketAiContext,
   knowledgeContext: string,
@@ -410,8 +394,10 @@ ${escapeData(JSON.stringify(knowledgeSnapshot))}
 </managed_bok_playbook>
 
 <verified_human_corrections trust="authorized_human_policy_amendment" revision="${verifiedCorrections.revision}" total="${verifiedCorrections.total}" truncated="${verifiedCorrections.truncated}">
-${escapeData(JSON.stringify(verifiedCorrectionsForPrompt(verifiedCorrections)))}
+${escapeData(renderVerifiedCorrectionsForPrompt(verifiedCorrections))}
 </verified_human_corrections>
+
+${VERIFIED_CORRECTION_POLICY}
 
 <shared_agent_playbook trust="authoritative_process_policy">
 ${escapeData(sharedPlaybook)}
@@ -507,8 +493,10 @@ ${escapeData(JSON.stringify(knowledgeSnapshot))}
 </managed_bok_playbook>
 
 <verified_human_corrections trust="authorized_human_policy_amendment" revision="${verifiedCorrections.revision}" total="${verifiedCorrections.total}" truncated="${verifiedCorrections.truncated}">
-${escapeData(JSON.stringify(verifiedCorrectionsForPrompt(verifiedCorrections)))}
+${escapeData(renderVerifiedCorrectionsForPrompt(verifiedCorrections))}
 </verified_human_corrections>
+
+${VERIFIED_CORRECTION_POLICY}
 
 <shared_agent_playbook trust="authoritative_process_policy">
 ${escapeData(sharedPlaybook)}

@@ -230,6 +230,7 @@ export class BokCodexAgent {
         messages,
         reviewerBusinessContext,
         formatVerifiedToolEvidence(evidenceItems),
+        sharedPolicy.verifiedCorrections,
         signal,
       );
       for (
@@ -264,6 +265,7 @@ export class BokCodexAgent {
           messages,
           reviewerBusinessContext,
           formatVerifiedToolEvidence(evidenceItems),
+          sharedPolicy.verifiedCorrections,
           signal,
         );
       }
@@ -322,6 +324,7 @@ export class BokCodexAgent {
     messages: ReturnType<AgentStore["recentMessages"]>,
     businessContext?: string,
     verifiedToolEvidence?: string,
+    verifiedCorrections?: ReturnType<BokAgentCore["policySnapshot"]>["verifiedCorrections"],
     signal?: AbortSignal,
   ): Promise<string[]> {
     const blockedIssues = catalogRecommendationResolutionIssues(output, businessContext);
@@ -350,6 +353,7 @@ export class BokCodexAgent {
           messages,
           businessContext,
           verifiedToolEvidence,
+          verifiedCorrections,
         ), {
           outputSchema: CUSTOMER_DRAFT_REVIEW_JSON_SCHEMA,
           ...(signal ? { signal } : {}),

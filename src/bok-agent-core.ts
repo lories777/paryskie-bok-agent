@@ -179,15 +179,30 @@ function discoverConfiguredMcpServers(
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw new Error("native_bok_mcp_config_unreadable");
     }
-    if (/^\s*mcp_servers\s*=/m.test(raw)) {
-      throw new Error("native_bok_mcp_config_unparseable");
-    }
     for (const line of raw.split(/\r?\n/)) {
-      if (!/^\s*\[\s*mcp_servers\./.test(line)) continue;
-      const match = line.match(/^\s*\[\s*mcp_servers\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))(?:\.|\s*\])/);
-      const name = match?.[1] ?? match?.[2] ?? match?.[3];
-      if (!name) throw new Error("native_bok_mcp_config_unparseable");
-      names.add(name);
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      if (/^\[\s*mcp_servers\s*\]$/.test(trimmed)) {
+        // Root table permits arbitrary keys on following lines. Without a complete TOML parser we
+        // cannot prove that every inherited server was disabled, so this valid shape fails closed.
+        throw new Error("native_bok_mcp_config_unparseable");
+      }
+      if (/^\[\s*mcp_servers\./.test(trimmed)) {
+        const match = trimmed.match(/^\[\s*mcp_servers\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))(?:\.|\s*\])/);
+        const name = match?.[1] ?? match?.[2] ?? match?.[3];
+        if (!name) throw new Error("native_bok_mcp_config_unparseable");
+        names.add(name);
+        continue;
+      }
+      if (/^mcp_servers\s*=/.test(trimmed)) {
+        throw new Error("native_bok_mcp_config_unparseable");
+      }
+      if (/^mcp_servers\./.test(trimmed)) {
+        const match = trimmed.match(/^mcp_servers\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*=/);
+        const name = match?.[1] ?? match?.[2] ?? match?.[3];
+        if (!name) throw new Error("native_bok_mcp_config_unparseable");
+        names.add(name);
+      }
     }
   }
   return [...names].sort();

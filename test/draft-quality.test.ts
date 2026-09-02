@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { applyDraftReview, buildDraftReviewPrompt } from "../src/draft-quality.js";
-import type { AgentTurnOutput, ProposedAction, StoredMessage } from "../src/types.js";
+import { buildTurnPrompt } from "../src/prompt.js";
+import type {
+  AgentTurnOutput,
+  ClaimedJob,
+  ProposedAction,
+  StoredMessage,
+  VerifiedHumanCorrectionSnapshot,
+} from "../src/types.js";
 
 function draft(): ProposedAction {
   return {
@@ -56,6 +63,75 @@ test("kontroler dostaje najnowszą korektę pracownika BOK jako autoryzowaną de
   assert.match(prompt, /podtrzymujemy stanowisko/);
   assert.match(prompt, /Nie zastępuj jej własną interpretacją publicznej strony/);
   assert.match(prompt, /nie\s+zmuszaj agenta do ponownego pytania/);
+});
+
+test("primary i reviewer dostają ten sam snapshot oraz kontrakt zweryfikowanej korekty", () => {
+  const snapshot: VerifiedHumanCorrectionSnapshot = {
+    revision: 9,
+    total: 1,
+    truncated: false,
+    corrections: [{
+      id: 1,
+      derivedSituation: "Reklamacja po drugim uszkodzeniu",
+      derivedInstruction: "Wiadomość premium",
+      createdAt: "2026-09-02T10:00:00.000Z",
+      updatedAt: "2026-09-02T10:00:00.000Z",
+      sourceRevision: 4,
+      sourceContent: "To nie są nasze standardy; doślemy uszkodzone produkty.",
+      sourceAuthorId: "hidden",
+      sourceAuthorName: "Hidden",
+      sourceExternalMessageId: "discord-correction-1",
+      sourceChannelId: "bok-command",
+      sourceKind: "reply",
+      replyToBotMessageId: "bot-draft-1",
+      authorizationKind: "allowed_role",
+      authorizationId: "hidden-role",
+    }],
+  };
+  const messages: StoredMessage[] = [{
+    id: 1,
+    conversationId: 1,
+    role: "context",
+    authorId: "daktela-monitor",
+    authorName: "Daktela",
+    content: "Klient zgłasza ponownie uszkodzoną paczkę.",
+    createdAt: "2026-09-02T10:05:00.000Z",
+  }];
+  const job: ClaimedJob = {
+    id: 1,
+    publicId: "BOK-000001",
+    conversationId: 1,
+    triggerMessageId: 1,
+    platform: "discord",
+    channelId: "bok-command",
+    externalMessageId: "daktela:v6:100250:test",
+    attempts: 1,
+  };
+  const primary = buildTurnPrompt(
+    job,
+    messages,
+    false,
+    undefined,
+    [],
+    false,
+    [],
+    "Playbook",
+    [],
+    snapshot,
+  );
+  const reviewer = buildDraftReviewPrompt(draft(), messages, undefined, undefined, snapshot);
+
+  for (const prompt of [primary, reviewer]) {
+    assert.match(prompt, /verified_human_corrections revision="9"/);
+    assert.match(prompt, /To nie są nasze standardy/);
+    assert.match(prompt, /Wiadomość premium/);
+    assert.match(prompt, /Applicability musi jasno wynikać/);
+    assert.match(prompt, /nie\s+może rozszerzyć, zmienić ani zastąpić/);
+    assert.match(prompt, /sama kolejność lub\s+modelowy indeks nie ustanawiają supersede/);
+    assert.match(prompt, /waiting_for_human \/ verdict human/);
+    assert.match(prompt, /nigdy nie jest faktem konkretnego\s+zamówienia/);
+    assert.doesNotMatch(prompt, /Hidden|hidden-role/);
+  }
 });
 
 test("kontrola jakości wymaga researchu wewnętrznego zamiast odpytywania klienta", () => {
