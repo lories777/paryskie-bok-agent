@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type {
   AgentTurnOutput,
@@ -30,6 +30,20 @@ interface OperationalActionDispatchRow {
   created_at: string;
   updated_at: string;
   sent_at: string | null;
+}
+
+interface TicketScopedGuidanceRow {
+  guidance_id: string;
+  guidance_hash: string;
+  external_ticket_id: string;
+  source_revision: number;
+  content: string;
+  decision: "yes" | "no" | "custom";
+  source_created_at: string;
+  store_receipt_id: string;
+  conversation_id: number;
+  source_message_id: number;
+  stored_at: string;
 }
 
 export interface DaktelaTicketObservation {
@@ -95,6 +109,30 @@ export type ReserveOperationalActionDispatchResult =
   | { status: "existing"; record: OperationalActionDispatchRecord }
   | { status: "conflict" };
 
+export interface TicketScopedGuidanceInput {
+  readonly guidanceId: string;
+  readonly guidanceHash: string;
+  readonly externalTicketId: string;
+  readonly sourceRevision: number;
+  readonly content: string;
+  readonly decision: "yes" | "no" | "custom";
+  readonly createdAt: string;
+}
+
+export interface TicketScopedGuidanceReceipt {
+  readonly guidanceId: string;
+  readonly guidanceHash: string;
+  readonly scope: "ticket";
+  readonly externalTicketId: string;
+  readonly storeReceiptId: string;
+}
+
+export interface TicketScopedGuidanceRecord {
+  readonly receipt: TicketScopedGuidanceReceipt;
+  readonly conversationId: number;
+  readonly messageId: number;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -138,6 +176,89 @@ function operationalDispatchMatches(
     // zmianie kanału w konfiguracji. Rekordu niepewnego nie wolno natomiast przenieść
     // na nową fizyczną trasę, bo stary POST mógł już zostać przyjęty przez Discord.
     (record.status === "sent" || record.routeIdentity === input.routeIdentity);
+}
+
+function assertTicketScopedGuidanceInput(input: TicketScopedGuidanceInput): void {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.guidanceId)) {
+    throw new Error("ticket_guidance_id_invalid");
+  }
+  if (!/^[a-f0-9]{64}$/.test(input.guidanceHash)) {
+    throw new Error("ticket_guidance_hash_invalid");
+  }
+  if (!/^[A-Za-z0-9_]{1,100}$/.test(input.externalTicketId)) {
+    throw new Error("ticket_guidance_ticket_invalid");
+  }
+  if (!Number.isSafeInteger(input.sourceRevision) || input.sourceRevision < 1) {
+    throw new Error("ticket_guidance_revision_invalid");
+  }
+  if (
+    input.content.length < 1
+    || input.content.length > 4_000
+    || input.content.trim().length < 1
+    || input.content.normalize("NFC") !== input.content
+    || createHash("sha256").update(input.content, "utf8").digest("hex") !== input.guidanceHash
+  ) {
+    throw new Error("ticket_guidance_content_invalid");
+  }
+  if (!(["yes", "no", "custom"] as const).includes(input.decision)) {
+    throw new Error("ticket_guidance_decision_invalid");
+  }
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(input.createdAt)
+    || Number.isNaN(Date.parse(input.createdAt))
+  ) {
+    throw new Error("ticket_guidance_created_at_invalid");
+  }
+}
+
+function ticketScopedGuidanceMatches(
+  row: TicketScopedGuidanceRow,
+  input: TicketScopedGuidanceInput,
+): boolean {
+  return row.guidance_hash === input.guidanceHash
+    && row.external_ticket_id === input.externalTicketId
+    && row.source_revision === input.sourceRevision
+    && row.content === input.content
+    && row.decision === input.decision
+    && row.source_created_at === input.createdAt;
+}
+
+function ticketScopedGuidanceRecord(row: TicketScopedGuidanceRow): TicketScopedGuidanceRecord {
+  return {
+    receipt: {
+      guidanceId: row.guidance_id,
+      guidanceHash: row.guidance_hash,
+      scope: "ticket",
+      externalTicketId: row.external_ticket_id,
+      storeReceiptId: row.store_receipt_id,
+    },
+    conversationId: row.conversation_id,
+    messageId: row.source_message_id,
+  };
+}
+
+function ticketScopedGuidanceReceiptId(
+  input: TicketScopedGuidanceInput,
+  storeIdentity: string,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      guidanceHash: input.guidanceHash,
+      guidanceId: input.guidanceId,
+      externalTicketId: input.externalTicketId,
+      sourceRevision: input.sourceRevision,
+      storeIdentity,
+    }), "utf8")
+    .digest("hex");
+}
+
+function renderTicketScopedGuidance(input: TicketScopedGuidanceInput): string {
+  return [
+    `[ZATWIERDZONA WSKAZÓWKA MANAGERA BOK — WYŁĄCZNIE DAKTELA #${input.externalTicketId}]`,
+    `Decyzja: ${input.decision}. Rewizja sprawy: ${input.sourceRevision}.`,
+    input.content,
+    "Nie uogólniaj tej wskazówki na inne tickety ani klientów.",
+  ].join("\n\n");
 }
 
 export class AgentStore {
@@ -331,6 +452,20 @@ export class AgentStore {
         )
       );
 
+      CREATE TABLE IF NOT EXISTS ticket_scoped_guidance (
+        guidance_id TEXT PRIMARY KEY,
+        guidance_hash TEXT NOT NULL,
+        external_ticket_id TEXT NOT NULL,
+        source_revision INTEGER NOT NULL CHECK(source_revision >= 1),
+        content TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK(decision IN ('yes', 'no', 'custom')),
+        source_created_at TEXT NOT NULL,
+        store_receipt_id TEXT NOT NULL UNIQUE,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE RESTRICT,
+        source_message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id) ON DELETE RESTRICT,
+        stored_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS jobs_status_id_idx ON jobs(status, id);
       CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id, id);
       CREATE INDEX IF NOT EXISTS actions_status_id_idx ON actions(status, id);
@@ -343,6 +478,8 @@ export class AgentStore {
         ON learned_rules(updated_at DESC);
       CREATE INDEX IF NOT EXISTS operational_action_dispatches_status_idx
         ON operational_action_dispatches(status, updated_at);
+      CREATE INDEX IF NOT EXISTS ticket_scoped_guidance_ticket_idx
+        ON ticket_scoped_guidance(external_ticket_id, source_revision);
     `);
     this.db.prepare(`
       INSERT OR IGNORE INTO runtime_metadata(key, value)
@@ -408,6 +545,93 @@ export class AgentStore {
       throw new Error("Brak tożsamości wspólnego AgentStore.");
     }
     return row.value;
+  }
+
+  recordTicketScopedGuidance(input: TicketScopedGuidanceInput): TicketScopedGuidanceRecord {
+    assertTicketScopedGuidanceInput(input);
+    const conversationExternalId = `daktela-ticket:${input.externalTicketId}`;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.ticketScopedGuidanceRow(input.guidanceId);
+      if (existing) {
+        if (!ticketScopedGuidanceMatches(existing, input)) {
+          throw new Error("ticket_guidance_conflict");
+        }
+        this.db.exec("COMMIT");
+        return ticketScopedGuidanceRecord(existing);
+      }
+      const conversation = this.db
+        .prepare(`
+          SELECT id
+          FROM conversations
+          WHERE platform = 'discord' AND external_id = ?
+        `)
+        .get(conversationExternalId) as { id: number } | undefined;
+      if (!conversation) throw new Error("ticket_guidance_conversation_missing");
+
+      const storeReceiptId = ticketScopedGuidanceReceiptId(input, this.runtimeIdentity());
+      const message = this.db
+        .prepare(`
+          INSERT INTO messages(
+            conversation_id, external_message_id, role, author_id, author_name, content,
+            shared_context, created_at
+          ) VALUES (?, ?, 'human', 'masterlink-guidance', 'Wskazówka managera BOK', ?, 0, ?)
+        `)
+        .run(
+          conversation.id,
+          `masterlink-guidance:${input.guidanceId}`,
+          renderTicketScopedGuidance(input),
+          input.createdAt,
+        );
+      const messageId = Number(message.lastInsertRowid);
+      const storedAt = now();
+      this.db
+        .prepare(`
+          INSERT INTO ticket_scoped_guidance(
+            guidance_id, guidance_hash, external_ticket_id, source_revision, content,
+            decision, source_created_at, store_receipt_id, conversation_id,
+            source_message_id, stored_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          input.guidanceId,
+          input.guidanceHash,
+          input.externalTicketId,
+          input.sourceRevision,
+          input.content,
+          input.decision,
+          input.createdAt,
+          storeReceiptId,
+          conversation.id,
+          messageId,
+          storedAt,
+        );
+      const inserted = this.ticketScopedGuidanceRow(input.guidanceId);
+      if (!inserted) throw new Error("ticket_guidance_insert_missing");
+      this.db.exec("COMMIT");
+      return ticketScopedGuidanceRecord(inserted);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  ticketScopedGuidance(guidanceId: string): TicketScopedGuidanceRecord | null {
+    const row = this.ticketScopedGuidanceRow(guidanceId);
+    return row ? ticketScopedGuidanceRecord(row) : null;
+  }
+
+  private ticketScopedGuidanceRow(guidanceId: string): TicketScopedGuidanceRow | null {
+    const row = this.db
+      .prepare(`
+        SELECT guidance_id, guidance_hash, external_ticket_id, source_revision, content,
+               decision, source_created_at, store_receipt_id, conversation_id,
+               source_message_id, stored_at
+        FROM ticket_scoped_guidance
+        WHERE guidance_id = ?
+      `)
+      .get(guidanceId) as TicketScopedGuidanceRow | undefined;
+    return row ?? null;
   }
 
   reserveOperationalActionDispatch(
