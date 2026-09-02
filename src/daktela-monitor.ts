@@ -1,24 +1,14 @@
 import { createHash } from "node:crypto";
-import { chromium, type Browser, type Page } from "playwright-core";
 import type { AppConfig } from "./config.js";
+import {
+  DaktelaReadSession,
+  type DaktelaQueueRow,
+  type DaktelaSessionCapabilities,
+} from "./daktela-read-session.js";
 import { daktelaConversationKey } from "./discord.js";
 import { AgentStore, type DaktelaTicketObservation } from "./store.js";
 import type { ClaimedJob, IncomingMessage } from "./types.js";
 import type { ActionExecution } from "./worker.js";
-
-interface RawDaktelaRow {
-  ticketId: string;
-  title: string;
-  deadline: string;
-  category: string;
-  contact: string;
-  assignedUser: string;
-  status: string;
-  stage: string;
-  edited: string;
-  editedBy: string;
-  href: string;
-}
 
 export interface DaktelaActivitySnapshot {
   direction: "incoming" | "outgoing" | "other";
@@ -26,7 +16,6 @@ export interface DaktelaActivitySnapshot {
   attachments?: string[];
 }
 
-const MONITOR_PAGE_NAME = "paryskie-bok-daktela-monitor";
 const ANALYSIS_VERSION = "v6";
 const OBVIOUS_NO_REPLY_TITLES = [
   /^delivery status notification \((?:delay|failure)\)$/i,
@@ -39,15 +28,7 @@ const OBVIOUS_NO_REPLY_TITLES = [
   /^(?:undeliverable|undelivered mail returned|mail delivery (?:failed|subsystem)|returned mail|failure notice)\b/i,
 ];
 
-interface DaktelaSessionCapabilities {
-  userType: string;
-  profileType: string;
-  profileTitle: string;
-}
-
 export class DaktelaMonitor {
-  private browser: Browser | undefined;
-  private page: Page | undefined;
   private timer: NodeJS.Timeout | undefined;
   private scanning = false;
   private stopped = false;
@@ -55,11 +36,17 @@ export class DaktelaMonitor {
   private consecutiveFailures = 0;
   private lastSuccessfulScanAt: string | undefined;
   private sessionCapabilities: DaktelaSessionCapabilities | undefined;
+  private readonly readSession: DaktelaReadSession;
+  private readonly ownsReadSession: boolean;
 
   constructor(
     private readonly config: AppConfig,
     private readonly store: AgentStore,
-  ) {}
+    readSession?: DaktelaReadSession,
+  ) {
+    this.readSession = readSession ?? new DaktelaReadSession(config);
+    this.ownsReadSession = readSession === undefined;
+  }
 
   async start(): Promise<void> {
     if (!this.config.daktelaMonitorEnabled) return;
@@ -72,85 +59,16 @@ export class DaktelaMonitor {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
-    // Przy connectOverCDP Playwright zamyka własny transport, nie zewnętrzny proces Chrome.
-    // Pozostawienie transportu otwartego trzyma event loop Node i blokuje restart usługi.
-    const browser = this.browser;
-    this.page = undefined;
-    this.browser = undefined;
-    if (browser?.isConnected()) await browser.close().catch(() => undefined);
+    if (this.ownsReadSession) await this.readSession.close();
   }
 
   async scanOnce(): Promise<number> {
     if (!this.config.daktelaViewUrl || !this.config.daktelaEscalationChannelId) return 0;
     if (this.store.hasActiveDaktelaJob()) return 0;
 
-    const page = await this.monitorPage();
-    await page.goto(this.config.daktelaViewUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: 30_000,
-    });
-    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
-    if (/\/login\/?(?:#.*)?$/.test(new URL(page.url()).pathname)) {
-      throw new Error("Daktela wymaga ponownego zalogowania w Chrome Agent");
-    }
-    this.sessionCapabilities = await readSessionCapabilities(page);
-    const quickSearch = page.locator('input[placeholder^="Quick search"]');
-    if ((await quickSearch.count()) > 0 && (await quickSearch.inputValue()).trim()) {
-      await quickSearch.fill("");
-      await quickSearch.press("Enter");
-    }
-    await page.waitForFunction(
-      () => {
-        const root = globalThis as unknown as Record<string, unknown>;
-        const jq = (root.jQuery ?? root.$) as
-          | ((selector: string) => { data(name: string): unknown })
-          | undefined;
-        const grid = jq?.("#ticketsGrid").data("kendoGrid") as
-          | { dataSource?: { view?: () => unknown[] } }
-          | undefined;
-        return (grid?.dataSource?.view?.().length ?? 0) > 0;
-      },
-      undefined,
-      { timeout: 20_000 },
-    );
-
-    const rawRows = await page.evaluate(() => {
-      const root = globalThis as unknown as Record<string, unknown>;
-      const jq = (root.jQuery ?? root.$) as
-        | ((selector: string) => { data(name: string): unknown })
-        | undefined;
-      const grid = jq?.("#ticketsGrid").data("kendoGrid") as
-        | { dataSource?: { view?: () => unknown[] } }
-        | undefined;
-      const records = grid?.dataSource?.view?.() ?? [];
-      const text = (value: unknown): string =>
-        typeof value === "string" || typeof value === "number" ? String(value) : "";
-      const titled = (value: unknown): string => {
-        if (!value || typeof value !== "object") return text(value);
-        const record = value as Record<string, unknown>;
-        return text(record.title) || text(record.name);
-      };
-      return records.map((value) => {
-        const record = value as Record<string, unknown>;
-        const ticketId = text(record.name) || text(record.id);
-        const rawEdited = record.edited;
-        const edited = rawEdited instanceof Date ? rawEdited.toISOString() : text(rawEdited);
-        const stageCode = text(record.stage).toUpperCase();
-        return {
-          ticketId,
-          title: text(record.title),
-          deadline: "",
-          category: titled(record.category),
-          contact: "",
-          assignedUser: titled(record.user),
-          status: "",
-          stage: stageCode === "OPEN" ? "Open" : stageCode === "CLOSE" ? "Closed" : stageCode,
-          edited,
-          editedBy: titled(record.edited_by) || titled(record.last_activity_operator),
-          href: ticketId ? `/tickets/update/${ticketId}` : "",
-        } satisfies RawDaktelaRow;
-      });
-    });
+    const queue = await this.readSession.readQueue();
+    this.sessionCapabilities = queue.capabilities;
+    const rawRows = queue.rows;
     const tickets = rawRows
       .filter((row) => /^\d+$/.test(row.ticketId) && row.href)
       .map((row) => this.normalize(row))
@@ -168,7 +86,15 @@ export class DaktelaMonitor {
       let activities: DaktelaActivitySnapshot[] = [];
       let detailError: string | undefined;
       try {
-        activities = await this.readTicketDetail(page, ticket);
+        activities = (await this.readSession.readTicketActivities(ticket.ticketId)).map(
+          (activity) => ({
+            direction: activity.direction,
+            text: redactActivity(activity.text).slice(0, 6_000),
+            attachments: [...new Set(
+              activity.attachments.map((name) => redactActivity(name).slice(0, 300)),
+            )],
+          }),
+        );
       } catch (error) {
         detailError = error instanceof Error ? error.message : String(error);
       }
@@ -282,43 +208,7 @@ export class DaktelaMonitor {
     }
   }
 
-  private async monitorPage(): Promise<Page> {
-    if (this.page && !this.page.isClosed() && this.browser?.isConnected()) return this.page;
-    this.page = await this.namedPage(MONITOR_PAGE_NAME);
-    return this.page;
-  }
-
-  private async namedPage(name: string): Promise<Page> {
-    if (!this.browser?.isConnected()) {
-      this.page = undefined;
-      const browser = await chromium.connectOverCDP(this.config.daktelaBrowserCdpUrl);
-      this.browser = browser;
-      browser.once("disconnected", () => {
-        if (this.browser === browser) {
-          this.browser = undefined;
-          this.page = undefined;
-        }
-      });
-    }
-    const context = this.browser.contexts()[0];
-    if (!context) throw new Error("Chrome Agent nie udostępnił kontekstu przeglądarki");
-    for (const page of context.pages()) {
-      const currentName = await page
-        .evaluate(() => (globalThis as unknown as { name: string }).name)
-        .catch(() => "");
-      if (currentName === name) {
-        return page;
-      }
-    }
-    const page = await context.newPage();
-    await page.goto("about:blank");
-    await page.evaluate((pageName) => {
-      (globalThis as unknown as { name: string }).name = pageName;
-    }, name);
-    return page;
-  }
-
-  private normalize(row: RawDaktelaRow): DaktelaTicketObservation {
+  private normalize(row: DaktelaQueueRow): DaktelaTicketObservation {
     const url = new URL(row.href, this.config.daktelaViewUrl).toString();
     const fingerprint = `v7:${createHash("sha256")
       .update(
@@ -348,32 +238,6 @@ export class DaktelaMonitor {
     };
   }
 
-  private async readTicketDetail(
-    page: Page,
-    ticket: DaktelaTicketObservation,
-  ): Promise<DaktelaActivitySnapshot[]> {
-    await page.goto(ticket.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
-    await page.waitForSelector("text=Ticket detail", { state: "attached", timeout: 20_000 });
-    const activities = await page.locator(".card.hd-activity").evaluateAll((cards) =>
-      cards.map((card) => ({
-        direction: card.querySelector(".activity-in")
-          ? ("incoming" as const)
-          : card.querySelector(".activity-out")
-            ? ("outgoing" as const)
-            : ("other" as const),
-        text: (card.textContent ?? "").trim().replace(/\s+/g, " "),
-        attachments: [...card.querySelectorAll('a[href*="/file/download.php"]')]
-          .map((link) => (link.textContent ?? link.getAttribute("title") ?? "").trim().replace(/\s+/g, " "))
-          .filter(Boolean),
-      })),
-    );
-    return activities.slice(0, 8).map((activity) => ({
-      direction: activity.direction,
-      text: redactActivity(activity.text).slice(0, 6_000),
-      attachments: [...new Set(activity.attachments.map((name) => redactActivity(name).slice(0, 300)))],
-    }));
-  }
 }
 
 export function isObviousNoReplyTicket(title: string): boolean {
@@ -389,30 +253,6 @@ export function isAutomaticAcknowledgementActivity(value: string): boolean {
 export function extractDaktelaTicketId(target: string): string | undefined {
   const fromUrl = target.match(/\/tickets\/update\/(\d+)/i)?.[1];
   return fromUrl ?? target.match(/(?:ticket|zgłoszenie|sprawa)?\s*#(\d+)/i)?.[1];
-}
-
-async function readSessionCapabilities(page: Page): Promise<DaktelaSessionCapabilities> {
-  return page.evaluate(async () => {
-    const response = await fetch("/api/v6/whoim.json", { credentials: "same-origin" });
-    if (!response.ok) throw new Error(`whoim HTTP ${response.status}`);
-    const json = (await response.json()) as {
-      error?: unknown;
-      result?: {
-        user?: { type?: string; profile?: { type?: string; title?: string } };
-      };
-    };
-    const hasError = Array.isArray(json.error)
-      ? json.error.length > 0
-      : json.error && typeof json.error === "object"
-        ? Object.keys(json.error).length > 0
-        : Boolean(json.error);
-    if (hasError) throw new Error("whoim zwrócił błąd sesji");
-    return {
-      userType: json.result?.user?.type ?? "",
-      profileType: json.result?.user?.profile?.type ?? "",
-      profileTitle: json.result?.user?.profile?.title ?? "",
-    };
-  });
 }
 
 export function buildTicketTask(
