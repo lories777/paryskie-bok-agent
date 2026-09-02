@@ -1,4 +1,11 @@
 import { z } from "zod";
+import {
+  parseTicketAiKnowledgeSnapshot,
+  ticketAiKnowledgeSnapshotSchema,
+  TICKET_AI_INTENTS,
+} from "./native-bok-knowledge.js";
+
+export { TICKET_AI_INTENTS } from "./native-bok-knowledge.js";
 
 export const NATIVE_BOK_PROVIDER = "paryskie-bok-agent" as const;
 export const DEFAULT_NATIVE_BOK_MODEL = "codex-subscription-managed";
@@ -16,19 +23,6 @@ export const MAX_NATIVE_BOK_ATTACHMENT_TEXT_CHARS = 12_000;
 export const MAX_NATIVE_BOK_ATTACHMENT_TOTAL_TEXT_CHARS = 24_000;
 export const NATIVE_BOK_ATTACHMENT_POLICY_VERSION = "verified-text-v1" as const;
 export const NATIVE_BOK_ATTACHMENT_TEXT_EXTRACTOR = "utf8-text-v1" as const;
-
-export const TICKET_AI_INTENTS = [
-  "faq",
-  "order_status",
-  "delivery_status",
-  "payment_status",
-  "return",
-  "complaint",
-  "cancellation",
-  "refund",
-  "legal_privacy",
-  "other",
-] as const;
 
 export const TICKET_AI_JUDGE_REASON_CODES = [
   "grounded",
@@ -336,15 +330,33 @@ export const ticketAiJudgeOutputSchema = z
   .strict();
 
 export const nativeBokGenerateRequestSchema = z
-  .object({ context: ticketAiContextSchema })
-  .strict();
+  .object({
+    context: ticketAiContextSchema,
+    knowledgeSnapshot: ticketAiKnowledgeSnapshotSchema,
+  })
+  .strict()
+  .superRefine((request, issue) => {
+    try {
+      parseTicketAiKnowledgeSnapshot(request.knowledgeSnapshot, request.context.ticket.market);
+    } catch {
+      issue.addIssue({ code: "custom", message: "knowledge_snapshot_invalid" });
+    }
+  });
 
 export const nativeBokJudgeRequestSchema = z
   .object({
     context: ticketAiContextSchema,
     draft: ticketAiGeneratorOutputSchema,
+    knowledgeSnapshot: ticketAiKnowledgeSnapshotSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((request, issue) => {
+    try {
+      parseTicketAiKnowledgeSnapshot(request.knowledgeSnapshot, request.context.ticket.market);
+    } catch {
+      issue.addIssue({ code: "custom", message: "knowledge_snapshot_invalid" });
+    }
+  });
 
 export type TicketAiContext = z.infer<typeof ticketAiContextSchema>;
 export type TicketAiGeneratorOutput = z.infer<typeof ticketAiGeneratorOutputSchema>;
