@@ -11,13 +11,23 @@ import {
   NATIVE_BOK_CONTEXT,
   NATIVE_BOK_DRAFT,
   NATIVE_BOK_JUDGEMENT,
+  NATIVE_BOK_KNOWLEDGE,
 } from "./native-bok-fixtures.js";
 
 const TOKEN = "native-bok-test-token-minimum-32-characters";
 
 function fakeInference(overrides: {
-  generate?: (context: unknown, signal: AbortSignal) => Promise<unknown>;
-  judge?: (context: unknown, draft: unknown, signal: AbortSignal) => Promise<unknown>;
+  generate?: (
+    context: unknown,
+    knowledgeSnapshot: unknown,
+    signal: AbortSignal,
+  ) => Promise<unknown>;
+  judge?: (
+    context: unknown,
+    draft: unknown,
+    knowledgeSnapshot: unknown,
+    signal: AbortSignal,
+  ) => Promise<unknown>;
 } = {}) {
   return {
     generatorModel: "codex-generator-test",
@@ -65,14 +75,17 @@ async function post(origin: string, path: string, value: unknown, token = TOKEN)
 test("generate zwraca envelope provider/model zgodny z connector-em i no-store", async () => {
   let received: unknown;
   const server = createServer(fakeInference({
-    async generate(context) {
-      received = context;
+    async generate(context, knowledgeSnapshot) {
+      received = [context, knowledgeSnapshot];
       return NATIVE_BOK_DRAFT;
     },
   }));
   const runtime = await listen(server);
   try {
-    const response = await post(runtime.origin, "/v1/bok/generate", { context: NATIVE_BOK_CONTEXT });
+    const response = await post(runtime.origin, "/v1/bok/generate", {
+      context: NATIVE_BOK_CONTEXT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
@@ -82,7 +95,7 @@ test("generate zwraca envelope provider/model zgodny z connector-em i no-store",
       provider: NATIVE_BOK_PROVIDER,
       model: "codex-generator-test",
     });
-    assert.deepEqual(received, NATIVE_BOK_CONTEXT);
+    assert.deepEqual(received, [NATIVE_BOK_CONTEXT, NATIVE_BOK_KNOWLEDGE]);
   } finally {
     await runtime.close();
   }
@@ -91,8 +104,8 @@ test("generate zwraca envelope provider/model zgodny z connector-em i no-store",
 test("judge przyjmuje dokładnie context+draft i używa osobnego modelu", async () => {
   let received: unknown[] = [];
   const server = createServer(fakeInference({
-    async judge(context, draft) {
-      received = [context, draft];
+    async judge(context, draft, knowledgeSnapshot) {
+      received = [context, draft, knowledgeSnapshot];
       return NATIVE_BOK_JUDGEMENT;
     },
   }));
@@ -101,6 +114,7 @@ test("judge przyjmuje dokładnie context+draft i używa osobnego modelu", async 
     const response = await post(runtime.origin, "/v1/bok/judge", {
       context: NATIVE_BOK_CONTEXT,
       draft: NATIVE_BOK_DRAFT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
     });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
@@ -109,7 +123,11 @@ test("judge przyjmuje dokładnie context+draft i używa osobnego modelu", async 
       provider: NATIVE_BOK_PROVIDER,
       model: "codex-judge-test",
     });
-    assert.deepEqual(received, [NATIVE_BOK_CONTEXT, NATIVE_BOK_DRAFT]);
+    assert.deepEqual(received, [
+      NATIVE_BOK_CONTEXT,
+      NATIVE_BOK_DRAFT,
+      NATIVE_BOK_KNOWLEDGE,
+    ]);
   } finally {
     await runtime.close();
   }
@@ -128,7 +146,7 @@ test("Bearer jest obowiązkowy, a payload strict jest odrzucany przed inference"
     const unauthorized = await post(
       runtime.origin,
       "/v1/bok/generate",
-      { context: NATIVE_BOK_CONTEXT },
+      { context: NATIVE_BOK_CONTEXT, knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE },
       "wrong-token-with-at-least-32-characters",
     );
     assert.equal(unauthorized.status, 401);
@@ -136,6 +154,7 @@ test("Bearer jest obowiązkowy, a payload strict jest odrzucany przed inference"
 
     const invalid = await post(runtime.origin, "/v1/bok/generate", {
       context: NATIVE_BOK_CONTEXT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
       extra: "not-allowed",
     });
     assert.equal(invalid.status, 400);
@@ -168,7 +187,10 @@ test("nieodczytany obraz jest odrzucany przed inference", async () => {
     unread.attachmentCoverage.readCount = 0;
     unread.attachmentCoverage.operatorRequiredCount = 1;
 
-    const response = await post(runtime.origin, "/v1/bok/generate", { context: unread });
+    const response = await post(runtime.origin, "/v1/bok/generate", {
+      context: unread,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    });
 
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), { ok: false, error: "invalid_contract" });
@@ -221,9 +243,15 @@ test("przekroczenie concurrency zwraca retryable 429", async () => {
   }), { maxConcurrency: 1 });
   const runtime = await listen(server);
   try {
-    const first = post(runtime.origin, "/v1/bok/generate", { context: NATIVE_BOK_CONTEXT });
+    const first = post(runtime.origin, "/v1/bok/generate", {
+      context: NATIVE_BOK_CONTEXT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    });
     await began;
-    const second = await post(runtime.origin, "/v1/bok/generate", { context: NATIVE_BOK_CONTEXT });
+    const second = await post(runtime.origin, "/v1/bok/generate", {
+      context: NATIVE_BOK_CONTEXT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    });
     assert.equal(second.status, 429);
     assert.equal(second.headers.get("retry-after"), "5");
     release();
@@ -237,7 +265,7 @@ test("przekroczenie concurrency zwraca retryable 429", async () => {
 test("timeout abortuje model i kończy się bezpiecznym 408", async () => {
   let aborted = false;
   const server = createServer(fakeInference({
-    generate: async (_context, signal) => new Promise((_resolve, reject) => {
+    generate: async (_context, _knowledgeSnapshot, signal) => new Promise((_resolve, reject) => {
       signal.addEventListener("abort", () => {
         aborted = true;
         reject(new Error("sekret lub PII z modelu"));
@@ -246,7 +274,10 @@ test("timeout abortuje model i kończy się bezpiecznym 408", async () => {
   }), { timeoutMs: 20 });
   const runtime = await listen(server);
   try {
-    const response = await post(runtime.origin, "/v1/bok/generate", { context: NATIVE_BOK_CONTEXT });
+    const response = await post(runtime.origin, "/v1/bok/generate", {
+      context: NATIVE_BOK_CONTEXT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    });
     assert.equal(response.status, 408);
     assert.deepEqual(await response.json(), { ok: false, error: "timeout" });
     assert.equal(aborted, true);
@@ -261,7 +292,7 @@ test("rozłączenie klienta przekazuje abort do trwającego Codexa", async () =>
   const began = new Promise<void>((resolve) => { started = resolve; });
   const sawAbort = new Promise<void>((resolve) => { aborted = resolve; });
   const server = createServer(fakeInference({
-    generate: async (_context, signal) => new Promise((_resolve, reject) => {
+    generate: async (_context, _knowledgeSnapshot, signal) => new Promise((_resolve, reject) => {
       started();
       signal.addEventListener("abort", () => {
         aborted();
@@ -280,7 +311,10 @@ test("rozłączenie klienta przekazuje abort do trwającego Codexa", async () =>
       },
     });
     request.on("error", () => undefined);
-    request.end(JSON.stringify({ context: NATIVE_BOK_CONTEXT }));
+    request.end(JSON.stringify({
+      context: NATIVE_BOK_CONTEXT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    }));
     await began;
     request.destroy();
     await sawAbort;

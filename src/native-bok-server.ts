@@ -18,8 +18,13 @@ import type { NativeBokInference } from "./native-bok-inference.js";
 interface NativeBokInferencePort {
   readonly generatorModel: string;
   readonly judgeModel: string;
-  generate(context: unknown, signal: AbortSignal): Promise<unknown>;
-  judge(context: unknown, draft: unknown, signal: AbortSignal): Promise<unknown>;
+  generate(context: unknown, knowledgeSnapshot: unknown, signal: AbortSignal): Promise<unknown>;
+  judge(
+    context: unknown,
+    draft: unknown,
+    knowledgeSnapshot: unknown,
+    signal: AbortSignal,
+  ): Promise<unknown>;
 }
 
 interface NativeBokServerConfig {
@@ -101,7 +106,7 @@ export function createNativeBokHttpServerForConfig(
         if (url.pathname === "/v1/bok/generate") {
           const parsed = parseGenerateRequest(body);
           const result = parseGeneratorOutput(
-            await inference.generate(parsed.context, signal),
+            await inference.generate(parsed.context, parsed.knowledgeSnapshot, signal),
             parsed.context,
           );
           sendSuccess(response, result, inference.generatorModel);
@@ -109,7 +114,12 @@ export function createNativeBokHttpServerForConfig(
         }
         const parsed = parseJudgeRequest(body);
         const result = ticketAiJudgeOutputSchema.parse(
-          await inference.judge(parsed.context, parsed.draft, signal),
+          await inference.judge(
+            parsed.context,
+            parsed.draft,
+            parsed.knowledgeSnapshot,
+            signal,
+          ),
         );
         sendSuccess(response, result, inference.judgeModel);
       } catch (error) {

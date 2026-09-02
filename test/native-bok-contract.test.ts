@@ -11,20 +11,66 @@ import {
   ticketAiContextSchema,
 } from "../src/native-bok-contract.js";
 import {
+  MAX_NATIVE_BOK_KNOWLEDGE_DOCUMENT_CHARS,
+  ticketAiKnowledgeSnapshotHash,
+  ticketAiKnowledgeSnapshotSchema,
+} from "../src/native-bok-knowledge.js";
+import {
   NATIVE_BOK_ATTACHMENT_CONTEXT,
   NATIVE_BOK_CONTEXT,
   NATIVE_BOK_DRAFT,
+  NATIVE_BOK_KNOWLEDGE,
 } from "./native-bok-fixtures.js";
 
 test("kontrakt generate i judge przyjmuje dokładny payload MasterLink", () => {
   assert.deepEqual(
-    nativeBokGenerateRequestSchema.parse({ context: NATIVE_BOK_CONTEXT }),
-    { context: NATIVE_BOK_CONTEXT },
+    nativeBokGenerateRequestSchema.parse({
+      context: NATIVE_BOK_CONTEXT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    }),
+    { context: NATIVE_BOK_CONTEXT, knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE },
   );
   assert.deepEqual(
-    nativeBokJudgeRequestSchema.parse({ context: NATIVE_BOK_CONTEXT, draft: NATIVE_BOK_DRAFT }),
-    { context: NATIVE_BOK_CONTEXT, draft: NATIVE_BOK_DRAFT },
+    nativeBokJudgeRequestSchema.parse({
+      context: NATIVE_BOK_CONTEXT,
+      draft: NATIVE_BOK_DRAFT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    }),
+    {
+      context: NATIVE_BOK_CONTEXT,
+      draft: NATIVE_BOK_DRAFT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    },
   );
+});
+
+test("zarządzany snapshot jest wymagany, zgodny z rynkiem i weryfikowany po hashach", () => {
+  // Publiczny wektor wyliczony przez kanoniczny hasher MasterLinka dla tego samego payloadu.
+  assert.equal(
+    NATIVE_BOK_KNOWLEDGE.snapshotHash,
+    "8488352dfebd6ba88a451e38d78f00e3e25a765e7e4d2b3ca180f7a7a83c4825",
+  );
+  assert.throws(() => nativeBokGenerateRequestSchema.parse({ context: NATIVE_BOK_CONTEXT }));
+  assert.throws(() => nativeBokGenerateRequestSchema.parse({
+    context: NATIVE_BOK_CONTEXT,
+    knowledgeSnapshot: { ...NATIVE_BOK_KNOWLEDGE, snapshotHash: "f".repeat(64) },
+  }), /knowledge_snapshot_hash_invalid|knowledge_snapshot_invalid/);
+  assert.throws(() => nativeBokGenerateRequestSchema.parse({
+    context: NATIVE_BOK_CONTEXT,
+    knowledgeSnapshot: { ...NATIVE_BOK_KNOWLEDGE, market: "CZ" },
+  }), /knowledge_snapshot_hash_invalid|knowledge_snapshot_invalid/);
+
+  const document = NATIVE_BOK_KNOWLEDGE.documents[0]!;
+  const oversizedContent = "x".repeat(MAX_NATIVE_BOK_KNOWLEDGE_DOCUMENT_CHARS + 1);
+  const oversized = {
+    ...NATIVE_BOK_KNOWLEDGE,
+    documents: [{ ...document, content: oversizedContent }],
+  };
+  const { snapshotHash: _oldHash, ...oversizedHashInput } = oversized;
+  assert.throws(() => ticketAiKnowledgeSnapshotSchema.parse({
+    ...oversizedHashInput,
+    snapshotHash: ticketAiKnowledgeSnapshotHash(oversizedHashInput),
+  }));
 });
 
 test("kontrakt jest strict i wymaga jawnego contextTruncated oraz polityki read-only", () => {

@@ -16,8 +16,8 @@ Podział odpowiedzialności:
 
 Serwer udostępnia tylko:
 
-- `POST /v1/bok/generate` z body `{ "context": TicketAiContext }`;
-- `POST /v1/bok/judge` z body `{ "context": TicketAiContext, "draft": TicketAiGeneratorOutput }`;
+- `POST /v1/bok/generate` z body `{ "context": TicketAiContext, "knowledgeSnapshot": TicketAiKnowledgeSnapshot }`;
+- `POST /v1/bok/judge` z body `{ "context": TicketAiContext, "draft": TicketAiGeneratorOutput, "knowledgeSnapshot": TicketAiKnowledgeSnapshot }`;
 - `GET /healthz`, dostępny wyłącznie przez loopback tak jak cały proces.
 
 Sukces ma stałą kopertę:
@@ -68,12 +68,20 @@ klienta są zawsze oznaczone jako niezaufane. Generator oraz judge działają w 
 wątkach Codexa. Judge nie widzi rozumowania generatora ani treści `internalNote`/`nextActions`:
 ocenia wyłącznie publiczne `body` oraz metadane jakościowe.
 
+`knowledgeSnapshot` jest obowiązkowym, wersjonowanym playbookiem zarządzanym przez MasterLink.
+Generator i judge dostają dokładnie ten sam snapshot. Native API ponownie sprawdza rynek, kanoniczną
+kolejność i zakres intencji, dokumenty i ich zakresy, daty obowiązywania, limity 6 dokumentów / 8 tys.
+znaków na dokument / 24 tys. bajtów łącznie, SHA-256 każdego dokumentu oraz kanoniczny SHA-256
+całego snapshotu. Pusty `documents` jest autorytatywną informacją o braku opublikowanej procedury,
+nie sygnałem do fallbacku na lokalny playbook lub pamięć modelu.
+
 ## Granice bezpieczeństwa
 
 - proces może związać port wyłącznie do `127.0.0.1` albo `::1`;
 - oba endpointy inferencji wymagają dokładnego `Authorization: Bearer ...`;
 - token ma minimum 32 znaki i jest porównywany przez hash oraz `timingSafeEqual`;
-- request ma limit 1 MB, kontekst 500 tys. znaków, maksymalnie 100 wiadomości, a draft 20 tys. znaków;
+- request ma limit 1 MB, kontekst 500 tys. znaków, maksymalnie 100 wiadomości, draft 20 tys. znaków
+  oraz zarządzany snapshot wiedzy ograniczony do 24 tys. bajtów treści;
 - odpowiedzi mają `Cache-Control: no-store`; nie ma CORS ani logowania body/błędów modelu;
 - rozłączenie klienta i timeout przerywają trwający przebieg Codexa;
 - reguły nauczone z korekt i dane katalogowe są oznaczone jako niezaufana pamięć pomocnicza; mogą

@@ -1,8 +1,13 @@
+import { createHash } from "node:crypto";
 import type {
   TicketAiContext,
   TicketAiGeneratorOutput,
   TicketAiJudgeOutput,
 } from "../src/native-bok-contract.js";
+import {
+  ticketAiKnowledgeSnapshotHash,
+  type TicketAiKnowledgeSnapshot,
+} from "../src/native-bok-knowledge.js";
 
 export const NATIVE_BOK_CONTEXT: TicketAiContext = {
   operationId: "e37f5f50-39b0-5fb7-9951-a573d2950408",
@@ -66,6 +71,31 @@ export const NATIVE_BOK_ATTACHMENT_CONTEXT: TicketAiContext = {
     ...NATIVE_BOK_CONTEXT.policy,
     attachmentContentTrust: "untrusted",
   },
+};
+
+const knowledgeContent = "Po nadaniu przesyłki klient otrzymuje link do śledzenia.";
+const knowledgeHashInput: Omit<TicketAiKnowledgeSnapshot, "snapshotHash"> = {
+  schemaVersion: 1,
+  market: "PL",
+  selectedIntents: ["delivery_status"],
+  documents: [{
+    documentId: "c7ade94a-2bb8-4f5c-886b-48d7cb34159a",
+    revision: 3,
+    title: "Wysyłka i tracking",
+    content: knowledgeContent,
+    contentHash: createHash("sha256").update(knowledgeContent, "utf8").digest("hex"),
+    markets: ["PL"],
+    intents: ["delivery_status"],
+    reviewedAt: "2000-01-01T00:00:00.000Z",
+    reviewDueAt: "2100-12-01T08:00:00.000Z",
+    effectiveFrom: "2000-01-01T00:00:00.000Z",
+    effectiveTo: null,
+  }],
+};
+
+export const NATIVE_BOK_KNOWLEDGE: TicketAiKnowledgeSnapshot = {
+  ...knowledgeHashInput,
+  snapshotHash: ticketAiKnowledgeSnapshotHash(knowledgeHashInput),
 };
 
 export const NATIVE_BOK_DRAFT: TicketAiGeneratorOutput = {
