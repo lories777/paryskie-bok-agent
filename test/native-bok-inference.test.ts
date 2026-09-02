@@ -147,6 +147,45 @@ test("prompt utrzymuje treść klienta wewnątrz jawnej granicy danych", () => {
   assert.match(prompt, /od zera do pięciu\s+krótkich działań po polsku/);
 });
 
+test("native generate i judge samodzielnie rozstrzygają claim dostawy po przewoźniku", () => {
+  const context = {
+    ...NATIVE_BOK_CONTEXT,
+    conversation: [{
+      ...NATIVE_BOK_CONTEXT.conversation[0]!,
+      body: "Zamówiłam przed 19:00 i przesyłka miała być jutro. Dlaczego jej nie ma?",
+    }],
+    verifiedFacts: {
+      ...NATIVE_BOK_CONTEXT.verifiedFacts,
+      "order.carrier_code": "inpost",
+      "shipment.status": "in_transit",
+    },
+  };
+  const generator = buildNativeBokGeneratorPrompt(
+    context,
+    "wiedza",
+    NATIVE_BOK_KNOWLEDGE,
+    EMPTY_VERIFIED_CORRECTIONS,
+    "Komunikat dostawy następnego dnia dotyczy wyłącznie InPost.",
+  );
+  const judge = buildNativeBokJudgePrompt(
+    context,
+    NATIVE_BOK_DRAFT,
+    "wiedza",
+    NATIVE_BOK_KNOWLEDGE,
+    EMPTY_VERIFIED_CORRECTIONS,
+    "Komunikat dostawy następnego dnia dotyczy wyłącznie InPost.",
+  );
+
+  for (const prompt of [generator, judge]) {
+    assert.match(prompt, /dotyczy wyłącznie InPost/);
+    assert.match(prompt, /przewoźnik.*faktem rozstrzygającym|używa potwierdzonego\s+przewoźnika/s);
+    assert.match(prompt, /nie (?:ustawiaj needsHumanReview|uzasadnia verdict="human")/);
+    assert.match(prompt, /adekwatne przeprosiny|adekwatne przeprosi/);
+    assert.match(prompt, /statusu przesyłki|zweryfikowany status/);
+    assert.match(prompt, /konkretnego\s+następnego kroku|konkretny następny krok/);
+  }
+});
+
 test("generate i judge wiążą guidance operatora z rewizją bez awansu do faktu lub globalnej reguły", () => {
   const content = "Tak — wyjaśnij klientce zasady Paris Club dla tej sprawy.";
   const context = {

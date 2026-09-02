@@ -121,6 +121,9 @@ test("primary i reviewer dostają ten sam snapshot oraz kontrakt zweryfikowanej 
   );
   const reviewer = buildDraftReviewPrompt(draft(), messages, undefined, undefined, snapshot);
 
+  assert.match(primary, /odczytaj dane dostawy z\s+przewoźnikiem, przesyłki oraz stan realizacji/);
+  assert.match(primary, /aktualny status.*jeden konkretny następny krok/s);
+
   for (const prompt of [primary, reviewer]) {
     assert.match(prompt, /verified_human_corrections revision="9"/);
     assert.match(prompt, /To nie są nasze standardy/);
@@ -156,6 +159,12 @@ test("kontrola jakości wymaga researchu wewnętrznego zamiast odpytywania klien
   assert.match(prompt, /naturalnym powitaniem w języku klienta/);
   assert.match(prompt, /Sama standardowa procedura[\s\S]*nie dowodzi wykonania operacji/);
   assert.match(prompt, /dosyłka przygotowana czy wysłana/);
+  assert.match(prompt, /zamów do 19:00, dostawa jutro/);
+  assert.match(prompt, /Komunikat dotyczy wyłącznie\s+InPost/);
+  assert.match(prompt, /danych dostawy oraz aktualnym odczycie przesyłek/);
+  assert.match(prompt, /aktualny status.*jeden konkretny\s+następny krok/s);
+  assert.match(prompt, /błąd lub brak wyniku narzędzia nie jest takim dowodem/);
+  assert.match(prompt, /nie może przerzucać interpretacji reguły/);
 });
 
 test("kontroler może poprawić draft bez zmiany propozycji działania", () => {

@@ -206,6 +206,15 @@ oznacza więc fałszywego offline:
   `NativeOperationalActionDispatcher`; MasterLink nie wydaje go, gdy exact dispatch readiness
   jest fałszywe.
 
+Bezpośrednio przed każdym wywołaniem DiscordGateway poller wykonuje jeszcze atomowy preflight
+przez heartbeat. Do zwykłego body dodaje
+`lease: { jobId, leaseToken, kind: "dispatch", requestHash }`, gdzie identyfikatory są UUID, a
+`requestHash` to goły lowercase SHA-256 (64 znaki, bez prefiksu). Post na Discord jest dozwolony
+wyłącznie po pełnej walidacji zwykłej odpowiedzi heartbeat (provider/runtime/store/status) oraz
+`leaseValid === true`. Brak pola, `false`, błąd sieci albo błąd schematu kończy próbę fail-closed
+bez wywołania dispatchera. Retry wykonuje nowy preflight, więc zmiana ticketu, rewizji lub sugestii
+w czasie lease nie może wysłać starej karty na kanał.
+
 Poller ponownie wylicza kanoniczne hashe i odrzuca obcy etap, rewizję, kontekst, guidance lub
 request przed uruchomieniem modelu/Discorda. Przerywa pracę z marginesem przed końcem lease.
 Niepewny `pending` dispatch jest reconciliowany przed kolejną próbą i nigdy nie jest raportowany

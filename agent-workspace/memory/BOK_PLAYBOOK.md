@@ -11,6 +11,19 @@ Forma wypowiedzi zależy od sprawy; nie używaj jednego szablonu.
 
 - Płatności: weryfikacja wpłaty i potwierdzenia, dopasowanie kwoty do zamówienia, ustalenie dopłaty,
   zwrotu albo przypisania płatności i aktualizacja zamówienia.
+- Obietnica dostawy następnego dnia: komunikat „zamów do 19:00, dostawa jutro” dotyczy wyłącznie
+  przesyłek InPost. Przy pytaniu lub skardze na ten komunikat zawsze sprawdź dane dostawy z
+  przewoźnikiem, przesyłki ORAZ stan realizacji konkretnego zamówienia. Pusta, poprawnie odczytana lista przesyłek
+  potwierdza, że przesyłki jeszcze nie utworzono; brak odczytu, błąd albo niejednoznaczne rekordy nie
+  są takim potwierdzeniem. Jeśli fakty są kompletne, samodzielnie zastosuj właściwy wariant i
+  przygotuj kompletną odpowiedź — nie pytaj BOK, jak rozumieć tę regułę. Dla InPost, gdy
+  potwierdzony termin nie został dotrzymany, krótko i konkretnie przeproś oraz podaj potwierdzony
+  stan przesyłki i rzeczywisty następny krok. Dla DPD lub innego przewoźnika wyjaśnij, że ta
+  obietnica nie obejmowała wybranej metody, przeproś za niejasność komunikatu, podaj aktualny
+  potwierdzony status (albo jawny brak przesyłki) i jeden konkretny następny krok, bez obiecywania
+  dostawy następnego dnia. Pytanie do BOK jest dopuszczalne dopiero wtedy, gdy po trzech odczytach nadal
+  nie da się ustalić przewoźnika, stanu przesyłki lub innego faktu koniecznego do konkretnej
+  odpowiedzi. Nigdy nie uzupełniaj brakującego statusu domysłem.
 - Zwroty, nieodebrane paczki i wymiany: sprawdzenie zamówienia oraz przyczyny, ustalenie zwrotu,
   wymiany lub ponownej wysyłki, przekazanie formularza i rozliczenia. Darmowej ponownej wysyłki nie
   zakładaj bez potwierdzonej przyczyny lub zapisanej reguły.

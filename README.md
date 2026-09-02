@@ -32,7 +32,10 @@ obserwowane kanały od kanału poleceń i zapisuje proponowane działania do oso
   one obecnie wystawione agentowi, a `ML_MUTATIONS_ENABLED` pozostaje wyłączone. PostgreSQL jest
   bezwarunkowo read-only;
 - lokalna baza wiedzy jest budowana z aktualnej strony i WooCommerce (`npm run knowledge:refresh`):
-  agent może wyszukiwać produkty, odpowiedniki, nuty, ceny, dostępność, regulamin i procedury;
+  odświeżenie pobiera strukturalny katalog, strony i wpisy, sprawdza pełną publiczną sitemapę oraz
+  dogrywa renderowany HTML tam, gdzie headless frontend nie wystawia treści przez WordPress REST
+  (w szczególności stronę główną). Manifest jawnie raportuje nieosiągalne adresy sitemapy; agent może
+  wyszukiwać produkty, odpowiedniki, nuty, ceny, dostępność, regulamin i procedury;
 - Chrome DevTools może być aktywowane niezależną flagą `BOK_AGENT_BROWSER_RESEARCH` wyłącznie
   do inspekcji już otwartych stron i zalogowanych Arkuszy Google. Runtime wystawia tylko listowanie,
   wybór, snapshot, screenshot i oczekiwanie; blokuje nawigację, kliknięcia, formularze, dowolny JS,

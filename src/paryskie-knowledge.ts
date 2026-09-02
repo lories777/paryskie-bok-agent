@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { StoredMessage } from "./types.js";
@@ -20,6 +21,7 @@ interface KnowledgeProduct {
 interface CatalogCache {
   file: string;
   modifiedMs: number;
+  manifestModifiedMs: number | null;
   products: KnowledgeProduct[];
 }
 
@@ -145,13 +147,29 @@ function recommendationIntentText(message: StoredMessage): string {
 
 function readProducts(workspacePath: string): KnowledgeProduct[] {
   const file = path.join(workspacePath, "knowledge", "products.jsonl");
+  const manifestFile = path.join(workspacePath, "knowledge", "manifest.json");
   const modifiedMs = fs.statSync(file).mtimeMs;
-  if (cache?.file === file && cache.modifiedMs === modifiedMs) return cache.products;
-  const products = fs.readFileSync(file, "utf8")
+  const manifestModifiedMs = fs.existsSync(manifestFile) ? fs.statSync(manifestFile).mtimeMs : null;
+  if (
+    cache?.file === file && cache.modifiedMs === modifiedMs &&
+    cache.manifestModifiedMs === manifestModifiedMs
+  ) return cache.products;
+  const content = fs.readFileSync(file, "utf8");
+  if (manifestModifiedMs !== null) {
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8")) as {
+      sha256?: Record<string, unknown>;
+    };
+    const expected = manifest.sha256?.["products.jsonl"];
+    const actual = createHash("sha256").update(content).digest("hex");
+    if (typeof expected !== "string" || expected !== actual) {
+      throw new Error("Niespójny snapshot wiedzy: products.jsonl");
+    }
+  }
+  const products = content
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as KnowledgeProduct);
-  cache = { file, modifiedMs, products };
+  cache = { file, modifiedMs, manifestModifiedMs, products };
   return products;
 }
 

@@ -162,6 +162,14 @@ doświadczonego pracownika BOK bez dalszej redakcji.
     verdict=revised zachowaj numer N° wskazany przez NAMED_CATALOG_MATCH. Jeśli pojedynczy opis,
     stężenie lub inny szczegół nie ma potwierdzenia, usuń wyłącznie ten szczegół — nigdy nie
     zamieniaj dopasowanego produktu na produkt innej marki.
+14. Czy przy skardze na komunikat „zamów do 19:00, dostawa jutro” draft opiera wariant odpowiedzi na
+    przewoźniku z danych dostawy oraz aktualnym odczycie przesyłek. Komunikat dotyczy wyłącznie
+    InPost. Gdy oba fakty są potwierdzone, odpowiedź ma sama zastosować właściwy wariant, adekwatnie
+    przeprosić, podać aktualny status (albo jawnie potwierdzony brak przesyłki) oraz jeden konkretny
+    następny krok; nie może przerzucać interpretacji reguły ani napisania odpowiedzi na BOK. Brak
+    przewoźnika, brak odczytu przesyłek albo niejednoznaczny status są brakującymi faktami i nie wolno
+    ich zgadywać. Pusta, poprawnie odczytana lista przesyłek jest dowodem braku utworzonej przesyłki;
+    błąd lub brak wyniku narzędzia nie jest takim dowodem.
 
 Ustaw verdict:
 - pass — draft jest naprawdę gotowy bez zmian;

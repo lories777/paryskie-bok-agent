@@ -18,6 +18,7 @@ import {
   nativeOperationalActionRequestHash,
   type NativeOperationalActionDispatchResult,
   type NativeOperationalActionEnvelope,
+  type NativeOperationalActionSendGuard,
 } from "../src/native-bok-operational-dispatch.js";
 import {
   operationalActionCatalogHash,
@@ -130,14 +131,20 @@ class FakeInference {
 
 class FakeDispatcher {
   readonly requests: unknown[] = [];
+  sendAttempts = 0;
   results: NativeOperationalActionDispatchResult[] = [];
 
   runtimeStatus() {
     return structuredClone(DISPATCH_RUNTIME);
   }
 
-  async dispatch(request: unknown): Promise<NativeOperationalActionDispatchResult> {
+  async dispatch(
+    request: unknown,
+    sendGuard: NativeOperationalActionSendGuard,
+  ): Promise<NativeOperationalActionDispatchResult> {
     this.requests.push(request);
+    await sendGuard.beforeIrreversibleSend();
+    this.sendAttempts += 1;
     return this.results.shift() ?? sentDispatch();
   }
 }
@@ -175,7 +182,7 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-function heartbeatAck(request: CapturedRequest): Response {
+function heartbeatAck(request: CapturedRequest, leaseValid?: boolean): Response {
   const body = JSON.parse(request.body) as {
     poller: { instanceId: string };
     runtime: { store: { identity: string } };
@@ -187,7 +194,12 @@ function heartbeatAck(request: CapturedRequest): Response {
     runtimeIdentity: body.poller.instanceId,
     storeIdentity: body.runtime.store.identity,
     statusHash: nativeBridgeHash(body.runtime),
+    ...(leaseValid === undefined ? {} : { leaseValid }),
   });
+}
+
+function dispatchPreflightAck(request: CapturedRequest, leaseValid = true): Response {
+  return heartbeatAck(request, leaseValid);
 }
 
 function decisionLease(overrides: Record<string, unknown> = {}) {
@@ -519,6 +531,10 @@ test("dispatch pending jest reconciliowany w tym samym lease i tylko sent trafia
   const lease = dispatchLease();
   const transport = capture([
     json({ ok: true, schemaVersion: 1, lease }),
+    (request) => dispatchPreflightAck(request),
+    (request) => dispatchPreflightAck(request),
+    (request) => dispatchPreflightAck(request),
+    (request) => dispatchPreflightAck(request),
     json({ ok: true, schemaVersion: 1, deduplicated: false }),
   ]);
   const runtime = poller(transport.fetcher, new FakeInference(), dispatcher, {
@@ -526,14 +542,151 @@ test("dispatch pending jest reconciliowany w tym samym lease i tylko sent trafia
   });
   assert.equal(await runtime.runOnce(new AbortController().signal), "completed");
   assert.equal(dispatcher.requests.length, 2);
+  assert.equal(dispatcher.sendAttempts, 2);
   assert.deepEqual(waits, [5_000]);
-  const body = JSON.parse(transport.requests[1]!.body) as {
+  assert.deepEqual(
+    transport.requests.slice(1, 5).map((request) => JSON.parse(request.body).lease),
+    [0, 1, 2, 3].map(() => ({
+      jobId: lease.jobId,
+      leaseToken: lease.leaseToken,
+      kind: "dispatch",
+      requestHash: lease.requestHash,
+    })),
+  );
+  const body = JSON.parse(transport.requests[5]!.body) as {
     kind: string;
     outcome: { status: string; result: NativeOperationalActionDispatchResult };
   };
   assert.equal(body.kind, "dispatch");
   assert.equal(body.outcome.status, "completed");
   assert.deepEqual(body.outcome.result, sentDispatch(true));
+});
+
+test("dispatch jest fail-closed bez exact pozytywnego preflight lease", async () => {
+  for (const preflight of [
+    (request: CapturedRequest) => dispatchPreflightAck(request, false),
+    (request: CapturedRequest) => heartbeatAck(request),
+    new Error("preflight network failure"),
+  ]) {
+    const dispatcher = new FakeDispatcher();
+    const lease = dispatchLease();
+    const transport = capture([
+      json({ ok: true, schemaVersion: 1, lease }),
+      preflight,
+      json({ ok: true, schemaVersion: 1, deduplicated: false }),
+    ]);
+    assert.equal(
+      await poller(transport.fetcher, new FakeInference(), dispatcher).runOnce(
+        new AbortController().signal,
+      ),
+      "failed",
+    );
+    assert.equal(dispatcher.requests.length, 0);
+    const preflightBody = JSON.parse(transport.requests[1]!.body) as Record<string, unknown>;
+    assert.deepEqual(preflightBody.lease, {
+      jobId: lease.jobId,
+      leaseToken: lease.leaseToken,
+      kind: "dispatch",
+      requestHash: lease.requestHash,
+    });
+    const resultBody = JSON.parse(transport.requests[2]!.body) as {
+      outcome: { status: string; errorCode: string; retryable: boolean };
+    };
+    assert.equal(resultBody.outcome.status, "failed");
+    assert.equal(resultBody.outcome.retryable, true);
+  }
+});
+
+test("dispatch nie wysyła, gdy drugi permit po wejściu do dispatchera jest nieważny", async () => {
+  for (const preSendPermit of [
+    (request: CapturedRequest) => dispatchPreflightAck(request, false),
+    (request: CapturedRequest) => heartbeatAck(request),
+    new Error("pre-send heartbeat unavailable"),
+  ]) {
+    const dispatcher = new FakeDispatcher();
+    const lease = dispatchLease();
+    const transport = capture([
+      json({ ok: true, schemaVersion: 1, lease }),
+      (request) => dispatchPreflightAck(request),
+      preSendPermit,
+      json({ ok: true, schemaVersion: 1, deduplicated: false }),
+    ]);
+    assert.equal(
+      await poller(transport.fetcher, new FakeInference(), dispatcher).runOnce(
+        new AbortController().signal,
+      ),
+      "failed",
+    );
+    assert.equal(dispatcher.requests.length, 1);
+    assert.equal(dispatcher.sendAttempts, 0);
+    assert.deepEqual(
+      transport.requests.slice(1, 3).map((request) => JSON.parse(request.body).lease),
+      [0, 1].map(() => ({
+        jobId: lease.jobId,
+        leaseToken: lease.leaseToken,
+        kind: "dispatch",
+        requestHash: lease.requestHash,
+      })),
+    );
+    const resultBody = JSON.parse(transport.requests[3]!.body) as {
+      outcome: { status: string; retryable: boolean };
+    };
+    assert.equal(resultBody.outcome.status, "failed");
+    assert.equal(resultBody.outcome.retryable, true);
+  }
+});
+
+test("abort po dodatnim ACK pre-send nie otwiera Discord POST", async () => {
+  const dispatcher = new FakeDispatcher();
+  const controller = new AbortController();
+  const transport = capture([
+    json({ ok: true, schemaVersion: 1, lease: dispatchLease() }),
+    (request) => dispatchPreflightAck(request),
+    (request) => {
+      controller.abort();
+      return dispatchPreflightAck(request);
+    },
+  ]);
+
+  await assert.rejects(
+    poller(transport.fetcher, new FakeInference(), dispatcher).runOnce(controller.signal),
+  );
+  assert.equal(dispatcher.requests.length, 1);
+  assert.equal(dispatcher.sendAttempts, 0);
+  assert.equal(transport.requests.length, 3);
+});
+
+test("deadline w trakcie dodatniego ACK pre-send nie otwiera Discord POST", async () => {
+  const dispatcher = new FakeDispatcher();
+  const lease = dispatchLease({
+    leaseExpiresAt: new Date(NOW + 1_000).toISOString(),
+  });
+  const transport = capture([
+    json({ ok: true, schemaVersion: 1, lease }),
+    (request) => dispatchPreflightAck(request),
+    async (request) => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return dispatchPreflightAck(request);
+    },
+    json({ ok: true, schemaVersion: 1, deduplicated: false }),
+  ]);
+
+  assert.equal(
+    await poller(transport.fetcher, new FakeInference(), dispatcher, {
+      leaseSafetyMarginMs: 970,
+    }).runOnce(new AbortController().signal),
+    "failed",
+  );
+  assert.equal(dispatcher.requests.length, 1);
+  assert.equal(dispatcher.sendAttempts, 0);
+  const resultBody = JSON.parse(transport.requests[3]!.body) as {
+    outcome: { status: string; errorCode: string; retryable: boolean };
+  };
+  assert.deepEqual(resultBody.outcome, {
+    status: "failed",
+    errorCode: "lease_deadline",
+    retryable: true,
+  });
 });
 
 test("utracony ACK result jest ponawiany exact body bez ponownej inferencji", async () => {
@@ -556,6 +709,8 @@ test("409 result oznacza lease_lost i nie uruchamia działania drugi raz", async
   const dispatcher = new FakeDispatcher();
   const transport = capture([
     json({ ok: true, schemaVersion: 1, lease: dispatchLease() }),
+    (request) => dispatchPreflightAck(request),
+    (request) => dispatchPreflightAck(request),
     json({ ok: false, error: "lease_lost" }, 409),
   ]);
   assert.equal(
@@ -565,13 +720,15 @@ test("409 result oznacza lease_lost i nie uruchamia działania drugi raz", async
     "lease_lost",
   );
   assert.equal(dispatcher.requests.length, 1);
-  assert.equal(transport.requests.length, 2);
+  assert.equal(transport.requests.length, 4);
 });
 
 test("409 result_conflict jest jawnym nieretryowalnym błędem kontraktu", async () => {
   const dispatcher = new FakeDispatcher();
   const transport = capture([
     json({ ok: true, schemaVersion: 1, lease: dispatchLease() }),
+    (request) => dispatchPreflightAck(request),
+    (request) => dispatchPreflightAck(request),
     json({ ok: false, error: "result_conflict" }, 409),
   ]);
   await assert.rejects(
@@ -584,7 +741,7 @@ test("409 result_conflict jest jawnym nieretryowalnym błędem kontraktu", async
       && !error.retryable,
   );
   assert.equal(dispatcher.requests.length, 1);
-  assert.equal(transport.requests.length, 2);
+  assert.equal(transport.requests.length, 4);
 });
 
 test("nieznany 409 nie jest maskowany jako utrata lease", async () => {
