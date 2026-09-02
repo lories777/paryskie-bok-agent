@@ -12,6 +12,7 @@ import {
   persistDraftDecision,
   publishThenRemoveSuperseded,
   resolveVerifiedCorrectionAuthorization,
+  resolveVerifiedCorrectionSource,
   shouldRespondToAuthorizedMessage,
   splitDiscordMessage,
 } from "../src/discord.js";
@@ -71,6 +72,43 @@ test("źródło korekty wymaga jawnie dozwolonego użytkownika albo roli", () =>
     ),
     undefined,
   );
+});
+
+test("gateway ufa tylko reply albo jawnemu mention w command channel", () => {
+  const authorization = { authorizationKind: "allowed_role" as const, authorizationId: "bok-role" };
+  assert.deepEqual(resolveVerifiedCorrectionSource({
+    authorization,
+    inCommandChannel: false,
+    mentionedAgent: false,
+    replyingToAgent: true,
+    replyToBotMessageId: "bot-card-1",
+  }), {
+    sourceKind: "reply",
+    replyToBotMessageId: "bot-card-1",
+    ...authorization,
+  });
+  assert.deepEqual(resolveVerifiedCorrectionSource({
+    authorization,
+    inCommandChannel: true,
+    mentionedAgent: true,
+    replyingToAgent: false,
+  }), {
+    sourceKind: "direct_mention",
+    replyToBotMessageId: null,
+    ...authorization,
+  });
+  assert.equal(resolveVerifiedCorrectionSource({
+    authorization,
+    inCommandChannel: true,
+    mentionedAgent: false,
+    replyingToAgent: false,
+  }), undefined, "zwykła wiadomość bez mention nie uczy pamięci");
+  assert.equal(resolveVerifiedCorrectionSource({
+    authorization,
+    inCommandChannel: false,
+    mentionedAgent: true,
+    replyingToAgent: false,
+  }), undefined, "mention w observe-only nie uczy pamięci");
 });
 
 test("Gotowe atomowo zatwierdza draft i kolejkuje dokładnie jedno wykonanie", () => {

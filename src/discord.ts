@@ -327,6 +327,13 @@ export class DiscordGateway implements ReplySink {
       this.config.allowedUserIds,
       this.config.allowedRoleIds,
     );
+    const verifiedCorrectionSource = resolveVerifiedCorrectionSource({
+      authorization: correctionAuthorization,
+      inCommandChannel,
+      mentionedAgent: mentioned,
+      replyingToAgent: replyContext.replyingToAgent,
+      replyToBotMessageId: replyContext.botMessageId,
+    });
     if (!message.author.bot && isStatusCommand(message.content)) {
       await this.handleStatus(message, authorized);
       return;
@@ -365,12 +372,9 @@ export class DiscordGateway implements ReplySink {
       // Dzięki temu późniejsze jawne polecenie może odwołać się np. do szablonu wklejonego chwilę
       // wcześniej, bez zamieniania każdej wiadomości na odpowiedź agenta.
       sharedContext: inObserveChannel || (inCommandChannel && !shouldRespond),
-      ...(shouldRespond && replyContext.replyingToAgent && replyContext.botMessageId && correctionAuthorization
+      ...(shouldRespond && verifiedCorrectionSource
         ? {
-            verifiedCorrectionSource: {
-              replyToBotMessageId: replyContext.botMessageId,
-              ...correctionAuthorization,
-            },
+            verifiedCorrectionSource,
           }
         : {}),
     };
@@ -571,6 +575,33 @@ export function resolveVerifiedCorrectionAuthorization(
   return roleId
     ? { authorizationKind: "allowed_role", authorizationId: roleId }
     : undefined;
+}
+
+export function resolveVerifiedCorrectionSource(input: {
+  authorization:
+    | { authorizationKind: "allowed_user" | "allowed_role"; authorizationId: string }
+    | undefined;
+  inCommandChannel: boolean;
+  mentionedAgent: boolean;
+  replyingToAgent: boolean;
+  replyToBotMessageId?: string | undefined;
+}): IncomingMessage["verifiedCorrectionSource"] {
+  if (!input.authorization) return undefined;
+  if (input.replyingToAgent) {
+    return input.replyToBotMessageId
+      ? {
+          sourceKind: "reply",
+          replyToBotMessageId: input.replyToBotMessageId,
+          ...input.authorization,
+        }
+      : undefined;
+  }
+  if (!input.inCommandChannel || !input.mentionedAgent) return undefined;
+  return {
+    sourceKind: "direct_mention",
+    replyToBotMessageId: null,
+    ...input.authorization,
+  };
 }
 
 function conversationKey(message: Message): string {

@@ -196,6 +196,7 @@ export class AgentStore {
         source_author_name TEXT,
         source_external_message_id TEXT,
         source_channel_id TEXT,
+        correction_source_kind TEXT CHECK(correction_source_kind IN ('reply', 'direct_mention')),
         reply_to_bot_message_id TEXT,
         authorization_kind TEXT CHECK(authorization_kind IN ('allowed_user', 'allowed_role')),
         authorization_id TEXT
@@ -205,7 +206,8 @@ export class AgentStore {
         source_message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
         source_external_message_id TEXT NOT NULL UNIQUE,
         source_channel_id TEXT NOT NULL,
-        reply_to_bot_message_id TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK(source_kind IN ('reply', 'direct_mention')),
+        reply_to_bot_message_id TEXT,
         authorization_kind TEXT NOT NULL CHECK(authorization_kind IN ('allowed_user', 'allowed_role')),
         authorization_id TEXT NOT NULL,
         created_at TEXT NOT NULL
@@ -253,9 +255,15 @@ export class AgentStore {
     this.ensureColumn("learned_rules", "source_author_name", "TEXT");
     this.ensureColumn("learned_rules", "source_external_message_id", "TEXT");
     this.ensureColumn("learned_rules", "source_channel_id", "TEXT");
+    this.ensureColumn("learned_rules", "correction_source_kind", "TEXT");
     this.ensureColumn("learned_rules", "reply_to_bot_message_id", "TEXT");
     this.ensureColumn("learned_rules", "authorization_kind", "TEXT");
     this.ensureColumn("learned_rules", "authorization_id", "TEXT");
+    this.ensureColumn(
+      "verified_correction_sources",
+      "source_kind",
+      "TEXT NOT NULL DEFAULT 'reply'",
+    );
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS learned_rules_verified_source_idx
         ON learned_rules(source_external_message_id)
@@ -264,7 +272,14 @@ export class AgentStore {
   }
 
   private ensureColumn(
-    table: "jobs" | "actions" | "daktela_observations" | "messages" | "deliveries" | "learned_rules",
+    table:
+      | "jobs"
+      | "actions"
+      | "daktela_observations"
+      | "messages"
+      | "deliveries"
+      | "learned_rules"
+      | "verified_correction_sources",
     column: string,
     definition: string,
   ): void {
@@ -353,14 +368,15 @@ export class AgentStore {
         .prepare(`
           INSERT OR IGNORE INTO verified_correction_sources(
             source_message_id, source_external_message_id, source_channel_id,
-            reply_to_bot_message_id, authorization_kind, authorization_id, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            source_kind, reply_to_bot_message_id, authorization_kind, authorization_id, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           stored.id,
           message.externalMessageId,
           message.channelId,
-          message.verifiedCorrectionSource.replyToBotMessageId,
+          message.verifiedCorrectionSource.sourceKind,
+          message.verifiedCorrectionSource.replyToBotMessageId ?? "",
           message.verifiedCorrectionSource.authorizationKind,
           message.verifiedCorrectionSource.authorizationId,
           timestamp,
@@ -1000,6 +1016,7 @@ export class AgentStore {
                  jobs.external_message_id,
                  messages.role AS trigger_role, messages.author_id AS trigger_author_id,
                  messages.author_name AS trigger_author_name, messages.content AS trigger_content,
+                 correction.source_kind AS correction_source_kind,
                  correction.reply_to_bot_message_id,
                  correction.authorization_kind, correction.authorization_id
           FROM jobs
@@ -1017,6 +1034,7 @@ export class AgentStore {
           trigger_author_id: string;
           trigger_author_name: string;
           trigger_content: string;
+          correction_source_kind: "reply" | "direct_mention" | null;
           reply_to_bot_message_id: string | null;
           authorization_kind: "allowed_user" | "allowed_role" | null;
           authorization_id: string | null;
@@ -1078,16 +1096,18 @@ export class AgentStore {
           const safe = normalizeLearnedRule(rule.situation, rule.instruction);
           if (!safe) continue;
           const verified = Boolean(
-            jobContext.reply_to_bot_message_id &&
+            jobContext.correction_source_kind &&
             jobContext.authorization_kind &&
             jobContext.authorization_id,
           );
           if (verified) {
+            const replyToBotMessageId = jobContext.reply_to_bot_message_id || null;
             const existing = this.db
               .prepare(`
                 SELECT normalized_key, situation, instruction, source_external_message_id,
                        source_content, source_author_id, source_author_name, source_channel_id,
-                       reply_to_bot_message_id, authorization_kind, authorization_id
+                       correction_source_kind, reply_to_bot_message_id,
+                       authorization_kind, authorization_id
                 FROM learned_rules
                 WHERE normalized_key = ? OR source_external_message_id = ?
                 ORDER BY source_external_message_id = ? DESC
@@ -1105,7 +1125,8 @@ export class AgentStore {
               existing.source_author_id === jobContext.trigger_author_id &&
               existing.source_author_name === jobContext.trigger_author_name &&
               existing.source_channel_id === jobContext.channel_id &&
-              existing.reply_to_bot_message_id === jobContext.reply_to_bot_message_id &&
+              existing.correction_source_kind === jobContext.correction_source_kind &&
+              existing.reply_to_bot_message_id === replyToBotMessageId &&
               existing.authorization_kind === jobContext.authorization_kind &&
               existing.authorization_id === jobContext.authorization_id;
             if (unchanged) continue;
@@ -1129,8 +1150,8 @@ export class AgentStore {
                   source_message_id, created_at, updated_at, verified_revision,
                   source_content, source_author_id, source_author_name,
                   source_external_message_id, source_channel_id, reply_to_bot_message_id,
-                  authorization_kind, authorization_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  correction_source_kind, authorization_kind, authorization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(normalized_key) DO UPDATE SET
                   situation = excluded.situation,
                   instruction = excluded.instruction,
@@ -1143,6 +1164,7 @@ export class AgentStore {
                   source_author_name = excluded.source_author_name,
                   source_external_message_id = excluded.source_external_message_id,
                   source_channel_id = excluded.source_channel_id,
+                  correction_source_kind = excluded.correction_source_kind,
                   reply_to_bot_message_id = excluded.reply_to_bot_message_id,
                   authorization_kind = excluded.authorization_kind,
                   authorization_id = excluded.authorization_id
@@ -1153,7 +1175,8 @@ export class AgentStore {
                 timestamp, timestamp, state.revision, jobContext.trigger_content,
                 jobContext.trigger_author_id, jobContext.trigger_author_name,
                 jobContext.external_message_id, jobContext.channel_id,
-                jobContext.reply_to_bot_message_id, jobContext.authorization_kind,
+                replyToBotMessageId, jobContext.correction_source_kind,
+                jobContext.authorization_kind,
                 jobContext.authorization_id,
               );
             continue;
@@ -1262,7 +1285,9 @@ export class AgentStore {
                learned_rules.verified_revision, learned_rules.source_content,
                learned_rules.source_author_id, learned_rules.source_author_name,
                learned_rules.source_external_message_id, learned_rules.source_channel_id,
-               learned_rules.reply_to_bot_message_id, learned_rules.authorization_kind,
+               COALESCE(learned_rules.correction_source_kind, 'reply') AS correction_source_kind,
+               learned_rules.reply_to_bot_message_id,
+               learned_rules.authorization_kind,
                learned_rules.authorization_id
         FROM learned_rules
         WHERE verified_revision IS NOT NULL
@@ -1281,7 +1306,8 @@ export class AgentStore {
         source_author_name: string;
         source_external_message_id: string;
         source_channel_id: string;
-        reply_to_bot_message_id: string;
+        correction_source_kind: "reply" | "direct_mention";
+        reply_to_bot_message_id: string | null;
         authorization_kind: "allowed_user" | "allowed_role";
         authorization_id: string;
       }>;
@@ -1299,7 +1325,8 @@ export class AgentStore {
         sourceAuthorName: row.source_author_name,
         sourceExternalMessageId: row.source_external_message_id,
         sourceChannelId: row.source_channel_id,
-        replyToBotMessageId: row.reply_to_bot_message_id,
+        sourceKind: row.correction_source_kind,
+        replyToBotMessageId: row.reply_to_bot_message_id || null,
         authorizationKind: row.authorization_kind,
         authorizationId: row.authorization_id,
       })),

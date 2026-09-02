@@ -269,6 +269,7 @@ function verifiedCorrectionsForPrompt(snapshot: VerifiedHumanCorrectionSnapshot)
     situation: correction.situation,
     instruction: correction.instruction,
     revision: correction.revision,
+    sourceKind: correction.sourceKind,
     sourceExternalMessageId: correction.sourceExternalMessageId,
     sourceChannelId: correction.sourceChannelId,
     replyToBotMessageId: correction.replyToBotMessageId,

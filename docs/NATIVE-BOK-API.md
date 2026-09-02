@@ -84,8 +84,10 @@ nie sygnałem do fallbacku na lokalny playbook lub pamięć modelu.
   oraz zarządzany snapshot wiedzy ograniczony do 24 tys. bajtów treści;
 - odpowiedzi mają `Cache-Control: no-store`; nie ma CORS ani logowania body/błędów modelu;
 - rozłączenie klienta i timeout przerywają trwający przebieg Codexa;
-- reguły nauczone z korekt i dane katalogowe są oznaczone jako niezaufana pamięć pomocnicza; mogą
-  wspierać procedurę lub ton, ale nie są faktami klienta i nie nadpisują playbooka ani `verifiedFacts`;
+- zwykłe reguły modelu i dane katalogowe pozostają niezaufaną pamięcią pomocniczą; wyłącznie
+  autoryzowana odpowiedź do BOK Agenta albo jawny mention w kanale poleceń może utworzyć
+  wersjonowaną korektę proceduralną. Taka korekta może w swoim wąskim zakresie poprawić starszą
+  procedurę, ale nigdy nie jest faktem klienta, dowodem wykonania operacji ani podstawą mutacji;
 - dedykowany `BOK_NATIVE_CODEX_HOME` nie zawiera konfiguracji MCP; shell, unified exec,
   multi-agent, web, obrazy i aplikacje są wyłączone, środowisko hosta nie jest dziedziczone, sandbox
   jest read-only, a sieć narzędzi modelu wyłączona;

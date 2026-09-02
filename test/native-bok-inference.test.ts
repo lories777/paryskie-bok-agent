@@ -150,6 +150,7 @@ test("autoryzowana korekta Discord trafia z pochodzeniem i rewizją do kolejnego
       createdAt: "2026-09-02T07:11:00.000Z",
       shouldRespond: true,
       verifiedCorrectionSource: {
+        sourceKind: "reply",
         replyToBotMessageId: "bok-agent-draft-100250",
         authorizationKind: "allowed_role",
         authorizationId: "bok-manager-role",
@@ -175,6 +176,7 @@ test("autoryzowana korekta Discord trafia z pochodzeniem i rewizją do kolejnego
     assert.equal(snapshot.revision, 1);
     assert.equal(snapshot.corrections.length, 1);
     assert.equal(snapshot.corrections[0]?.sourceAuthorId, "bok-manager");
+    assert.equal(snapshot.corrections[0]?.sourceKind, "reply");
     assert.equal(snapshot.corrections[0]?.replyToBotMessageId, "bok-agent-draft-100250");
 
     store.ingest({
@@ -230,6 +232,79 @@ test("autoryzowana korekta Discord trafia z pochodzeniem i rewizją do kolejnego
     assert.match(generatorPrompt, /bok-agent-draft-100250/);
     assert.match(generatorPrompt, /tylko w zakresie zapisanej, uogólnionej instruction/);
     assert.doesNotMatch(generatorPrompt, /sourceAuthorName|Klaudia/);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("jawne polecenie przez mention w command channel trafia do kolejnego generate ML", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-direct-mention-roundtrip-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({
+      platform: "discord",
+      conversationExternalId: "direct-request:discord-direct-rule-1",
+      externalMessageId: "discord-direct-rule-1",
+      channelId: "bok-command-channel",
+      authorId: "bok-manager",
+      authorName: "Manager BOK",
+      content: "Od teraz przy pytaniu o gratis od razu podawaj, że próbki są dobierane losowo.",
+      createdAt: "2026-09-02T09:00:00.000Z",
+      shouldRespond: true,
+      verifiedCorrectionSource: {
+        sourceKind: "direct_mention",
+        replyToBotMessageId: null,
+        authorizationKind: "allowed_user",
+        authorizationId: "bok-manager",
+      },
+    });
+    const job = store.claimNextJob();
+    assert.ok(job);
+    const directMentionOutput = {
+      reply: "Zapamiętane.",
+      caseState: "answered" as const,
+      proposedActions: [],
+      learnedRules: [{
+        situation: "Klient prosi o konkretną bezpłatną próbkę",
+        instruction: "Wyjaśnij od razu, że próbki są dobierane losowo i nie można zagwarantować wariantu.",
+      }],
+      actionExecution: null,
+    };
+    store.completeJob(job.id, directMentionOutput);
+    store.completeJob(job.id, directMentionOutput);
+
+    const snapshot = store.activeVerifiedHumanCorrections();
+    assert.equal(snapshot.revision, 1);
+    assert.equal(snapshot.corrections[0]?.sourceKind, "direct_mention");
+    assert.equal(snapshot.corrections[0]?.replyToBotMessageId, null);
+
+    let prompt = "";
+    const inference = new NativeBokInference(
+      loadConfig({}, "/tmp/paryskie-bok-agent"),
+      store,
+      {
+        runner: {
+          async generate(value) {
+            prompt = value;
+            return NATIVE_BOK_DRAFT;
+          },
+          async judge() {
+            return NATIVE_BOK_JUDGEMENT;
+          },
+        },
+        knowledgeBuilder: () => "wiedza wspólnego runtime'u",
+      },
+    );
+    await inference.generate(
+      NATIVE_BOK_CONTEXT,
+      NATIVE_BOK_KNOWLEDGE,
+      new AbortController().signal,
+    );
+    assert.match(prompt, /direct_mention/);
+    assert.match(prompt, /próbki są dobierane losowo/);
+    assert.match(prompt, /discord-direct-rule-1/);
+    assert.doesNotMatch(prompt, /Od teraz przy pytaniu/);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });

@@ -23,6 +23,8 @@ obserwowane kanały od kanału poleceń i zapisuje proponowane działania do oso
 - każdy draft przechodzi osobny, read-only przebieg kontroli jakości; niepotwierdzony fakt blokuje
   draft, a błąd czysto redakcyjny może zostać poprawiony automatycznie;
 - poprawki przekazuje się zwykłym zdaniem, np. „napisz to krócej” albo „zmień ton na cieplejszy”;
+  trwałą, zweryfikowaną zasadą może zostać wyłącznie odpowiedź do wiadomości BOK Agenta albo jawne
+  oznaczenie go w kanale poleceń, wysłane przez użytkownika lub rolę z allowlisty;
 - raporty publikowane przez inne boty na obserwowanych kanałach są częścią wspólnego kontekstu;
 - SQLite zachowuje rozmowę, stan i pamięć po restartach;
 - bezpośredni connector MasterLink znajduje się w `connectors/masterlink`; główny runtime udostępnia
@@ -69,6 +71,13 @@ Na kanale używa się zwykłego języka. Jedyna pomocnicza komenda techniczna to
 ```text
 !bok status
 ```
+
+Nową zasadę dla przyszłych spraw można przekazać naturalnie, oznaczając bota w kanale poleceń,
+np. `@BOK Agent od teraz przy pytaniu o konkretną próbkę od razu wyjaśnij, że próbki są losowe`.
+Takie polecenie oraz korekta będąca odpowiedzią do karty bota zapisują pochodzenie i rewizję w tej
+samej pamięci, z której korzysta natywne generowanie MasterLink. Zwykła wiadomość bez oznaczenia,
+wiadomość z kanału wyłącznie obserwowanego albo autor spoza allowlisty nie może utworzyć zaufanej
+reguły. Surowa wiadomość pozostaje w lokalnym audycie i nie jest kopiowana do promptów innych spraw.
 
 Bot Discord korzysta z API Discorda, a późniejsze narzędzia będą korzystały z systemów
 źródłowych. Ograniczenie „bez API” dotyczy modelu: rozumowanie wykonuje zalogowany Codex w ramach
