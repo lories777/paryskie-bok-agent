@@ -3,6 +3,7 @@ import { type Server } from "node:http";
 import test from "node:test";
 import {
   NATIVE_BOK_PROVIDER,
+  NATIVE_BOK_RUNTIME,
   parseGeneratorOutput,
   parseJudgeOutput,
   TICKET_AI_GENERATOR_OUTPUT_JSON_SCHEMA,
@@ -276,6 +277,32 @@ test("HTTP nie wypuszcza mismatch decyzji zwróconej przez inference", async () 
   }, {
     generatorModel: "codex-generator-test",
     judgeModel: "codex-judge-test",
+    runtimeStatus() {
+      return {
+        schemaVersion: 1 as const,
+        provider: NATIVE_BOK_PROVIDER,
+        runtime: NATIVE_BOK_RUNTIME,
+        store: {
+          source: "shared-agent-store" as const,
+          identity: "c".repeat(64),
+        },
+        corrections: {
+          source: "verified-discord-corrections" as const,
+          revision: 1,
+          activeRules: 0,
+          total: 0,
+          truncated: false as const,
+        },
+        playbook: {
+          source: "shared-agent-workspace" as const,
+          revision: "b".repeat(64),
+        },
+        operationalActionCatalog: {
+          schemaVersion: 2 as const,
+          hash: operationalActionCatalogHash(),
+        },
+      };
+    },
     async generate() {
       return typedDraft();
     },
