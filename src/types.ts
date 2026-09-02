@@ -135,6 +135,17 @@ export interface IncomingMessage {
   role?: "human" | "context";
   /** Only messages from explicitly observed Discord channels may become cross-case context. */
   sharedContext?: boolean;
+  /**
+   * Set only by DiscordGateway after it has verified the sender allowlist and either a reply to
+   * this bot or an explicit mention in a command channel. The store persists this provenance
+   * before any model runs.
+   */
+  verifiedCorrectionSource?: {
+    sourceKind: "reply" | "direct_mention";
+    replyToBotMessageId: string | null;
+    authorizationKind: "allowed_user" | "allowed_role";
+    authorizationId: string;
+  };
 }
 
 export interface StoredMessage {
@@ -191,4 +202,33 @@ export interface StoredLearnedRule {
   instruction: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface StoredVerifiedHumanCorrection {
+  id: number;
+  derivedSituation: string | null;
+  derivedInstruction: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Immutable ordering revision assigned when the exact human source is first persisted. */
+  sourceRevision: number;
+  sourceContent: string;
+  sourceAuthorId: string;
+  sourceAuthorName: string;
+  sourceExternalMessageId: string;
+  sourceChannelId: string;
+  sourceKind: "reply" | "direct_mention";
+  replyToBotMessageId: string | null;
+  authorizationKind: "allowed_user" | "allowed_role";
+  authorizationId: string;
+}
+
+export interface VerifiedHumanCorrectionSnapshot {
+  /** Changes whenever the complete snapshot changes, including its optional derived index. */
+  revision: number;
+  /** Total active human sources in durable storage, before applying the read limit. */
+  total: number;
+  /** True means `corrections` is incomplete and inference must stop fail-closed. */
+  truncated: boolean;
+  corrections: StoredVerifiedHumanCorrection[];
 }

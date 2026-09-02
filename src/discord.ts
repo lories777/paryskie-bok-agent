@@ -134,7 +134,7 @@ export class DiscordGateway implements ReplySink {
       console.log(`BOK Agent online jako ${client.user.tag}.`);
     });
     await this.client.login(this.config.discordToken);
-    await this.backfillObservedChannels();
+    await this.backfillRelevantChannels();
   }
 
   async stop(): Promise<void> {
@@ -301,15 +301,19 @@ export class DiscordGateway implements ReplySink {
     return (await this.approvedActionExecutor?.(job)) ?? null;
   }
 
-  private async onMessage(message: Message): Promise<void> {
+  private async onMessage(message: Message, historical = false): Promise<void> {
     if (!message.inGuild() || !this.client.user || message.author.id === this.client.user.id) return;
 
     const replyContext = await this.resolveReplyContext(message);
 
     const parentId = message.channel.isThread() ? message.channel.parentId : null;
+    const inExplicitCommandChannel = isConfiguredDiscordCommandChannel(
+      message.channelId,
+      parentId,
+      this.config.commandChannelIds,
+    );
     const inCommandChannel =
-      this.config.commandChannelIds.has(message.channelId) ||
-      Boolean(parentId && this.config.commandChannelIds.has(parentId)) ||
+      inExplicitCommandChannel ||
       message.channelId === this.config.daktelaEscalationChannelId ||
       parentId === this.config.daktelaEscalationChannelId;
     const inObserveChannel =
@@ -321,11 +325,26 @@ export class DiscordGateway implements ReplySink {
     const authorized =
       this.config.allowedUserIds.has(message.author.id) ||
       Boolean(message.member?.roles.cache.some((role) => this.config.allowedRoleIds.has(role.id)));
+    const correctionAuthorization = resolveVerifiedCorrectionAuthorization(
+      message.author.id,
+      message.member?.roles.cache.map((role) => role.id) ?? [],
+      this.config.allowedUserIds,
+      this.config.allowedRoleIds,
+    );
+    const verifiedCorrectionSource = resolveVerifiedCorrectionSource({
+      authorization: correctionAuthorization,
+      inExplicitCommandChannel,
+      mentionedAgent: mentioned,
+      replyingToAgent: replyContext.replyingToAgent,
+      replyToBotMessageId: replyContext.botMessageId,
+    });
     if (!message.author.bot && isStatusCommand(message.content)) {
+      if (historical) return;
       await this.handleStatus(message, authorized);
       return;
     }
     if (!message.author.bot && HELP_PATTERN.test(message.content.trim())) {
+      if (historical) return;
       await this.handleHelp(message, authorized);
       return;
     }
@@ -359,6 +378,11 @@ export class DiscordGateway implements ReplySink {
       // Dzięki temu późniejsze jawne polecenie może odwołać się np. do szablonu wklejonego chwilę
       // wcześniej, bez zamieniania każdej wiadomości na odpowiedź agenta.
       sharedContext: inObserveChannel || (inCommandChannel && !shouldRespond),
+      ...(shouldRespond && verifiedCorrectionSource
+        ? {
+            verifiedCorrectionSource,
+          }
+        : {}),
     };
     this.store.ingest(incoming);
   }
@@ -366,6 +390,7 @@ export class DiscordGateway implements ReplySink {
   private async resolveReplyContext(message: Message): Promise<{
     replyingToAgent: boolean;
     conversationExternalId?: string;
+    botMessageId?: string;
   }> {
     const referencedId = message.reference?.messageId;
     if (!referencedId || !this.client.user) return { replyingToAgent: false };
@@ -375,6 +400,7 @@ export class DiscordGateway implements ReplySink {
       return {
         replyingToAgent: true,
         conversationExternalId: route.conversationExternalId,
+        botMessageId: referencedId,
       };
     }
 
@@ -398,13 +424,14 @@ export class DiscordGateway implements ReplySink {
         createdAt: referenced.createdAt.toISOString(),
         shouldRespond: false,
       });
-      return { replyingToAgent: true, conversationExternalId };
+      return { replyingToAgent: true, conversationExternalId, botMessageId: referenced.id };
     }
     // Stara wiadomość bota bez zapisanej trasy i bez numeru Dakteli również dostaje własny kontekst,
     // zamiast wpadać do historycznej, wspólnej rozmowy całego kanału.
     return {
       replyingToAgent: true,
       conversationExternalId: `discord-reply:${referenced.id}`,
+      botMessageId: referenced.id,
     };
   }
 
@@ -454,32 +481,25 @@ export class DiscordGateway implements ReplySink {
     }
   }
 
-  private async backfillObservedChannels(): Promise<void> {
+  private async backfillRelevantChannels(): Promise<void> {
     if (this.config.discordBackfillMessages === 0) return;
-    for (const channelId of this.config.observeChannelIds) {
+    for (const channelId of discordBackfillChannelIds(
+      this.config.commandChannelIds,
+      this.config.observeChannelIds,
+      this.config.daktelaEscalationChannelId,
+    )) {
       try {
         const channel = await this.client.channels.fetch(channelId);
         if (!channel?.isTextBased() || channel.isDMBased()) continue;
         const messages = await channel.messages.fetch({ limit: this.config.discordBackfillMessages });
         for (const message of [...messages.values()].reverse()) {
-          if (!this.client.user || message.author.id === this.client.user.id) continue;
-          const content = normalizeDiscordContent(message, this.client.user.id);
-          if (!content) continue;
-          this.store.ingest({
-            platform: "discord",
-            conversationExternalId: conversationKey(message),
-            externalMessageId: message.id,
-            channelId: message.channelId,
-            authorId: message.author.id,
-            authorName: message.member?.displayName ?? message.author.displayName,
-            content,
-            createdAt: message.createdAt.toISOString(),
-            shouldRespond: false,
-            sharedContext: true,
-          });
+          // Use exactly the live auth/reference/mention path. Store idempotency prevents duplicate
+          // jobs, while an authorized correction sent during downtime is no longer downgraded to
+          // generic observed context. Historical status/help commands stay side-effect free.
+          await this.onMessage(message, true);
         }
       } catch (error) {
-        console.error(`Nie udało się pobrać kontekstu kanału Discord ${channelId}:`, error);
+        console.error(`Nie udało się odtworzyć kanału Discord ${channelId}:`, error);
       }
     }
   }
@@ -537,6 +557,71 @@ export function canDecideDraft(
   approverUserIds: ReadonlySet<string>,
 ): boolean {
   return approverUserIds.has(userId);
+}
+
+export function resolveVerifiedCorrectionAuthorization(
+  userId: string,
+  memberRoleIds: readonly string[],
+  allowedUserIds: ReadonlySet<string>,
+  allowedRoleIds: ReadonlySet<string>,
+):
+  | { authorizationKind: "allowed_user" | "allowed_role"; authorizationId: string }
+  | undefined {
+  if (allowedUserIds.has(userId)) {
+    return { authorizationKind: "allowed_user", authorizationId: userId };
+  }
+  const roleId = memberRoleIds.find((id) => allowedRoleIds.has(id));
+  return roleId
+    ? { authorizationKind: "allowed_role", authorizationId: roleId }
+    : undefined;
+}
+
+export function resolveVerifiedCorrectionSource(input: {
+  authorization:
+    | { authorizationKind: "allowed_user" | "allowed_role"; authorizationId: string }
+    | undefined;
+  inExplicitCommandChannel: boolean;
+  mentionedAgent: boolean;
+  replyingToAgent: boolean;
+  replyToBotMessageId?: string | undefined;
+}): IncomingMessage["verifiedCorrectionSource"] {
+  if (!input.authorization) return undefined;
+  if (input.replyingToAgent) {
+    return input.replyToBotMessageId
+      ? {
+          sourceKind: "reply",
+          replyToBotMessageId: input.replyToBotMessageId,
+          ...input.authorization,
+        }
+      : undefined;
+  }
+  if (!input.inExplicitCommandChannel || !input.mentionedAgent) return undefined;
+  return {
+    sourceKind: "direct_mention",
+    replyToBotMessageId: null,
+    ...input.authorization,
+  };
+}
+
+export function isConfiguredDiscordCommandChannel(
+  channelId: string,
+  parentId: string | null,
+  commandChannelIds: ReadonlySet<string>,
+): boolean {
+  return commandChannelIds.has(channelId) ||
+    Boolean(parentId && commandChannelIds.has(parentId));
+}
+
+export function discordBackfillChannelIds(
+  commandChannelIds: ReadonlySet<string>,
+  observeChannelIds: ReadonlySet<string>,
+  daktelaEscalationChannelId?: string,
+): string[] {
+  return [...new Set([
+    ...commandChannelIds,
+    ...observeChannelIds,
+    ...(daktelaEscalationChannelId ? [daktelaEscalationChannelId] : []),
+  ])];
 }
 
 function conversationKey(message: Message): string {

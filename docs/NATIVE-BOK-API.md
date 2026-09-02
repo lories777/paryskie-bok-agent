@@ -84,8 +84,20 @@ nie sygnałem do fallbacku na lokalny playbook lub pamięć modelu.
   oraz zarządzany snapshot wiedzy ograniczony do 24 tys. bajtów treści;
 - odpowiedzi mają `Cache-Control: no-store`; nie ma CORS ani logowania body/błędów modelu;
 - rozłączenie klienta i timeout przerywają trwający przebieg Codexa;
-- reguły nauczone z korekt i dane katalogowe są oznaczone jako niezaufana pamięć pomocnicza; mogą
-  wspierać procedurę lub ton, ale nie są faktami klienta i nie nadpisują playbooka ani `verifiedFacts`;
+- zwykłe reguły modelu i dane katalogowe pozostają niezaufaną pamięcią pomocniczą; wyłącznie
+  autoryzowana odpowiedź do BOK Agenta albo jawny mention w kanale poleceń może utworzyć
+  wersjonowaną korektę proceduralną. Taka korekta może w swoim wąskim zakresie poprawić starszą
+  procedurę, ale nigdy nie jest faktem klienta, dowodem wykonania operacji ani podstawą mutacji.
+  Dokładna treść człowieka jest zapisywana i otrzymuje niezmienną rewizję źródła już przy ingest, więc
+  pozostaje aktywna także przy pustym `learnedRules` albo awarii joba. Modelowe
+  `situation`/`instruction` są nullable i wyłącznie niezaufanym indeksem; nie mogą rozszerzać źródła
+  ani go usuwać, zmieniać jego rewizji lub kolejności. Osobna rewizja całego snapshotu zmienia się
+  także przy aktualizacji indeksu. Snapshot podaje `total` i `truncated`; niepełny zbiór kończy
+  generate fail-closed przed uruchomieniem modelu. Nowsze źródło zastępuje starsze tylko wtedy, gdy dokładny tekst jawnie koryguje ten
+  sam temat; sama kolejność i modelowy indeks nie ustanawiają supersede, a niejasny konflikt wymaga
+  człowieka. Generate wiąże snapshot pamięci z `operationId`, a judge używa
+  dokładnie tego samego snapshotu lub kończy fail-closed kodem 409; po restarcie/wygaśnięciu bindingu
+  caller musi ponowić generate;
 - dedykowany `BOK_NATIVE_CODEX_HOME` nie zawiera konfiguracji MCP; shell, unified exec,
   multi-agent, web, obrazy i aplikacje są wyłączone, środowisko hosta nie jest dziedziczone, sandbox
   jest read-only, a sieć narzędzi modelu wyłączona;

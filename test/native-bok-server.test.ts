@@ -6,6 +6,7 @@ import {
   NATIVE_BOK_PROVIDER,
 } from "../src/native-bok-contract.js";
 import { createNativeBokHttpServerForConfig } from "../src/native-bok-server.js";
+import { NativeBokCorrectionBindingError } from "../src/native-bok-inference.js";
 import {
   NATIVE_BOK_ATTACHMENT_CONTEXT,
   NATIVE_BOK_CONTEXT,
@@ -128,6 +129,51 @@ test("judge przyjmuje dokładnie context+draft i używa osobnego modelu", async 
       NATIVE_BOK_DRAFT,
       NATIVE_BOK_KNOWLEDGE,
     ]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("brak server-side bindingu generate kończy judge jawnie i fail-closed", async () => {
+  const server = createServer(fakeInference({
+    async judge() {
+      throw new NativeBokCorrectionBindingError("correction_snapshot_unbound");
+    },
+  }));
+  const runtime = await listen(server);
+  try {
+    const response = await post(runtime.origin, "/v1/bok/judge", {
+      context: NATIVE_BOK_CONTEXT,
+      draft: NATIVE_BOK_DRAFT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: "correction_snapshot_unbound",
+    });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("niepełna pamięć korekt kończy generate jawnym 409 zamiast fallbacku", async () => {
+  const server = createServer(fakeInference({
+    async generate() {
+      throw new NativeBokCorrectionBindingError("correction_snapshot_truncated");
+    },
+  }));
+  const runtime = await listen(server);
+  try {
+    const response = await post(runtime.origin, "/v1/bok/generate", {
+      context: NATIVE_BOK_CONTEXT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: "correction_snapshot_truncated",
+    });
   } finally {
     await runtime.close();
   }

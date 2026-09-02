@@ -5,12 +5,16 @@ import path from "node:path";
 import test from "node:test";
 import {
   canDecideDraft,
+  discordBackfillChannelIds,
   directRequestConversationKey,
   DiscordGateway,
   isDiscordUnknownMessage,
+  isConfiguredDiscordCommandChannel,
   isStatusCommand,
   persistDraftDecision,
   publishThenRemoveSuperseded,
+  resolveVerifiedCorrectionAuthorization,
+  resolveVerifiedCorrectionSource,
   shouldRespondToAuthorizedMessage,
   splitDiscordMessage,
 } from "../src/discord.js";
@@ -40,6 +44,94 @@ test("decyzja draftu wymaga jawnej allowlisty approverów i bez niej jest blokow
   assert.equal(canDecideDraft("allowed-bok-user", new Set()), false);
   assert.equal(canDecideDraft("allowed-bok-user", new Set(["explicit-approver"])), false);
   assert.equal(canDecideDraft("explicit-approver", new Set(["explicit-approver"])), true);
+});
+
+test("źródło korekty wymaga jawnie dozwolonego użytkownika albo roli", () => {
+  assert.deepEqual(
+    resolveVerifiedCorrectionAuthorization(
+      "bok-manager",
+      [],
+      new Set(["bok-manager"]),
+      new Set(),
+    ),
+    { authorizationKind: "allowed_user", authorizationId: "bok-manager" },
+  );
+  assert.deepEqual(
+    resolveVerifiedCorrectionAuthorization(
+      "bok-worker",
+      ["ordinary", "bok-role"],
+      new Set(),
+      new Set(["bok-role"]),
+    ),
+    { authorizationKind: "allowed_role", authorizationId: "bok-role" },
+  );
+  assert.equal(
+    resolveVerifiedCorrectionAuthorization(
+      "outsider",
+      ["ordinary"],
+      new Set(),
+      new Set(["bok-role"]),
+    ),
+    undefined,
+  );
+});
+
+test("gateway ufa tylko reply albo jawnemu mention w command channel", () => {
+  const authorization = { authorizationKind: "allowed_role" as const, authorizationId: "bok-role" };
+  assert.deepEqual(resolveVerifiedCorrectionSource({
+    authorization,
+    inExplicitCommandChannel: false,
+    mentionedAgent: false,
+    replyingToAgent: true,
+    replyToBotMessageId: "bot-card-1",
+  }), {
+    sourceKind: "reply",
+    replyToBotMessageId: "bot-card-1",
+    ...authorization,
+  });
+  assert.deepEqual(resolveVerifiedCorrectionSource({
+    authorization,
+    inExplicitCommandChannel: true,
+    mentionedAgent: true,
+    replyingToAgent: false,
+  }), {
+    sourceKind: "direct_mention",
+    replyToBotMessageId: null,
+    ...authorization,
+  });
+  assert.equal(resolveVerifiedCorrectionSource({
+    authorization,
+    inExplicitCommandChannel: true,
+    mentionedAgent: false,
+    replyingToAgent: false,
+  }), undefined, "zwykła wiadomość bez mention nie uczy pamięci");
+  assert.equal(resolveVerifiedCorrectionSource({
+    authorization,
+    inExplicitCommandChannel: false,
+    mentionedAgent: true,
+    replyingToAgent: false,
+  }), undefined, "mention w observe-only nie uczy pamięci");
+});
+
+test("direct mention rozpoznaje tylko skonfigurowany command channel lub jego thread", () => {
+  const commandChannels = new Set(["bok-command"]);
+  assert.equal(isConfiguredDiscordCommandChannel("bok-command", null, commandChannels), true);
+  assert.equal(isConfiguredDiscordCommandChannel("thread-1", "bok-command", commandChannels), true);
+  assert.equal(
+    isConfiguredDiscordCommandChannel("daktela-escalation", null, commandChannels),
+    false,
+  );
+});
+
+test("backfill obejmuje kanały poleceń, obserwowane i eskalacje bez duplikatów", () => {
+  assert.deepEqual(
+    discordBackfillChannelIds(
+      new Set(["bok-command", "shared"]),
+      new Set(["bok-observe", "shared"]),
+      "daktela-escalation",
+    ),
+    ["bok-command", "shared", "bok-observe", "daktela-escalation"],
+  );
 });
 
 test("Gotowe atomowo zatwierdza draft i kolejkuje dokładnie jedno wykonanie", () => {
