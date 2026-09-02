@@ -9,6 +9,10 @@ import {
 import { createNativeBokHttpServerForConfig } from "../src/native-bok-server.js";
 import { NativeBokCorrectionBindingError } from "../src/native-bok-inference.js";
 import {
+  TICKET_TEAM_ESCALATION_ACTION_TYPES,
+  TICKET_TEAM_ESCALATION_DESTINATIONS,
+} from "../src/native-bok-operational-catalog.js";
+import {
   NATIVE_BOK_ATTACHMENT_CONTEXT,
   NATIVE_BOK_CONTEXT,
   NATIVE_BOK_DRAFT,
@@ -97,6 +101,19 @@ test("runtime status wymaga Bearera i potwierdza wspólny Store/workspace bez tr
       operationalActionCatalog: {
         schemaVersion: 2,
         hash: "9c6f8e5341d775d05875fc29afda2911b4e2346e2fdb7c92f5983929d6ca0d6b",
+      },
+      operationalActionDispatch: {
+        schemaVersion: 2,
+        provider: NATIVE_BOK_PROVIDER,
+        enabled: false,
+        configurationReady: false,
+        identityVerified: false,
+        ready: false,
+        kinds: ["team_escalation"],
+        actionTypes: [...TICKET_TEAM_ESCALATION_ACTION_TYPES],
+        routeKeys: [...TICKET_TEAM_ESCALATION_DESTINATIONS],
+        delivery: "discord-gateway",
+        receipt: "shared-agent-store",
       },
     });
     assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
