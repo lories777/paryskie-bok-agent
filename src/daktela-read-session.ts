@@ -132,9 +132,15 @@ export class DaktelaReadSession {
 
   async verify(): Promise<DaktelaSessionCapabilities> {
     return this.exclusive(async () => {
-      const capabilities = await this.port.verify(this.requiredViewUrl());
-      this.verified = true;
-      return capabilities;
+      try {
+        const capabilities = await this.port.verify(this.requiredViewUrl());
+        assertSessionCapabilities(capabilities);
+        this.verified = true;
+        return capabilities;
+      } catch (error) {
+        this.verified = false;
+        throw error;
+      }
     });
   }
 
@@ -143,9 +149,15 @@ export class DaktelaReadSession {
     capabilities: DaktelaSessionCapabilities;
   }> {
     return this.exclusive(async () => {
-      const result = await this.port.readQueue(this.requiredViewUrl());
-      this.verified = true;
-      return result;
+      try {
+        const result = await this.port.readQueue(this.requiredViewUrl());
+        assertSessionCapabilities(result.capabilities);
+        this.verified = true;
+        return result;
+      } catch (error) {
+        this.verified = false;
+        throw error;
+      }
     });
   }
 
@@ -154,12 +166,17 @@ export class DaktelaReadSession {
   ): Promise<readonly DaktelaActivitySummary[]> {
     assertDaktelaId(externalTicketId);
     return this.exclusive(async () => {
-      const result = await this.port.readTicketActivities(
-        this.requiredViewUrl(),
-        externalTicketId,
-      );
-      this.verified = true;
-      return result;
+      try {
+        const result = await this.port.readTicketActivities(
+          this.requiredViewUrl(),
+          externalTicketId,
+        );
+        this.verified = true;
+        return result;
+      } catch (error) {
+        this.verified = false;
+        throw error;
+      }
     });
   }
 
@@ -167,73 +184,88 @@ export class DaktelaReadSession {
     rawSource: unknown,
     signal: AbortSignal,
   ): Promise<DaktelaVerifiedSourceRead> {
+    return this.withExactSource(rawSource, signal, async (verified) => verified);
+  }
+
+  async withExactSource<T>(
+    rawSource: unknown,
+    signal: AbortSignal,
+    operation: (verified: DaktelaVerifiedSourceRead) => Promise<T>,
+  ): Promise<T> {
     const source = nativeBokDaktelaDecisionSourceSchema.parse(rawSource);
     return this.exclusive(async () => {
-      assertNotAborted(signal);
-      const viewUrl = this.requiredViewUrl();
-      const ticket = await this.port.openExactTicket(viewUrl, source.externalTicketId);
-      assertNotAborted(signal);
-      if (ticket.externalId !== source.externalTicketId) {
-        throw new DaktelaReadSessionError("daktela_read_ticket_mismatch");
-      }
-      if (ticket.externalRevision !== source.externalRevision) {
-        throw new DaktelaReadSessionError("daktela_read_revision_stale");
-      }
-
-      const activities = new Map<string, ExactDaktelaActivity>();
-      const eventIds = new Set([
-        source.triggerExternalEventId,
-        ...source.attachments.map((attachment) => attachment.externalEventId),
-      ]);
-      for (const externalEventId of eventIds) {
+      let verified: DaktelaVerifiedSourceRead;
+      try {
         assertNotAborted(signal);
-        const activity = await this.port.readExactActivity(viewUrl, externalEventId);
-        assertExactActivity(source, activity, externalEventId);
-        activities.set(externalEventId, activity);
-      }
-
-      const attachments: DaktelaVerifiedAttachment[] = [];
-      for (const expected of source.attachments) {
+        const viewUrl = this.requiredViewUrl();
+        const ticket = await this.port.openExactTicket(viewUrl, source.externalTicketId);
         assertNotAborted(signal);
-        const activity = activities.get(expected.externalEventId);
-        if (!activity) throw new DaktelaReadSessionError("daktela_read_event_mismatch");
-        const candidate = activity.attachments.find((attachment) =>
-          daktelaMetadataId(attachment.externalId) === expected.attachmentId);
-        if (!candidate || !SAFE_FILE_ID.test(candidate.externalId)) {
-          throw new DaktelaReadSessionError("daktela_read_attachment_mismatch");
+        if (ticket.externalId !== source.externalTicketId) {
+          throw new DaktelaReadSessionError("daktela_read_ticket_mismatch");
         }
-        if (
-          candidate.inline
-          || candidate.fileName !== expected.fileName
-          || normalizedContentType(candidate.contentType) !== expected.contentType
-          || candidate.sizeBytes !== expected.sizeBytes
-        ) {
-          throw new DaktelaReadSessionError("daktela_read_attachment_mismatch");
+        if (ticket.externalRevision !== source.externalRevision) {
+          throw new DaktelaReadSessionError("daktela_read_revision_stale");
         }
-        const bytes = await this.port.downloadExactAttachment(
-          viewUrl,
-          candidate.externalId,
-          expected.fileName,
-          expected.sizeBytes,
-        );
-        if (
-          bytes.byteLength !== expected.sizeBytes
-          || sha256(bytes) !== expected.sourceHash
-        ) {
-          throw new DaktelaReadSessionError("daktela_read_attachment_changed");
+
+        const activities = new Map<string, ExactDaktelaActivity>();
+        const eventIds = new Set([
+          source.triggerExternalEventId,
+          ...source.attachments.map((attachment) => attachment.externalEventId),
+        ]);
+        for (const externalEventId of eventIds) {
+          assertNotAborted(signal);
+          const activity = await this.port.readExactActivity(viewUrl, externalEventId);
+          assertExactActivity(source, activity, externalEventId);
+          assertCompleteAttachmentManifest(source, activity, externalEventId);
+          activities.set(externalEventId, activity);
         }
-        attachments.push({ source: expected, bytes });
+
+        const attachments: DaktelaVerifiedAttachment[] = [];
+        for (const expected of source.attachments) {
+          assertNotAborted(signal);
+          const activity = activities.get(expected.externalEventId);
+          if (!activity) throw new DaktelaReadSessionError("daktela_read_event_mismatch");
+          const candidate = activity.attachments.find((attachment) =>
+            daktelaMetadataId(attachment.externalId) === expected.attachmentId);
+          if (!candidate || !SAFE_FILE_ID.test(candidate.externalId)) {
+            throw new DaktelaReadSessionError("daktela_read_attachment_mismatch");
+          }
+          if (
+            candidate.inline
+            || candidate.fileName !== expected.fileName
+            || normalizedContentType(candidate.contentType) !== expected.contentType
+            || candidate.sizeBytes !== expected.sizeBytes
+          ) {
+            throw new DaktelaReadSessionError("daktela_read_attachment_mismatch");
+          }
+          const bytes = await this.port.downloadExactAttachment(
+            viewUrl,
+            candidate.externalId,
+            expected.fileName,
+            expected.sizeBytes,
+          );
+          if (
+            bytes.byteLength !== expected.sizeBytes
+            || sha256(bytes) !== expected.sourceHash
+          ) {
+            throw new DaktelaReadSessionError("daktela_read_attachment_changed");
+          }
+          attachments.push({ source: expected, bytes });
+        }
+        this.verified = true;
+        verified = Object.freeze({
+          source,
+          attachments: Object.freeze(attachments),
+        });
+      } catch (error) {
+        if (error instanceof DaktelaReadSessionError) throw error;
+        if (signal.aborted) throw new DaktelaReadSessionError("daktela_read_interrupted");
+        this.verified = false;
+        throw new DaktelaReadSessionError("daktela_read_failed");
       }
-      this.verified = true;
-      return Object.freeze({
-        source,
-        attachments: Object.freeze(attachments),
-      });
-    }).catch((error: unknown) => {
-      if (error instanceof DaktelaReadSessionError) throw error;
-      if (signal.aborted) throw new DaktelaReadSessionError("daktela_read_interrupted");
-      this.verified = false;
-      throw new DaktelaReadSessionError("daktela_read_failed");
+      // Keep the shared page/mutex pinned until both models consume the same bytes. Errors from
+      // the model/store are not Daktela identity failures and must retain their original codes.
+      return operation(verified);
     });
   }
 
@@ -490,6 +522,30 @@ function assertExactActivity(
   }
 }
 
+function assertCompleteAttachmentManifest(
+  source: NativeBokDaktelaDecisionSource,
+  activity: ExactDaktelaActivity,
+  externalEventId: string,
+): void {
+  const expected = source.attachments
+    .filter((attachment) => attachment.externalEventId === externalEventId)
+    .map((attachment) => attachment.attachmentId)
+    .sort();
+  // Daktela attaches technical text/plain MIME parts for some e-mails. They are not visual
+  // customer evidence. Every non-inline PDF/JPEG/PNG is relevant and must be present 1:1.
+  const actual = activity.attachments
+    .filter((attachment) =>
+      !attachment.inline
+      && ["application/pdf", "image/jpeg", "image/png"].includes(
+        normalizedContentType(attachment.contentType) ?? "",
+      ))
+    .map((attachment) => daktelaMetadataId(attachment.externalId))
+    .sort();
+  if (expected.length !== actual.length || expected.some((value, index) => value !== actual[index])) {
+    throw new DaktelaReadSessionError("daktela_read_attachment_mismatch");
+  }
+}
+
 function exactActivity(raw: Record<string, unknown>): ExactDaktelaActivity {
   const item = record(raw.item) ?? {};
   const activityQueue = referenceId(raw.queue);
@@ -603,6 +659,12 @@ async function readSessionCapabilities(page: Page): Promise<DaktelaSessionCapabi
 function assertAuthenticatedUrl(value: string): void {
   if (/\/login\/?(?:#.*)?$/.test(new URL(value).pathname)) {
     throw new Error("daktela_session_unauthorized");
+  }
+}
+
+function assertSessionCapabilities(capabilities: DaktelaSessionCapabilities): void {
+  if (!capabilities.userType.trim() || !capabilities.profileType.trim()) {
+    throw new Error("daktela_session_identity_invalid");
   }
 }
 

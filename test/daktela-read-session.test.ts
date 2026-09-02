@@ -56,14 +56,26 @@ class FakeReadPort implements DaktelaAuthenticatedReadPort {
   concurrent = 0;
   calls: string[] = [];
   queueGate: Promise<void> | undefined;
+  verifyError: Error | undefined;
+  queueError: Error | undefined;
+  activitiesError: Error | undefined;
+  extraAttachments: Array<{
+    externalId: string;
+    fileName: string;
+    contentType: string;
+    sizeBytes: number;
+    inline: boolean;
+  }> = [];
 
   async verify() {
+    if (this.verifyError) throw this.verifyError;
     return { userType: "agent", profileType: "admin", profileTitle: "Admin" };
   }
 
   async readQueue() {
     return this.tracked("queue", async () => {
       await this.queueGate;
+      if (this.queueError) throw this.queueError;
       return {
         rows: [],
         capabilities: { userType: "agent", profileType: "admin", profileTitle: "Admin" },
@@ -72,7 +84,10 @@ class FakeReadPort implements DaktelaAuthenticatedReadPort {
   }
 
   async readTicketActivities() {
-    return this.tracked("activities", async () => []);
+    return this.tracked("activities", async () => {
+      if (this.activitiesError) throw this.activitiesError;
+      return [];
+    });
   }
 
   async openExactTicket() {
@@ -94,7 +109,7 @@ class FakeReadPort implements DaktelaAuthenticatedReadPort {
         contentType: "image/jpeg",
         sizeBytes: BYTES.byteLength,
         inline: false,
-      }],
+      }, ...this.extraAttachments],
     }));
   }
 
@@ -172,6 +187,36 @@ test("zmienione bajty i częściowy odczyt nigdy nie zwracają evidence", async 
   );
 });
 
+test("pominięty obraz blokuje partial evidence, techniczny text/plain nie blokuje", async () => {
+  const partial = new FakeReadPort();
+  partial.extraAttachments.push({
+    externalId: "999001",
+    fileName: "second.png",
+    contentType: "image/png",
+    sizeBytes: 123,
+    inline: false,
+  });
+  await assert.rejects(
+    session(partial).readExactSource(source(), new AbortController().signal),
+    (error: unknown) =>
+      error instanceof DaktelaReadSessionError
+      && error.code === "daktela_read_attachment_mismatch",
+  );
+  assert.equal(partial.calls.includes("download"), false);
+
+  const technical = new FakeReadPort();
+  technical.extraAttachments.push({
+    externalId: "999002",
+    fileName: "message.txt",
+    contentType: "text/plain",
+    sizeBytes: 42,
+    inline: false,
+  });
+  await assert.doesNotReject(
+    session(technical).readExactSource(source(), new AbortController().signal),
+  );
+});
+
 test("monitor i native read są serializowane jednym mutexem", async () => {
   const port = new FakeReadPort();
   let releaseQueue!: () => void;
@@ -186,6 +231,57 @@ test("monitor i native read są serializowane jednym mutexem", async () => {
   await Promise.all([monitor, native]);
   assert.equal(port.maxConcurrent, 1);
   assert.deepEqual(port.calls, ["queue", "ticket", "event", "download"]);
+});
+
+test("mutex pozostaje zajęty przez analizę modeli po exact read", async () => {
+  const port = new FakeReadPort();
+  const shared = session(port);
+  let releaseModel!: () => void;
+  const modelGate = new Promise<void>((resolve) => { releaseModel = resolve; });
+  let modelStarted!: () => void;
+  const started = new Promise<void>((resolve) => { modelStarted = resolve; });
+  const native = shared.withExactSource(
+    source(),
+    new AbortController().signal,
+    async () => {
+      modelStarted();
+      await modelGate;
+      return "done";
+    },
+  );
+  await started;
+  const monitor = shared.readQueue();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(port.calls.includes("queue"), false);
+  releaseModel();
+  assert.equal(await native, "done");
+  await monitor;
+  assert.equal(port.calls.at(-1), "queue");
+});
+
+test("każda awaria authenticated read natychmiast wygasza readiness sesji", async () => {
+  const port = new FakeReadPort();
+  const shared = session(port);
+  await shared.verify();
+  assert.equal(shared.identityVerified(), true);
+
+  port.queueError = new Error("login expired");
+  await assert.rejects(shared.readQueue(), /login expired/);
+  assert.equal(shared.identityVerified(), false);
+
+  port.queueError = undefined;
+  await shared.readQueue();
+  assert.equal(shared.identityVerified(), true);
+
+  port.activitiesError = new Error("browser disconnected");
+  await assert.rejects(shared.readTicketActivities("100328"), /browser disconnected/);
+  assert.equal(shared.identityVerified(), false);
+
+  port.activitiesError = undefined;
+  await shared.verify();
+  port.verifyError = new Error("session unauthorized");
+  await assert.rejects(shared.verify(), /session unauthorized/);
+  assert.equal(shared.identityVerified(), false);
 });
 
 function sha256(value: string | Uint8Array): string {

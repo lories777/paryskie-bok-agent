@@ -25,6 +25,21 @@ import {
   TICKET_TEAM_ESCALATION_DESTINATIONS,
 } from "../src/native-bok-operational-catalog.js";
 import {
+  nativeBokDaktelaSourceSnapshotHash,
+  nativeBokAttachmentEvidenceHash,
+  type NativeBokDaktelaDecisionSource,
+} from "../src/native-bok-attachment-evidence.js";
+import {
+  NATIVE_BOK_ATTACHMENT_POLICY_VERSION,
+  NATIVE_BOK_DECISION_PIPELINE,
+  NATIVE_BOK_DECISION_PIPELINE_HASH,
+  nativeBokDecisionCapabilityStatus,
+} from "../src/native-bok-decision-capability.js";
+import {
+  buildNativeBokDecisionResultV2,
+  nativeBokDecisionHash,
+} from "../src/native-bok-decision-result.js";
+import {
   NATIVE_BOK_CONTEXT,
   NATIVE_BOK_DRAFT,
   NATIVE_BOK_JUDGEMENT,
@@ -68,6 +83,14 @@ const DISPATCH_RUNTIME = {
   receipt: "shared-agent-store" as const,
 };
 
+const DECISION_CAPABILITY = nativeBokDecisionCapabilityStatus({
+  sharedEngine: true,
+  daktelaRead: true,
+  masterlinkRead: true,
+  attachmentEvidence: true,
+  independentJudge: true,
+});
+
 class FakeInference {
   readonly callOrder: string[] = [];
   generateSnapshot: unknown;
@@ -75,6 +98,21 @@ class FakeInference {
 
   runtimeStatus(): NativeBokRuntimeStatus {
     return structuredClone(RUNTIME);
+  }
+
+  decisionCapabilityStatus() {
+    return structuredClone(DECISION_CAPABILITY);
+  }
+
+  async decide(request: unknown, signal: AbortSignal) {
+    const parsed = request as {
+      context: unknown;
+      knowledgeSnapshot: unknown;
+    };
+    if (signal.aborted) throw new Error("aborted");
+    await this.generate(parsed.context, parsed.knowledgeSnapshot);
+    await this.judge(parsed.context, NATIVE_BOK_DRAFT, parsed.knowledgeSnapshot);
+    return decisionResult();
   }
 
   async generate(_context: unknown, snapshot: unknown): Promise<unknown> {
@@ -156,8 +194,12 @@ function decisionLease(overrides: Record<string, unknown> = {}) {
   const request = {
     context: structuredClone(NATIVE_BOK_CONTEXT),
     knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+    source: decisionSource(),
   };
-  const contextHash = nativeBridgeHash(request.context);
+  const contextHash = nativeBridgeHash({
+    context: request.context,
+    source: request.source,
+  });
   const operatorGuidanceHash = null;
   const sourceRevision = NATIVE_BOK_CONTEXT.ticket.revision;
   const requestHash = nativeBridgeHash({
@@ -180,6 +222,58 @@ function decisionLease(overrides: Record<string, unknown> = {}) {
     request,
     ...overrides,
   };
+}
+
+function decisionSource(): NativeBokDaktelaDecisionSource {
+  const base = {
+    schemaVersion: 1 as const,
+    pipelineHash: NATIVE_BOK_DECISION_PIPELINE_HASH,
+    system: "daktela" as const,
+    externalTicketId: "100328",
+    externalRevision: "2026-09-02T20:00:00.000Z",
+    triggerExternalEventId: "activity_123456",
+    latestInboundExternalEventId: "activity_123456",
+    queueExternalId: "email_pl",
+    attachments: [],
+  };
+  return { ...base, snapshotHash: nativeBokDaktelaSourceSnapshotHash(base) };
+}
+
+function decisionResult() {
+  const source = decisionSource();
+  const evidenceBase = {
+    schemaVersion: 1 as const,
+    policyVersion: NATIVE_BOK_ATTACHMENT_POLICY_VERSION,
+    pipelineHash: NATIVE_BOK_DECISION_PIPELINE_HASH,
+    snapshotHash: source.snapshotHash,
+    receipts: [],
+  };
+  return buildNativeBokDecisionResultV2({
+    output: {
+      reply: "DAKTELA #100328 · gotowe",
+      caseState: "action_proposed",
+      proposedActions: [{
+        kind: "reply_customer",
+        summary: "Gotowa odpowiedź",
+        target: "Daktela ticket #100328",
+        payload: NATIVE_BOK_DRAFT.body,
+        reason: "Zweryfikowano dane.",
+        risk: "low",
+        qualityReview: { verdict: "pass", issues: [], confidence: "high" },
+      }],
+      actionExecution: null,
+    },
+    source,
+    attachmentEvidence: {
+      ...evidenceBase,
+      evidenceHash: nativeBokAttachmentEvidenceHash(evidenceBase),
+    },
+    toolEvidenceHash: nativeBokDecisionHash([]),
+    toolNames: [],
+    policyHash: "d".repeat(64),
+    playbookRevision: "e".repeat(64),
+    correctionsRevision: 3,
+  });
 }
 
 function actionEnvelope(): NativeOperationalActionEnvelope {
@@ -296,6 +390,7 @@ test("atomowy decision robi generate→judge na tym samym snapshotcie i jeden te
     runtime: {
       ok: true,
       ...RUNTIME,
+      decisionCapability: DECISION_CAPABILITY,
       operationalActionDispatch: DISPATCH_RUNTIME,
     },
   });
@@ -308,7 +403,7 @@ test("atomowy decision robi generate→judge na tym samym snapshotcie i jeden te
     kind: "decision",
     outcome: {
       status: "completed",
-      result: { draft: NATIVE_BOK_DRAFT, judgement: NATIVE_BOK_JUDGEMENT },
+      result: decisionResult(),
     },
   });
 });
@@ -366,7 +461,12 @@ test("długie generate→judge utrzymuje niezależny heartbeat bez lease'owania 
   assert.deepEqual(heartbeatBody, {
     schemaVersion: 1,
     poller: { instanceId: INSTANCE_ID, processStartedAt: new Date(NOW).toISOString() },
-    runtime: { ok: true, ...RUNTIME, operationalActionDispatch: DISPATCH_RUNTIME },
+    runtime: {
+      ok: true,
+      ...RUNTIME,
+      decisionCapability: DECISION_CAPABILITY,
+      operationalActionDispatch: DISPATCH_RUNTIME,
+    },
   });
   releaseGenerate();
   assert.equal(await run, "completed");

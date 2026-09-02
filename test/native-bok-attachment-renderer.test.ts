@@ -61,11 +61,13 @@ test("JPEG i PNG stają się canonical evidence oraz prywatnymi local_image", as
     }
     assert.equal(result.localImagePaths.every((value) => existsSync(value)), true);
     assert.equal(result.localImagePaths.some((value) => value.includes("photo.jpg")), false);
+    await assert.doesNotReject(result.verify());
   } finally {
     const parent = result.localImagePaths[0]!.replace(/\/[^/]+$/, "");
     await result.cleanup();
     await result.cleanup();
     assert.equal(existsSync(parent), false);
+    await assert.rejects(result.verify(), /attachment_render_failed/);
   }
 });
 

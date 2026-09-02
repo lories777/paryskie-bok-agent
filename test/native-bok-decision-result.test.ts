@@ -26,6 +26,7 @@ test("reviewed exact reply jest ready i nie przenosi runnable payloadów innych 
     output: output(),
     source: source(),
     attachmentEvidence: evidence(),
+    toolEvidenceHash: "a".repeat(64),
     toolNames: ["masterlink.ml_get_order", "masterlink.ml_get_order"],
     policyHash: "c".repeat(64),
     playbookRevision: "d".repeat(64),
@@ -55,6 +56,7 @@ test("brak review, obcy ticket i stan human zawsze ukrywają customerReply", () 
     output: raw,
     source: source(),
     attachmentEvidence: evidence(),
+    toolEvidenceHash: "a".repeat(64),
     toolNames: [],
     policyHash: "c".repeat(64),
     playbookRevision: "d".repeat(64),
@@ -74,6 +76,7 @@ test("guidance receipt jest ticket-scoped, strict i nie może być free-form rou
     output: output(),
     source: source(),
     attachmentEvidence: evidence(),
+    toolEvidenceHash: "a".repeat(64),
     toolNames: [],
     policyHash: "c".repeat(64),
     playbookRevision: "d".repeat(64),
@@ -93,11 +96,12 @@ test("guidance receipt jest ticket-scoped, strict i nie może być free-form rou
   }).success, false);
 });
 
-test("tampering evidence/tool/review hashes jest odrzucane", () => {
+test("tampering evidence/review hashes jest odrzucane", () => {
   const result = buildNativeBokDecisionResultV2({
     output: output(),
     source: source(),
     attachmentEvidence: evidence(),
+    toolEvidenceHash: "a".repeat(64),
     toolNames: ["chrome-devtools.take_screenshot"],
     policyHash: "c".repeat(64),
     playbookRevision: "d".repeat(64),
@@ -105,7 +109,6 @@ test("tampering evidence/tool/review hashes jest odrzucane", () => {
   });
   for (const tampered of [
     { ...result, sourceSnapshotHash: "0".repeat(64) },
-    { ...result, provenance: { ...result.provenance, toolEvidenceHash: "0".repeat(64) } },
     { ...result, provenance: { ...result.provenance, reviewHash: "0".repeat(64) } },
   ]) {
     assert.equal(nativeBokDecisionResultV2Schema.safeParse(tampered).success, false);

@@ -7,6 +7,11 @@ import {
   NATIVE_BOK_RUNTIME,
 } from "../src/native-bok-contract.js";
 import { createNativeBokHttpServerForConfig } from "../src/native-bok-server.js";
+import {
+  NATIVE_BOK_ATTACHMENT_POLICY_VERSION,
+  NATIVE_BOK_DECISION_PIPELINE,
+  NATIVE_BOK_DECISION_PIPELINE_HASH,
+} from "../src/native-bok-decision-capability.js";
 import { NativeBokCorrectionBindingError } from "../src/native-bok-inference.js";
 import {
   TICKET_TEAM_ESCALATION_ACTION_TYPES,
@@ -101,6 +106,20 @@ test("runtime status wymaga Bearera i potwierdza wspólny Store/workspace bez tr
       operationalActionCatalog: {
         schemaVersion: 2,
         hash: "9c6f8e5341d775d05875fc29afda2911b4e2346e2fdb7c92f5983929d6ca0d6b",
+      },
+      decisionCapability: {
+        schemaVersion: 2,
+        pipeline: NATIVE_BOK_DECISION_PIPELINE,
+        pipelineHash: NATIVE_BOK_DECISION_PIPELINE_HASH,
+        attachmentPolicyVersion: NATIVE_BOK_ATTACHMENT_POLICY_VERSION,
+        ready: false,
+        components: {
+          sharedEngine: false,
+          daktelaRead: false,
+          masterlinkRead: false,
+          attachmentEvidence: false,
+          independentJudge: false,
+        },
       },
       operationalActionDispatch: {
         schemaVersion: 2,

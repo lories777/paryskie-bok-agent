@@ -38,6 +38,8 @@ export interface NativeBokRenderedAttachmentEvidence {
   readonly evidence: NativeBokAttachmentEvidence;
   /** Exact ordered images passed unchanged to generator and independent judge. */
   readonly localImagePaths: readonly string[];
+  /** Re-hash exact private files immediately before each model boundary. */
+  verify(): Promise<void>;
   /** Idempotent removal of every source/render file. Always call in finally. */
   cleanup(): Promise<void>;
 }
@@ -179,9 +181,22 @@ export class NativeBokAttachmentRenderer {
         evidenceHash: nativeBokAttachmentEvidenceHash(evidenceBase),
       });
       assertNativeBokAttachmentEvidenceBound(verified.source, evidence);
+      const expectedRenderHashes = receipts.flatMap((item) => item.renderHashes);
+      const verify = async (): Promise<void> => {
+        if (cleaned || localImagePaths.length !== expectedRenderHashes.length) {
+          throw new NativeBokAttachmentRenderError("attachment_render_failed");
+        }
+        for (let index = 0; index < localImagePaths.length; index += 1) {
+          const bytes = await readFile(localImagePaths[index]!);
+          if (sha256(bytes) !== expectedRenderHashes[index]) {
+            throw new NativeBokAttachmentRenderError("attachment_render_failed");
+          }
+        }
+      };
       return Object.freeze({
         evidence,
         localImagePaths: Object.freeze(localImagePaths),
+        verify,
         cleanup,
       });
     } catch (error) {

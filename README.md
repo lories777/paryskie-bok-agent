@@ -139,3 +139,9 @@ telefonu, IBAN/NRB oraz numeru karty. Pozostaje niezaufaną treścią klienta.
 Każdy obraz, PDF, niepełne pokrycie albo status `unsupported`, `failed` lub `truncated` kończy
 request fail-closed przed uruchomieniem Codexa. Ta gałąź jest consumer-first: należy wdrożyć ją
 przed producentem MasterLink wysyłającym `verified-text-v1`.
+
+Powyższy `verified-text-v1` dotyczy wyłącznie lokalnych, diagnostycznych endpointów
+`/v1/bok/generate` i `/v1/bok/judge`. Produkcyjny outbound decision używa kontraktu
+`daktela-discord-parity-v1`: exact source z Dakteli, byte/render hash, lokalnych obrazów JPEG/PNG
+i stron PDF oraz tego samego `BokCodexAgent` i reviewera co Discord. Szczegóły i readiness są w
+[`docs/NATIVE-BOK-API.md`](docs/NATIVE-BOK-API.md).

@@ -84,15 +84,6 @@ const provenanceSchema = z
     if (!isCanonicalStrings(provenance.toolNames)) {
       issue.addIssue({ code: "custom", path: ["toolNames"], message: "tool_names_not_canonical" });
     }
-    if (provenance.toolEvidenceHash !== nativeBokDecisionHash({
-      toolNames: provenance.toolNames,
-    })) {
-      issue.addIssue({
-        code: "custom",
-        path: ["toolEvidenceHash"],
-        message: "tool_evidence_hash_mismatch",
-      });
-    }
   });
 
 export const nativeBokDecisionResultV2Schema = z
@@ -166,6 +157,7 @@ export interface NativeBokDecisionResultInput {
   readonly output: AgentTurnOutput;
   readonly source: NativeBokDaktelaDecisionSource;
   readonly attachmentEvidence: NativeBokAttachmentEvidence;
+  readonly toolEvidenceHash: string;
   readonly toolNames: readonly string[];
   readonly policyHash: string;
   readonly playbookRevision: string;
@@ -177,6 +169,12 @@ export function buildNativeBokDecisionResultV2(
   input: NativeBokDecisionResultInput,
 ): NativeBokDecisionResultV2 {
   assertNativeBokAttachmentEvidenceBound(input.source, input.attachmentEvidence);
+  if (
+    input.guidanceReceipt
+    && input.guidanceReceipt.externalTicketId !== input.source.externalTicketId
+  ) {
+    throw new Error("guidance_ticket_mismatch");
+  }
   const replyActions = input.output.proposedActions.filter((action) => action.kind === "reply_customer");
   const reasonCodes = decisionReasonCodes(input.output, replyActions, input.source.externalTicketId);
   const state = reasonCodes.length === 1 && reasonCodes[0] === "reviewed_reply_ready"
@@ -216,7 +214,7 @@ export function buildNativeBokDecisionResultV2(
     reasonCodes: canonicalReasons,
     attachmentEvidence: input.attachmentEvidence,
     provenance: {
-      toolEvidenceHash: nativeBokDecisionHash({ toolNames }),
+      toolEvidenceHash: input.toolEvidenceHash,
       toolNames,
       reviewHash,
       policyHash: input.policyHash,

@@ -621,6 +621,58 @@ export class AgentStore {
     return row ? ticketScopedGuidanceRecord(row) : null;
   }
 
+  syntheticDaktelaDecisionJob(input: {
+    externalTicketId: string;
+    sourceSnapshotHash: string;
+    guidanceMessageId?: number;
+    channelId: string;
+  }): ClaimedJob {
+    if (
+      !/^[A-Za-z0-9_]{1,100}$/.test(input.externalTicketId)
+      || !/^[a-f0-9]{64}$/.test(input.sourceSnapshotHash)
+      || !input.channelId
+    ) {
+      throw new Error("native_daktela_job_binding_invalid");
+    }
+    const conversation = this.db
+      .prepare(`
+        SELECT id
+        FROM conversations
+        WHERE platform = 'discord' AND external_id = ?
+      `)
+      .get(`daktela-ticket:${input.externalTicketId}`) as { id: number } | undefined;
+    if (!conversation) throw new Error("native_daktela_conversation_missing");
+    const trigger = input.guidanceMessageId === undefined
+      ? this.db
+          .prepare(`
+            SELECT id
+            FROM messages
+            WHERE conversation_id = ? AND role IN ('human', 'context')
+            ORDER BY id DESC
+            LIMIT 1
+          `)
+          .get(conversation.id) as { id: number } | undefined
+      : this.db
+          .prepare(`
+            SELECT id
+            FROM messages
+            WHERE id = ? AND conversation_id = ? AND role = 'human'
+              AND author_id = 'masterlink-guidance'
+          `)
+          .get(input.guidanceMessageId, conversation.id) as { id: number } | undefined;
+    if (!trigger) throw new Error("native_daktela_trigger_missing");
+    return {
+      id: -1,
+      publicId: `ML-${input.sourceSnapshotHash.slice(0, 16)}`,
+      conversationId: conversation.id,
+      triggerMessageId: trigger.id,
+      platform: "discord",
+      channelId: input.channelId,
+      externalMessageId: `daktela:v7:${input.externalTicketId}:${input.sourceSnapshotHash.slice(0, 16)}`,
+      attempts: 1,
+    };
+  }
+
   private ticketScopedGuidanceRow(guidanceId: string): TicketScopedGuidanceRow | null {
     const row = this.db
       .prepare(`
