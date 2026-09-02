@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type { ThreadItem } from "@openai/codex-sdk";
 import {
+  BokCodexAgent,
   buildCodexConfigOverrides,
   buildPrimaryThreadOptions,
   CHROME_READ_ONLY_TOOLS,
@@ -28,6 +32,9 @@ import {
   requiredMasterlinkResearch,
   suppressReplyAfterSubstantiveOutgoing,
 } from "../src/codex-agent.js";
+import { BokAgentCore } from "../src/bok-agent-core.js";
+import { loadConfig } from "../src/config.js";
+import { AgentStore } from "../src/store.js";
 import type { AgentTurnOutput, ClaimedJob, StoredMessage } from "../src/types.js";
 
 const message: StoredMessage = {
@@ -65,6 +72,21 @@ const daktelaJob: ClaimedJob = {
   externalMessageId: "daktela:v6:99570:e9f53df915ac1fab",
   attempts: 1,
 };
+
+test("worker i native HTTP używają tej samej instancji BokAgentCore", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-shared-core-"));
+  const store = new AgentStore(dir);
+  try {
+    const core = new BokAgentCore(loadConfig({ BOK_AGENT_STATE_DIR: dir }, dir), store);
+    const agent = new BokCodexAgent(core);
+    assert.equal(agent.core, core);
+    assert.equal(agent.nativeInference.core, core);
+    assert.equal(agent.nativeInference.core.store, store);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("reviewer dostaje procedury BOK obok danych konkretnego zamówienia", () => {
   const context = buildReviewerBusinessContext(

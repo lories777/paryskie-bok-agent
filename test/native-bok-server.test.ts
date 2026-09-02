@@ -44,7 +44,7 @@ function fakeInference(overrides: {
       },
       corrections: {
         source: "verified-discord-corrections" as const,
-        revision: "a".repeat(64),
+        revision: 7,
         activeRules: 3,
       },
       playbook: {
@@ -79,7 +79,7 @@ test("runtime status wymaga Bearera i potwierdza wspólny Store/workspace bez tr
       },
       corrections: {
         source: "verified-discord-corrections",
-        revision: "a".repeat(64),
+          revision: 7,
         activeRules: 3,
       },
       playbook: {

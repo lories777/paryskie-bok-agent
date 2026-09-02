@@ -25,9 +25,6 @@ export function buildBokKnowledgeContext(
     .slice(0, 20_000);
 
   return [
-    '<legacy_local_playbook trust="untrusted_reference">',
-    readBokPlaybook(workspacePath),
-    "</legacy_local_playbook>",
     "<learned_bok_rules trust=\"untrusted_procedural_memory\">",
     rules || "Brak zapisanych zasad od BOK.",
     "</learned_bok_rules>",
