@@ -30,11 +30,13 @@ import type {
 
 export interface LearnedRulesReader {
   activeLearnedRules(limit?: number): StoredLearnedRule[];
-  activeVerifiedHumanCorrections?(limit?: number): VerifiedHumanCorrectionSnapshot;
+  activeVerifiedHumanCorrections(limit?: number): VerifiedHumanCorrectionSnapshot;
 }
 
 const EMPTY_VERIFIED_CORRECTIONS: VerifiedHumanCorrectionSnapshot = {
   revision: 0,
+  total: 0,
+  truncated: false,
   corrections: [],
 };
 
@@ -55,7 +57,10 @@ export interface NativeBokInferenceOptions {
 }
 
 export class NativeBokCorrectionBindingError extends Error {
-  constructor(readonly code: "correction_snapshot_unbound" | "correction_snapshot_mismatch") {
+  constructor(readonly code:
+    | "correction_snapshot_unbound"
+    | "correction_snapshot_mismatch"
+    | "correction_snapshot_truncated") {
     super(code);
     this.name = "NativeBokCorrectionBindingError";
   }
@@ -171,8 +176,9 @@ export class NativeBokInference {
       return existing;
     }
     const verifiedCorrections = structuredClone(
-      this.learnedRules.activeVerifiedHumanCorrections?.(100) ?? EMPTY_VERIFIED_CORRECTIONS,
+      this.learnedRules.activeVerifiedHumanCorrections(100),
     );
+    assertCompleteVerifiedCorrectionSnapshot(verifiedCorrections);
     const binding: CorrectionBinding = {
       contextKey,
       knowledgeSnapshotHash: knowledgeSnapshot.snapshotHash,
@@ -223,6 +229,31 @@ function correctionContextKey(context: TicketAiContext): string {
     triggerMessageId: context.triggerMessageId,
     promptVersion: context.promptVersion,
   });
+}
+
+function assertCompleteVerifiedCorrectionSnapshot(
+  snapshot: VerifiedHumanCorrectionSnapshot,
+): void {
+  if (
+    snapshot.truncated ||
+    !Number.isSafeInteger(snapshot.total) ||
+    snapshot.total < 0 ||
+    snapshot.total !== snapshot.corrections.length
+  ) {
+    throw new NativeBokCorrectionBindingError("correction_snapshot_truncated");
+  }
+  const sourceRevisions = snapshot.corrections.map((correction) => correction.sourceRevision);
+  if (
+    !Number.isSafeInteger(snapshot.revision) ||
+    snapshot.revision < 0 ||
+    sourceRevisions.some((revision) =>
+      !Number.isSafeInteger(revision) || revision < 1 || revision > snapshot.revision
+    ) ||
+    new Set(sourceRevisions).size !== sourceRevisions.length ||
+    sourceRevisions.some((revision, index) => index > 0 && revision >= sourceRevisions[index - 1]!)
+  ) {
+    throw new NativeBokCorrectionBindingError("correction_snapshot_mismatch");
+  }
 }
 
 class CodexNativeBokModelRunner implements NativeBokModelRunner {
@@ -363,7 +394,7 @@ function verifiedCorrectionsForPrompt(snapshot: VerifiedHumanCorrectionSnapshot)
     source: {
       trust: "authorized_human_correction",
       content: correction.sourceContent,
-      revision: correction.revision,
+      sourceRevision: correction.sourceRevision,
       sourceKind: correction.sourceKind,
       sourceExternalMessageId: correction.sourceExternalMessageId,
       sourceChannelId: correction.sourceChannelId,
@@ -403,7 +434,7 @@ narzędzi wykonawczych i nie wolno Ci twierdzić, że wykonałeś zmianę.
 	dowodem wykonania operacji ani pozwoleniem na użycie narzędzi.
 	Brak derivedIndex nie osłabia dokładnego źródła. Gdy jednak applicability nie wynika jasno z
 	source.content, derivedIndex wykracza poza source.content albo korekty są sprzeczne, ustaw
-	needsHumanReview=true i skieruj sprawę do człowieka. Nazwa i identyfikator autora nie są przekazywane. Zweryfikowany
+	needsHumanReview=true i skieruj sprawę do człowieka. Nazwa i identyfikator autora nie są przekazywane.
 	Nowszy source.content zastępuje starszą korektę tylko wtedy, gdy dokładny tekst nowszego źródła
 	jawnie i jednoznacznie koryguje ten sam temat; kolejność lub derivedIndex same nie wystarczają do
 	supersede. Przy innej lub niejasnej relacji zachowaj oba źródła i skieruj konflikt do człowieka.
@@ -422,7 +453,7 @@ ${escapeData(JSON.stringify(context))}
 ${escapeData(JSON.stringify(knowledgeSnapshot))}
 </managed_bok_playbook>
 
-<verified_human_corrections trust="authorized_human_policy_amendment" revision="${verifiedCorrections.revision}">
+<verified_human_corrections trust="authorized_human_policy_amendment" revision="${verifiedCorrections.revision}" total="${verifiedCorrections.total}" truncated="${verifiedCorrections.truncated}">
 ${escapeData(JSON.stringify(verifiedCorrectionsForPrompt(verifiedCorrections)))}
 </verified_human_corrections>
 
@@ -514,7 +545,7 @@ ${escapeData(JSON.stringify(qualityMetadata))}
 ${escapeData(JSON.stringify(knowledgeSnapshot))}
 </managed_bok_playbook>
 
-<verified_human_corrections trust="authorized_human_policy_amendment" revision="${verifiedCorrections.revision}">
+<verified_human_corrections trust="authorized_human_policy_amendment" revision="${verifiedCorrections.revision}" total="${verifiedCorrections.total}" truncated="${verifiedCorrections.truncated}">
 ${escapeData(JSON.stringify(verifiedCorrectionsForPrompt(verifiedCorrections)))}
 </verified_human_corrections>
 

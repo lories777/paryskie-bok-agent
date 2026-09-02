@@ -134,7 +134,7 @@ export class DiscordGateway implements ReplySink {
       console.log(`BOK Agent online jako ${client.user.tag}.`);
     });
     await this.client.login(this.config.discordToken);
-    await this.backfillObservedChannels();
+    await this.backfillRelevantChannels();
   }
 
   async stop(): Promise<void> {
@@ -301,7 +301,7 @@ export class DiscordGateway implements ReplySink {
     return (await this.approvedActionExecutor?.(job)) ?? null;
   }
 
-  private async onMessage(message: Message): Promise<void> {
+  private async onMessage(message: Message, historical = false): Promise<void> {
     if (!message.inGuild() || !this.client.user || message.author.id === this.client.user.id) return;
 
     const replyContext = await this.resolveReplyContext(message);
@@ -339,10 +339,12 @@ export class DiscordGateway implements ReplySink {
       replyToBotMessageId: replyContext.botMessageId,
     });
     if (!message.author.bot && isStatusCommand(message.content)) {
+      if (historical) return;
       await this.handleStatus(message, authorized);
       return;
     }
     if (!message.author.bot && HELP_PATTERN.test(message.content.trim())) {
+      if (historical) return;
       await this.handleHelp(message, authorized);
       return;
     }
@@ -479,32 +481,25 @@ export class DiscordGateway implements ReplySink {
     }
   }
 
-  private async backfillObservedChannels(): Promise<void> {
+  private async backfillRelevantChannels(): Promise<void> {
     if (this.config.discordBackfillMessages === 0) return;
-    for (const channelId of this.config.observeChannelIds) {
+    for (const channelId of discordBackfillChannelIds(
+      this.config.commandChannelIds,
+      this.config.observeChannelIds,
+      this.config.daktelaEscalationChannelId,
+    )) {
       try {
         const channel = await this.client.channels.fetch(channelId);
         if (!channel?.isTextBased() || channel.isDMBased()) continue;
         const messages = await channel.messages.fetch({ limit: this.config.discordBackfillMessages });
         for (const message of [...messages.values()].reverse()) {
-          if (!this.client.user || message.author.id === this.client.user.id) continue;
-          const content = normalizeDiscordContent(message, this.client.user.id);
-          if (!content) continue;
-          this.store.ingest({
-            platform: "discord",
-            conversationExternalId: conversationKey(message),
-            externalMessageId: message.id,
-            channelId: message.channelId,
-            authorId: message.author.id,
-            authorName: message.member?.displayName ?? message.author.displayName,
-            content,
-            createdAt: message.createdAt.toISOString(),
-            shouldRespond: false,
-            sharedContext: true,
-          });
+          // Use exactly the live auth/reference/mention path. Store idempotency prevents duplicate
+          // jobs, while an authorized correction sent during downtime is no longer downgraded to
+          // generic observed context. Historical status/help commands stay side-effect free.
+          await this.onMessage(message, true);
         }
       } catch (error) {
-        console.error(`Nie udało się pobrać kontekstu kanału Discord ${channelId}:`, error);
+        console.error(`Nie udało się odtworzyć kanału Discord ${channelId}:`, error);
       }
     }
   }
@@ -615,6 +610,18 @@ export function isConfiguredDiscordCommandChannel(
 ): boolean {
   return commandChannelIds.has(channelId) ||
     Boolean(parentId && commandChannelIds.has(parentId));
+}
+
+export function discordBackfillChannelIds(
+  commandChannelIds: ReadonlySet<string>,
+  observeChannelIds: ReadonlySet<string>,
+  daktelaEscalationChannelId?: string,
+): string[] {
+  return [...new Set([
+    ...commandChannelIds,
+    ...observeChannelIds,
+    ...(daktelaEscalationChannelId ? [daktelaEscalationChannelId] : []),
+  ])];
 }
 
 function conversationKey(message: Message): string {

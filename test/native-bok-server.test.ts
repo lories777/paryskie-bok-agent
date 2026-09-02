@@ -157,6 +157,28 @@ test("brak server-side bindingu generate kończy judge jawnie i fail-closed", as
   }
 });
 
+test("niepełna pamięć korekt kończy generate jawnym 409 zamiast fallbacku", async () => {
+  const server = createServer(fakeInference({
+    async generate() {
+      throw new NativeBokCorrectionBindingError("correction_snapshot_truncated");
+    },
+  }));
+  const runtime = await listen(server);
+  try {
+    const response = await post(runtime.origin, "/v1/bok/generate", {
+      context: NATIVE_BOK_CONTEXT,
+      knowledgeSnapshot: NATIVE_BOK_KNOWLEDGE,
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: "correction_snapshot_truncated",
+    });
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("Bearer jest obowiązkowy, a payload strict jest odrzucany przed inference", async () => {
   let calls = 0;
   const server = createServer(fakeInference({

@@ -210,7 +210,8 @@ export interface StoredVerifiedHumanCorrection {
   derivedInstruction: string | null;
   createdAt: string;
   updatedAt: string;
-  revision: number;
+  /** Immutable ordering revision assigned when the exact human source is first persisted. */
+  sourceRevision: number;
   sourceContent: string;
   sourceAuthorId: string;
   sourceAuthorName: string;
@@ -223,6 +224,11 @@ export interface StoredVerifiedHumanCorrection {
 }
 
 export interface VerifiedHumanCorrectionSnapshot {
+  /** Changes whenever the complete snapshot changes, including its optional derived index. */
   revision: number;
+  /** Total active human sources in durable storage, before applying the read limit. */
+  total: number;
+  /** True means `corrections` is incomplete and inference must stop fail-closed. */
+  truncated: boolean;
   corrections: StoredVerifiedHumanCorrection[];
 }

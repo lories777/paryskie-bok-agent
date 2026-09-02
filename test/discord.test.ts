@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   canDecideDraft,
+  discordBackfillChannelIds,
   directRequestConversationKey,
   DiscordGateway,
   isDiscordUnknownMessage,
@@ -119,6 +120,17 @@ test("direct mention rozpoznaje tylko skonfigurowany command channel lub jego th
   assert.equal(
     isConfiguredDiscordCommandChannel("daktela-escalation", null, commandChannels),
     false,
+  );
+});
+
+test("backfill obejmuje kanały poleceń, obserwowane i eskalacje bez duplikatów", () => {
+  assert.deepEqual(
+    discordBackfillChannelIds(
+      new Set(["bok-command", "shared"]),
+      new Set(["bok-observe", "shared"]),
+      "daktela-escalation",
+    ),
+    ["bok-command", "shared", "bok-observe", "daktela-escalation"],
   );
 });
 
