@@ -210,6 +210,10 @@ export class AgentStore {
         reply_to_bot_message_id TEXT,
         authorization_kind TEXT NOT NULL CHECK(authorization_kind IN ('allowed_user', 'allowed_role')),
         authorization_id TEXT NOT NULL,
+        verified_revision INTEGER,
+        derived_situation TEXT,
+        derived_instruction TEXT,
+        updated_at TEXT,
         created_at TEXT NOT NULL
       );
 
@@ -249,6 +253,10 @@ export class AgentStore {
       "shared_context",
       "INTEGER NOT NULL DEFAULT 0 CHECK(shared_context IN (0, 1))",
     );
+    this.ensureColumn("verified_correction_sources", "verified_revision", "INTEGER");
+    this.ensureColumn("verified_correction_sources", "derived_situation", "TEXT");
+    this.ensureColumn("verified_correction_sources", "derived_instruction", "TEXT");
+    this.ensureColumn("verified_correction_sources", "updated_at", "TEXT");
     this.ensureColumn("learned_rules", "verified_revision", "INTEGER");
     this.ensureColumn("learned_rules", "source_content", "TEXT");
     this.ensureColumn("learned_rules", "source_author_id", "TEXT");
@@ -269,6 +277,7 @@ export class AgentStore {
         ON learned_rules(source_external_message_id)
         WHERE verified_revision IS NOT NULL;
     `);
+    this.migrateVerifiedCorrectionSources();
   }
 
   private ensureColumn(
@@ -286,6 +295,152 @@ export class AgentStore {
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
     if (!columns.some((item) => item.name === column)) {
       this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  }
+
+  private migrateVerifiedCorrectionSources(): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      // PR6 originally versioned a correction only after the model emitted learnedRules.
+      // Preserve that derived index when upgrading, but make the human source the durable owner.
+      this.db.exec(`
+        UPDATE verified_correction_sources
+        SET verified_revision = COALESCE(
+              verified_revision,
+              (SELECT learned_rules.verified_revision
+               FROM learned_rules
+               WHERE learned_rules.source_external_message_id =
+                     verified_correction_sources.source_external_message_id
+                 AND learned_rules.verified_revision IS NOT NULL
+               ORDER BY learned_rules.verified_revision DESC
+               LIMIT 1)
+            ),
+            derived_situation = COALESCE(
+              derived_situation,
+              (SELECT learned_rules.situation
+               FROM learned_rules
+               WHERE learned_rules.source_external_message_id =
+                     verified_correction_sources.source_external_message_id
+                 AND learned_rules.verified_revision IS NOT NULL
+               ORDER BY learned_rules.verified_revision DESC
+               LIMIT 1)
+            ),
+            derived_instruction = COALESCE(
+              derived_instruction,
+              (SELECT learned_rules.instruction
+               FROM learned_rules
+               WHERE learned_rules.source_external_message_id =
+                     verified_correction_sources.source_external_message_id
+                 AND learned_rules.verified_revision IS NOT NULL
+               ORDER BY learned_rules.verified_revision DESC
+               LIMIT 1)
+            ),
+            updated_at = COALESCE(updated_at, created_at)
+        WHERE verified_revision IS NULL
+      `);
+      const maximum = this.db
+        .prepare(`
+          SELECT COALESCE(MAX(verified_revision), 0) AS revision
+          FROM verified_correction_sources
+        `)
+        .get() as { revision: number };
+      this.db
+        .prepare(`
+          UPDATE verified_correction_state
+          SET revision = MAX(revision, ?)
+          WHERE singleton = 1
+        `)
+        .run(maximum.revision);
+      const unversioned = this.db
+        .prepare(`
+          SELECT source_message_id
+          FROM verified_correction_sources
+          WHERE verified_revision IS NULL
+          ORDER BY created_at, source_message_id
+        `)
+        .all() as Array<{ source_message_id: number }>;
+      for (const source of unversioned) {
+        this.db
+          .prepare("UPDATE verified_correction_state SET revision = revision + 1 WHERE singleton = 1")
+          .run();
+        const state = this.db
+          .prepare("SELECT revision FROM verified_correction_state WHERE singleton = 1")
+          .get() as { revision: number };
+        this.db
+          .prepare(`
+            UPDATE verified_correction_sources
+            SET verified_revision = ?, updated_at = COALESCE(updated_at, created_at)
+            WHERE source_message_id = ? AND verified_revision IS NULL
+          `)
+          .run(state.revision, source.source_message_id);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private recordVerifiedCorrectionSource(
+    sourceMessageId: number,
+    message: IncomingMessage,
+    timestamp: string,
+  ): void {
+    const source = message.verifiedCorrectionSource;
+    if (!source) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const inserted = this.db
+        .prepare(`
+          INSERT OR IGNORE INTO verified_correction_sources(
+            source_message_id, source_external_message_id, source_channel_id,
+            source_kind, reply_to_bot_message_id, authorization_kind, authorization_id,
+            updated_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          sourceMessageId,
+          message.externalMessageId,
+          message.channelId,
+          source.sourceKind,
+          source.replyToBotMessageId ?? "",
+          source.authorizationKind,
+          source.authorizationId,
+          timestamp,
+          timestamp,
+        );
+      const row = this.db
+        .prepare(`
+          SELECT source_message_id, verified_revision
+          FROM verified_correction_sources
+          WHERE source_external_message_id = ?
+        `)
+        .get(message.externalMessageId) as
+        | { source_message_id: number; verified_revision: number | null }
+        | undefined;
+      // First-writer-wins provenance: an external id that resolves to another stored message is
+      // never promoted or rewritten by a conflicting retry.
+      if (row?.source_message_id === sourceMessageId && row.verified_revision == null) {
+        this.db
+          .prepare("UPDATE verified_correction_state SET revision = revision + 1 WHERE singleton = 1")
+          .run();
+        const state = this.db
+          .prepare("SELECT revision FROM verified_correction_state WHERE singleton = 1")
+          .get() as { revision: number };
+        this.db
+          .prepare(`
+            UPDATE verified_correction_sources
+            SET verified_revision = ?, updated_at = ?
+            WHERE source_message_id = ? AND verified_revision IS NULL
+          `)
+          .run(state.revision, timestamp, sourceMessageId);
+      } else if (inserted.changes > 0 && !row) {
+        throw new Error("verified_correction_source_insert_missing");
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
     }
   }
 
@@ -364,23 +519,7 @@ export class AgentStore {
       .get(conversation.id, message.externalMessageId) as { id: number };
 
     if (message.verifiedCorrectionSource && message.platform === "discord" && message.shouldRespond) {
-      this.db
-        .prepare(`
-          INSERT OR IGNORE INTO verified_correction_sources(
-            source_message_id, source_external_message_id, source_channel_id,
-            source_kind, reply_to_bot_message_id, authorization_kind, authorization_id, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          stored.id,
-          message.externalMessageId,
-          message.channelId,
-          message.verifiedCorrectionSource.sourceKind,
-          message.verifiedCorrectionSource.replyToBotMessageId ?? "",
-          message.verifiedCorrectionSource.authorizationKind,
-          message.verifiedCorrectionSource.authorizationId,
-          timestamp,
-        );
+      this.recordVerifiedCorrectionSource(stored.id, message, timestamp);
     }
 
     let jobId: number | undefined;
@@ -1092,6 +1231,7 @@ export class AgentStore {
         jobContext.trigger_role === "human" &&
         !["daktela-monitor", "daktela-e2e"].includes(jobContext.trigger_author_id)
       ) {
+        let verifiedDerivedIndexProcessed = false;
         for (const rule of output.learnedRules ?? []) {
           const safe = normalizeLearnedRule(rule.situation, rule.instruction);
           if (!safe) continue;
@@ -1101,7 +1241,55 @@ export class AgentStore {
             jobContext.authorization_id,
           );
           if (verified) {
+            // One exact human message owns one optional model-derived index. The source was
+            // already versioned at ingest; model output can enrich it but can never create,
+            // delete, or replace the authoritative source.
+            if (verifiedDerivedIndexProcessed) continue;
+            verifiedDerivedIndexProcessed = true;
             const replyToBotMessageId = jobContext.reply_to_bot_message_id || null;
+            const correction = this.db
+              .prepare(`
+                SELECT verified_revision, derived_situation, derived_instruction
+                FROM verified_correction_sources
+                WHERE source_message_id = ?
+              `)
+              .get(jobContext.trigger_message_id) as
+              | {
+                  verified_revision: number | null;
+                  derived_situation: string | null;
+                  derived_instruction: string | null;
+                }
+              | undefined;
+            if (!correction?.verified_revision) {
+              throw new Error("verified_correction_source_unversioned");
+            }
+            let correctionRevision = correction.verified_revision;
+            if (
+              correction.derived_situation !== safe.situation ||
+              correction.derived_instruction !== safe.instruction
+            ) {
+              this.db
+                .prepare("UPDATE verified_correction_state SET revision = revision + 1 WHERE singleton = 1")
+                .run();
+              const state = this.db
+                .prepare("SELECT revision FROM verified_correction_state WHERE singleton = 1")
+                .get() as { revision: number };
+              correctionRevision = state.revision;
+              this.db
+                .prepare(`
+                  UPDATE verified_correction_sources
+                  SET derived_situation = ?, derived_instruction = ?,
+                      verified_revision = ?, updated_at = ?
+                  WHERE source_message_id = ?
+                `)
+                .run(
+                  safe.situation,
+                  safe.instruction,
+                  correctionRevision,
+                  timestamp,
+                  jobContext.trigger_message_id,
+                );
+            }
             const existing = this.db
               .prepare(`
                 SELECT normalized_key, situation, instruction, source_external_message_id,
@@ -1130,13 +1318,6 @@ export class AgentStore {
               existing.authorization_kind === jobContext.authorization_kind &&
               existing.authorization_id === jobContext.authorization_id;
             if (unchanged) continue;
-
-            this.db
-              .prepare("UPDATE verified_correction_state SET revision = revision + 1 WHERE singleton = 1")
-              .run();
-            const state = this.db
-              .prepare("SELECT revision FROM verified_correction_state WHERE singleton = 1")
-              .get() as { revision: number };
             this.db
               .prepare(`
                 DELETE FROM learned_rules
@@ -1172,7 +1353,7 @@ export class AgentStore {
               .run(
                 safe.key, safe.situation, safe.instruction,
                 jobContext.conversation_id, jobContext.trigger_message_id,
-                timestamp, timestamp, state.revision, jobContext.trigger_content,
+                timestamp, timestamp, correctionRevision, jobContext.trigger_content,
                 jobContext.trigger_author_id, jobContext.trigger_author_name,
                 jobContext.external_message_id, jobContext.channel_id,
                 replyToBotMessageId, jobContext.correction_source_kind,
@@ -1280,24 +1461,25 @@ export class AgentStore {
       .get() as { revision: number };
     const rows = this.db
       .prepare(`
-        SELECT learned_rules.id, learned_rules.situation, learned_rules.instruction,
-               learned_rules.created_at, learned_rules.updated_at,
-               learned_rules.verified_revision, learned_rules.source_content,
-               learned_rules.source_author_id, learned_rules.source_author_name,
-               learned_rules.source_external_message_id, learned_rules.source_channel_id,
-               COALESCE(learned_rules.correction_source_kind, 'reply') AS correction_source_kind,
-               learned_rules.reply_to_bot_message_id,
-               learned_rules.authorization_kind,
-               learned_rules.authorization_id
-        FROM learned_rules
-        WHERE verified_revision IS NOT NULL
-        ORDER BY verified_revision DESC, id DESC
+        SELECT correction.source_message_id AS id,
+               correction.derived_situation, correction.derived_instruction,
+               correction.created_at, COALESCE(correction.updated_at, correction.created_at) AS updated_at,
+               correction.verified_revision, messages.content AS source_content,
+               messages.author_id AS source_author_id, messages.author_name AS source_author_name,
+               correction.source_external_message_id, correction.source_channel_id,
+               correction.source_kind AS correction_source_kind,
+               correction.reply_to_bot_message_id,
+               correction.authorization_kind, correction.authorization_id
+        FROM verified_correction_sources AS correction
+        JOIN messages ON messages.id = correction.source_message_id
+        WHERE correction.verified_revision IS NOT NULL
+        ORDER BY correction.verified_revision DESC, correction.source_message_id DESC
         LIMIT ?
       `)
       .all(limit) as Array<{
         id: number;
-        situation: string;
-        instruction: string;
+        derived_situation: string | null;
+        derived_instruction: string | null;
         created_at: string;
         updated_at: string;
         verified_revision: number;
@@ -1315,8 +1497,8 @@ export class AgentStore {
       revision: state.revision,
       corrections: rows.map((row): StoredVerifiedHumanCorrection => ({
         id: row.id,
-        situation: row.situation,
-        instruction: row.instruction,
+        derivedSituation: row.derived_situation,
+        derivedInstruction: row.derived_instruction,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         revision: row.verified_revision,

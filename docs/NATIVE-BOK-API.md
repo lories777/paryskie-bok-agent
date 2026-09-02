@@ -88,8 +88,12 @@ nie sygnałem do fallbacku na lokalny playbook lub pamięć modelu.
   autoryzowana odpowiedź do BOK Agenta albo jawny mention w kanale poleceń może utworzyć
   wersjonowaną korektę proceduralną. Taka korekta może w swoim wąskim zakresie poprawić starszą
   procedurę, ale nigdy nie jest faktem klienta, dowodem wykonania operacji ani podstawą mutacji.
-  Dokładna treść człowieka jest źródłem; modelowe `situation`/`instruction` są wyłącznie niezaufanym
-  indeksem i nie mogą jej rozszerzać. Generate wiąże snapshot pamięci z `operationId`, a judge używa
+  Dokładna treść człowieka jest zapisywana i otrzymuje monotoniczną rewizję już przy ingest, więc
+  pozostaje aktywna także przy pustym `learnedRules` albo awarii joba. Modelowe
+  `situation`/`instruction` są nullable i wyłącznie niezaufanym indeksem; nie mogą rozszerzać źródła
+  ani go usuwać. Nowsze źródło zastępuje starsze tylko wtedy, gdy dokładny tekst jawnie koryguje ten
+  sam temat; sama kolejność i modelowy indeks nie ustanawiają supersede, a niejasny konflikt wymaga
+  człowieka. Generate wiąże snapshot pamięci z `operationId`, a judge używa
   dokładnie tego samego snapshotu lub kończy fail-closed kodem 409; po restarcie/wygaśnięciu bindingu
   caller musi ponowić generate;
 - dedykowany `BOK_NATIVE_CODEX_HOME` nie zawiera konfiguracji MCP; shell, unified exec,

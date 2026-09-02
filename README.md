@@ -77,9 +77,13 @@ np. `@BOK Agent od teraz przy pytaniu o konkretną próbkę od razu wyjaśnij, �
 Takie polecenie oraz korekta będąca odpowiedzią do karty bota zapisują pochodzenie i rewizję w tej
 samej pamięci, z której korzysta natywne generowanie MasterLink. Zwykła wiadomość bez oznaczenia,
 wiadomość z kanału wyłącznie obserwowanego albo autor spoza allowlisty nie może utworzyć zaufanej
-reguły. Dokładna treść polecenia jest proceduralnym źródłem dla natywnego BOK; modelowe streszczenie
-jest tylko niezaufanym indeksem. Do promptu nie trafia nazwa ani identyfikator autora. Polecenie nie
-powinno zawierać danych klienta ani jednorazowych faktów konkretnego zamówienia.
+reguły. Dokładna treść polecenia jest zapisywana i wersjonowana już przy ingest, niezależnie od
+wyniku albo awarii joba modelowego, i jest proceduralnym źródłem dla natywnego BOK. Modelowe
+streszczenie może zostać dodane później, ale pozostaje opcjonalnym, niezaufanym indeksem. Do promptu
+nie trafia nazwa ani identyfikator autora. Polecenie nie powinno zawierać danych klienta ani
+jednorazowych faktów konkretnego zamówienia. Źródła nie są automatycznie usuwane ani zastępowane:
+nowsze może zastąpić starsze wyłącznie wtedy, gdy jego dokładna treść jawnie koryguje ten sam temat;
+modelowy indeks nie może ustanowić takiego zastąpienia.
 
 Bot Discord korzysta z API Discorda, a późniejsze narzędzia będą korzystały z systemów
 źródłowych. Ograniczenie „bez API” dotyczy modelu: rozumowanie wykonuje zalogowany Codex w ramach

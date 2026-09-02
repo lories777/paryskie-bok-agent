@@ -204,7 +204,12 @@ export interface StoredLearnedRule {
   updatedAt: string;
 }
 
-export interface StoredVerifiedHumanCorrection extends StoredLearnedRule {
+export interface StoredVerifiedHumanCorrection {
+  id: number;
+  derivedSituation: string | null;
+  derivedInstruction: string | null;
+  createdAt: string;
+  updatedAt: string;
   revision: number;
   sourceContent: string;
   sourceAuthorId: string;
