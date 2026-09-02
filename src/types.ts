@@ -135,6 +135,15 @@ export interface IncomingMessage {
   role?: "human" | "context";
   /** Only messages from explicitly observed Discord channels may become cross-case context. */
   sharedContext?: boolean;
+  /**
+   * Set only by DiscordGateway after it has verified both the sender allowlist and that the
+   * message is a reply to this bot. The store persists this provenance before any model runs.
+   */
+  verifiedCorrectionSource?: {
+    replyToBotMessageId: string;
+    authorizationKind: "allowed_user" | "allowed_role";
+    authorizationId: string;
+  };
 }
 
 export interface StoredMessage {
@@ -191,4 +200,21 @@ export interface StoredLearnedRule {
   instruction: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface StoredVerifiedHumanCorrection extends StoredLearnedRule {
+  revision: number;
+  sourceContent: string;
+  sourceAuthorId: string;
+  sourceAuthorName: string;
+  sourceExternalMessageId: string;
+  sourceChannelId: string;
+  replyToBotMessageId: string;
+  authorizationKind: "allowed_user" | "allowed_role";
+  authorizationId: string;
+}
+
+export interface VerifiedHumanCorrectionSnapshot {
+  revision: number;
+  corrections: StoredVerifiedHumanCorrection[];
 }

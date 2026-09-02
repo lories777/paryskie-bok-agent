@@ -9,6 +9,8 @@ import type {
   StoredMessage,
   StoredAction,
   StoredLearnedRule,
+  StoredVerifiedHumanCorrection,
+  VerifiedHumanCorrectionSnapshot,
 } from "./types.js";
 
 type SqlValue = string | number | bigint | null;
@@ -187,8 +189,33 @@ export class AgentStore {
         source_conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         source_message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        verified_revision INTEGER,
+        source_content TEXT,
+        source_author_id TEXT,
+        source_author_name TEXT,
+        source_external_message_id TEXT,
+        source_channel_id TEXT,
+        reply_to_bot_message_id TEXT,
+        authorization_kind TEXT CHECK(authorization_kind IN ('allowed_user', 'allowed_role')),
+        authorization_id TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS verified_correction_sources (
+        source_message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+        source_external_message_id TEXT NOT NULL UNIQUE,
+        source_channel_id TEXT NOT NULL,
+        reply_to_bot_message_id TEXT NOT NULL,
+        authorization_kind TEXT NOT NULL CHECK(authorization_kind IN ('allowed_user', 'allowed_role')),
+        authorization_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS verified_correction_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        revision INTEGER NOT NULL CHECK(revision >= 0)
+      );
+      INSERT OR IGNORE INTO verified_correction_state(singleton, revision) VALUES (1, 0);
 
       CREATE INDEX IF NOT EXISTS jobs_status_id_idx ON jobs(status, id);
       CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id, id);
@@ -220,10 +247,24 @@ export class AgentStore {
       "shared_context",
       "INTEGER NOT NULL DEFAULT 0 CHECK(shared_context IN (0, 1))",
     );
+    this.ensureColumn("learned_rules", "verified_revision", "INTEGER");
+    this.ensureColumn("learned_rules", "source_content", "TEXT");
+    this.ensureColumn("learned_rules", "source_author_id", "TEXT");
+    this.ensureColumn("learned_rules", "source_author_name", "TEXT");
+    this.ensureColumn("learned_rules", "source_external_message_id", "TEXT");
+    this.ensureColumn("learned_rules", "source_channel_id", "TEXT");
+    this.ensureColumn("learned_rules", "reply_to_bot_message_id", "TEXT");
+    this.ensureColumn("learned_rules", "authorization_kind", "TEXT");
+    this.ensureColumn("learned_rules", "authorization_id", "TEXT");
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS learned_rules_verified_source_idx
+        ON learned_rules(source_external_message_id)
+        WHERE verified_revision IS NOT NULL;
+    `);
   }
 
   private ensureColumn(
-    table: "jobs" | "actions" | "daktela_observations" | "messages" | "deliveries",
+    table: "jobs" | "actions" | "daktela_observations" | "messages" | "deliveries" | "learned_rules",
     column: string,
     definition: string,
   ): void {
@@ -306,6 +347,25 @@ export class AgentStore {
     const stored = this.db
       .prepare("SELECT id FROM messages WHERE conversation_id = ? AND external_message_id = ?")
       .get(conversation.id, message.externalMessageId) as { id: number };
+
+    if (message.verifiedCorrectionSource && message.platform === "discord" && message.shouldRespond) {
+      this.db
+        .prepare(`
+          INSERT OR IGNORE INTO verified_correction_sources(
+            source_message_id, source_external_message_id, source_channel_id,
+            reply_to_bot_message_id, authorization_kind, authorization_id, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          stored.id,
+          message.externalMessageId,
+          message.channelId,
+          message.verifiedCorrectionSource.replyToBotMessageId,
+          message.verifiedCorrectionSource.authorizationKind,
+          message.verifiedCorrectionSource.authorizationId,
+          timestamp,
+        );
+    }
 
     let jobId: number | undefined;
     if (insert.changes > 0 && message.shouldRespond) {
@@ -936,19 +996,30 @@ export class AgentStore {
     try {
       const jobContext = this.db
         .prepare(`
-          SELECT jobs.conversation_id, jobs.trigger_message_id,
+          SELECT jobs.conversation_id, jobs.trigger_message_id, jobs.channel_id,
                  jobs.external_message_id,
-                 messages.role AS trigger_role, messages.author_id AS trigger_author_id
+                 messages.role AS trigger_role, messages.author_id AS trigger_author_id,
+                 messages.author_name AS trigger_author_name, messages.content AS trigger_content,
+                 correction.reply_to_bot_message_id,
+                 correction.authorization_kind, correction.authorization_id
           FROM jobs
           JOIN messages ON messages.id = jobs.trigger_message_id
+          LEFT JOIN verified_correction_sources AS correction
+            ON correction.source_message_id = jobs.trigger_message_id
           WHERE jobs.id = ?
         `)
         .get(jobId) as {
           conversation_id: number;
           trigger_message_id: number;
+          channel_id: string;
           external_message_id: string;
           trigger_role: "human" | "agent" | "context";
           trigger_author_id: string;
+          trigger_author_name: string;
+          trigger_content: string;
+          reply_to_bot_message_id: string | null;
+          authorization_kind: "allowed_user" | "allowed_role" | null;
+          authorization_id: string | null;
         };
       if (
         jobContext.external_message_id.startsWith("daktela:") &&
@@ -1006,6 +1077,87 @@ export class AgentStore {
         for (const rule of output.learnedRules ?? []) {
           const safe = normalizeLearnedRule(rule.situation, rule.instruction);
           if (!safe) continue;
+          const verified = Boolean(
+            jobContext.reply_to_bot_message_id &&
+            jobContext.authorization_kind &&
+            jobContext.authorization_id,
+          );
+          if (verified) {
+            const existing = this.db
+              .prepare(`
+                SELECT normalized_key, situation, instruction, source_external_message_id,
+                       source_content, source_author_id, source_author_name, source_channel_id,
+                       reply_to_bot_message_id, authorization_kind, authorization_id
+                FROM learned_rules
+                WHERE normalized_key = ? OR source_external_message_id = ?
+                ORDER BY source_external_message_id = ? DESC
+                LIMIT 1
+              `)
+              .get(safe.key, jobContext.external_message_id, jobContext.external_message_id) as
+              | Record<string, string | null>
+              | undefined;
+            const unchanged = existing &&
+              existing.normalized_key === safe.key &&
+              existing.situation === safe.situation &&
+              existing.instruction === safe.instruction &&
+              existing.source_external_message_id === jobContext.external_message_id &&
+              existing.source_content === jobContext.trigger_content &&
+              existing.source_author_id === jobContext.trigger_author_id &&
+              existing.source_author_name === jobContext.trigger_author_name &&
+              existing.source_channel_id === jobContext.channel_id &&
+              existing.reply_to_bot_message_id === jobContext.reply_to_bot_message_id &&
+              existing.authorization_kind === jobContext.authorization_kind &&
+              existing.authorization_id === jobContext.authorization_id;
+            if (unchanged) continue;
+
+            this.db
+              .prepare("UPDATE verified_correction_state SET revision = revision + 1 WHERE singleton = 1")
+              .run();
+            const state = this.db
+              .prepare("SELECT revision FROM verified_correction_state WHERE singleton = 1")
+              .get() as { revision: number };
+            this.db
+              .prepare(`
+                DELETE FROM learned_rules
+                WHERE source_external_message_id = ? AND normalized_key <> ?
+              `)
+              .run(jobContext.external_message_id, safe.key);
+            this.db
+              .prepare(`
+                INSERT INTO learned_rules(
+                  normalized_key, situation, instruction, source_conversation_id,
+                  source_message_id, created_at, updated_at, verified_revision,
+                  source_content, source_author_id, source_author_name,
+                  source_external_message_id, source_channel_id, reply_to_bot_message_id,
+                  authorization_kind, authorization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(normalized_key) DO UPDATE SET
+                  situation = excluded.situation,
+                  instruction = excluded.instruction,
+                  source_conversation_id = excluded.source_conversation_id,
+                  source_message_id = excluded.source_message_id,
+                  updated_at = excluded.updated_at,
+                  verified_revision = excluded.verified_revision,
+                  source_content = excluded.source_content,
+                  source_author_id = excluded.source_author_id,
+                  source_author_name = excluded.source_author_name,
+                  source_external_message_id = excluded.source_external_message_id,
+                  source_channel_id = excluded.source_channel_id,
+                  reply_to_bot_message_id = excluded.reply_to_bot_message_id,
+                  authorization_kind = excluded.authorization_kind,
+                  authorization_id = excluded.authorization_id
+              `)
+              .run(
+                safe.key, safe.situation, safe.instruction,
+                jobContext.conversation_id, jobContext.trigger_message_id,
+                timestamp, timestamp, state.revision, jobContext.trigger_content,
+                jobContext.trigger_author_id, jobContext.trigger_author_name,
+                jobContext.external_message_id, jobContext.channel_id,
+                jobContext.reply_to_bot_message_id, jobContext.authorization_kind,
+                jobContext.authorization_id,
+              );
+            continue;
+          }
           this.db
             .prepare(`
               INSERT INTO learned_rules(
@@ -1018,6 +1170,7 @@ export class AgentStore {
                 source_conversation_id = excluded.source_conversation_id,
                 source_message_id = excluded.source_message_id,
                 updated_at = excluded.updated_at
+              WHERE learned_rules.verified_revision IS NULL
             `)
             .run(
               safe.key,
@@ -1096,6 +1249,61 @@ export class AgentStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+  }
+
+  activeVerifiedHumanCorrections(limit = 100): VerifiedHumanCorrectionSnapshot {
+    const state = this.db
+      .prepare("SELECT revision FROM verified_correction_state WHERE singleton = 1")
+      .get() as { revision: number };
+    const rows = this.db
+      .prepare(`
+        SELECT learned_rules.id, learned_rules.situation, learned_rules.instruction,
+               learned_rules.created_at, learned_rules.updated_at,
+               learned_rules.verified_revision, learned_rules.source_content,
+               learned_rules.source_author_id, learned_rules.source_author_name,
+               learned_rules.source_external_message_id, learned_rules.source_channel_id,
+               learned_rules.reply_to_bot_message_id, learned_rules.authorization_kind,
+               learned_rules.authorization_id
+        FROM learned_rules
+        WHERE verified_revision IS NOT NULL
+        ORDER BY verified_revision DESC, id DESC
+        LIMIT ?
+      `)
+      .all(limit) as Array<{
+        id: number;
+        situation: string;
+        instruction: string;
+        created_at: string;
+        updated_at: string;
+        verified_revision: number;
+        source_content: string;
+        source_author_id: string;
+        source_author_name: string;
+        source_external_message_id: string;
+        source_channel_id: string;
+        reply_to_bot_message_id: string;
+        authorization_kind: "allowed_user" | "allowed_role";
+        authorization_id: string;
+      }>;
+    return {
+      revision: state.revision,
+      corrections: rows.map((row): StoredVerifiedHumanCorrection => ({
+        id: row.id,
+        situation: row.situation,
+        instruction: row.instruction,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        revision: row.verified_revision,
+        sourceContent: row.source_content,
+        sourceAuthorId: row.source_author_id,
+        sourceAuthorName: row.source_author_name,
+        sourceExternalMessageId: row.source_external_message_id,
+        sourceChannelId: row.source_channel_id,
+        replyToBotMessageId: row.reply_to_bot_message_id,
+        authorizationKind: row.authorization_kind,
+        authorizationId: row.authorization_id,
+      })),
+    };
   }
 
   claimNextDelivery(): ClaimedDelivery | null {

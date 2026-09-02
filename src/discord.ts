@@ -321,6 +321,12 @@ export class DiscordGateway implements ReplySink {
     const authorized =
       this.config.allowedUserIds.has(message.author.id) ||
       Boolean(message.member?.roles.cache.some((role) => this.config.allowedRoleIds.has(role.id)));
+    const correctionAuthorization = resolveVerifiedCorrectionAuthorization(
+      message.author.id,
+      message.member?.roles.cache.map((role) => role.id) ?? [],
+      this.config.allowedUserIds,
+      this.config.allowedRoleIds,
+    );
     if (!message.author.bot && isStatusCommand(message.content)) {
       await this.handleStatus(message, authorized);
       return;
@@ -359,6 +365,14 @@ export class DiscordGateway implements ReplySink {
       // Dzięki temu późniejsze jawne polecenie może odwołać się np. do szablonu wklejonego chwilę
       // wcześniej, bez zamieniania każdej wiadomości na odpowiedź agenta.
       sharedContext: inObserveChannel || (inCommandChannel && !shouldRespond),
+      ...(shouldRespond && replyContext.replyingToAgent && replyContext.botMessageId && correctionAuthorization
+        ? {
+            verifiedCorrectionSource: {
+              replyToBotMessageId: replyContext.botMessageId,
+              ...correctionAuthorization,
+            },
+          }
+        : {}),
     };
     this.store.ingest(incoming);
   }
@@ -366,6 +380,7 @@ export class DiscordGateway implements ReplySink {
   private async resolveReplyContext(message: Message): Promise<{
     replyingToAgent: boolean;
     conversationExternalId?: string;
+    botMessageId?: string;
   }> {
     const referencedId = message.reference?.messageId;
     if (!referencedId || !this.client.user) return { replyingToAgent: false };
@@ -375,6 +390,7 @@ export class DiscordGateway implements ReplySink {
       return {
         replyingToAgent: true,
         conversationExternalId: route.conversationExternalId,
+        botMessageId: referencedId,
       };
     }
 
@@ -398,13 +414,14 @@ export class DiscordGateway implements ReplySink {
         createdAt: referenced.createdAt.toISOString(),
         shouldRespond: false,
       });
-      return { replyingToAgent: true, conversationExternalId };
+      return { replyingToAgent: true, conversationExternalId, botMessageId: referenced.id };
     }
     // Stara wiadomość bota bez zapisanej trasy i bez numeru Dakteli również dostaje własny kontekst,
     // zamiast wpadać do historycznej, wspólnej rozmowy całego kanału.
     return {
       replyingToAgent: true,
       conversationExternalId: `discord-reply:${referenced.id}`,
+      botMessageId: referenced.id,
     };
   }
 
@@ -537,6 +554,23 @@ export function canDecideDraft(
   approverUserIds: ReadonlySet<string>,
 ): boolean {
   return approverUserIds.has(userId);
+}
+
+export function resolveVerifiedCorrectionAuthorization(
+  userId: string,
+  memberRoleIds: readonly string[],
+  allowedUserIds: ReadonlySet<string>,
+  allowedRoleIds: ReadonlySet<string>,
+):
+  | { authorizationKind: "allowed_user" | "allowed_role"; authorizationId: string }
+  | undefined {
+  if (allowedUserIds.has(userId)) {
+    return { authorizationKind: "allowed_user", authorizationId: userId };
+  }
+  const roleId = memberRoleIds.find((id) => allowedRoleIds.has(id));
+  return roleId
+    ? { authorizationKind: "allowed_role", authorizationId: roleId }
+    : undefined;
 }
 
 function conversationKey(message: Message): string {

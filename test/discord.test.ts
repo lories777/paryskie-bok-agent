@@ -11,6 +11,7 @@ import {
   isStatusCommand,
   persistDraftDecision,
   publishThenRemoveSuperseded,
+  resolveVerifiedCorrectionAuthorization,
   shouldRespondToAuthorizedMessage,
   splitDiscordMessage,
 } from "../src/discord.js";
@@ -40,6 +41,36 @@ test("decyzja draftu wymaga jawnej allowlisty approverów i bez niej jest blokow
   assert.equal(canDecideDraft("allowed-bok-user", new Set()), false);
   assert.equal(canDecideDraft("allowed-bok-user", new Set(["explicit-approver"])), false);
   assert.equal(canDecideDraft("explicit-approver", new Set(["explicit-approver"])), true);
+});
+
+test("źródło korekty wymaga jawnie dozwolonego użytkownika albo roli", () => {
+  assert.deepEqual(
+    resolveVerifiedCorrectionAuthorization(
+      "bok-manager",
+      [],
+      new Set(["bok-manager"]),
+      new Set(),
+    ),
+    { authorizationKind: "allowed_user", authorizationId: "bok-manager" },
+  );
+  assert.deepEqual(
+    resolveVerifiedCorrectionAuthorization(
+      "bok-worker",
+      ["ordinary", "bok-role"],
+      new Set(),
+      new Set(["bok-role"]),
+    ),
+    { authorizationKind: "allowed_role", authorizationId: "bok-role" },
+  );
+  assert.equal(
+    resolveVerifiedCorrectionAuthorization(
+      "outsider",
+      ["ordinary"],
+      new Set(),
+      new Set(["bok-role"]),
+    ),
+    undefined,
+  );
 });
 
 test("Gotowe atomowo zatwierdza draft i kolejkuje dokładnie jedno wykonanie", () => {
