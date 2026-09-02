@@ -68,7 +68,20 @@ export class BokAgentCore {
   }
 
   primaryThreadOptions(): ThreadOptions {
-    return buildPrimaryThreadOptions(this.config);
+    return buildPrimaryThreadOptions({ ...this.config, model: this.model });
+  }
+
+  reviewerThreadOptions(): ThreadOptions {
+    return {
+      workingDirectory: this.config.workspacePath,
+      sandboxMode: "read-only",
+      approvalPolicy: "never",
+      networkAccessEnabled: false,
+      webSearchMode: "disabled",
+      modelReasoningEffort: this.config.reasoningEffort as ModelReasoningEffort,
+      threadSource: "paryskie-bok-draft-reviewer",
+      ...resolvedThreadModel(this.model),
+    };
   }
 
   nativeThreadOptions(threadSource: string): ThreadOptions {
@@ -80,7 +93,7 @@ export class BokAgentCore {
       webSearchMode: "disabled",
       modelReasoningEffort: this.config.reasoningEffort as ModelReasoningEffort,
       threadSource,
-      ...(this.model === DEFAULT_NATIVE_BOK_MODEL ? {} : { model: this.model }),
+      ...resolvedThreadModel(this.model),
     };
   }
 }
@@ -96,7 +109,7 @@ export function buildPrimaryThreadOptions(
     webSearchMode: "disabled",
     modelReasoningEffort: config.reasoningEffort as ModelReasoningEffort,
     threadSource: "paryskie-bok-agent",
-    ...(config.model ? { model: config.model } : {}),
+    ...(config.model ? resolvedThreadModel(config.model) : {}),
   };
 }
 
@@ -220,4 +233,10 @@ function tomlKey(value: string): string {
 function resolveModel(value: string): string {
   if (!SAFE_NATIVE_BOK_MODEL.test(value)) throw new Error("Nieprawidłowy model BOK.");
   return value;
+}
+
+function resolvedThreadModel(model: string): Pick<ThreadOptions, "model"> | object {
+  // `codex-subscription-managed` oznacza ten sam model zarządzany z tego samego CODEX_HOME;
+  // jawny model jest przekazywany identycznie do primary, reviewer i native.
+  return model === DEFAULT_NATIVE_BOK_MODEL ? {} : { model };
 }

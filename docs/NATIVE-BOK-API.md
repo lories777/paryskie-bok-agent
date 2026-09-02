@@ -69,6 +69,9 @@ inna wersja lub hash oznacza brak gotowości do bezpiecznej obsługi akcji.
 ## Wiedza i bezpieczeństwo
 
 - fakty konkretnego klienta i zamówienia pochodzą wyłącznie z `verifiedFacts` ML;
+- opcjonalne `context.operatorGuidance` jest wiązane hashem z dokładną rewizją ticketu i trafia
+  identycznie do generate oraz judge; to decyzja tylko tej sprawy, nie fakt, globalna reguła ani
+  dowód wykonania;
 - wspólny `BOK_PLAYBOOK.md` jest główną polityką procesu Discord + ML;
 - `knowledgeSnapshot` ML jest wersjonowanym dodatkiem rynku; konflikt ze wspólnym playbookiem
   kończy się decyzją człowieka, nie zgadywaniem;

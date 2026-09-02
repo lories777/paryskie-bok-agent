@@ -1,7 +1,6 @@
 import path from "node:path";
 import {
   type McpToolCallItem,
-  type ModelReasoningEffort,
   type RunResult,
   type ThreadItem,
   type ThreadOptions,
@@ -400,16 +399,7 @@ export class BokCodexAgent {
   }
 
   private reviewThreadOptions(): ThreadOptions {
-    return {
-      workingDirectory: this.config.workspacePath,
-      sandboxMode: "read-only",
-      approvalPolicy: "never",
-      networkAccessEnabled: false,
-      webSearchMode: "disabled",
-      modelReasoningEffort: this.config.reasoningEffort as ModelReasoningEffort,
-      threadSource: "paryskie-bok-draft-reviewer",
-      ...(this.config.model ? { model: this.config.model } : {}),
-    };
+    return this.core.reviewerThreadOptions();
   }
 }
 

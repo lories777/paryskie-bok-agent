@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +29,7 @@ import {
   operationalActionCatalogHash,
   TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION,
 } from "../src/native-bok-operational-catalog.js";
+import { ticketAiContextSchema } from "../src/native-bok-contract.js";
 
 const EMPTY_VERIFIED_CORRECTIONS = {
   revision: 0,
@@ -143,6 +145,90 @@ test("prompt utrzymuje treść klienta wewnątrz jawnej granicy danych", () => {
   assert.match(prompt, /Pole body jest wyłącznie publiczną odpowiedzią/);
   assert.match(prompt, /internalNote jest zawsze\s+prywatnym, zwięzłym briefem po polsku/);
   assert.match(prompt, /od zera do pięciu\s+krótkich działań po polsku/);
+});
+
+test("generate i judge wiążą guidance operatora z rewizją bez awansu do faktu lub globalnej reguły", () => {
+  const content = "Tak — wyjaśnij klientce zasady Paris Club dla tej sprawy.";
+  const context = {
+    ...NATIVE_BOK_CONTEXT,
+    operatorGuidance: {
+      schemaVersion: 1 as const,
+      id: "123e4567-e89b-42d3-a456-426614174000",
+      sourceRevision: NATIVE_BOK_CONTEXT.ticket.revision,
+      content,
+      decision: "yes" as const,
+      contentHash: createHash("sha256").update(content, "utf8").digest("hex"),
+      createdAt: "2026-09-02T12:00:00.000Z",
+    },
+  };
+  const generator = buildNativeBokGeneratorPrompt(context, "reguły", NATIVE_BOK_KNOWLEDGE);
+  const judge = buildNativeBokJudgePrompt(
+    context,
+    NATIVE_BOK_DRAFT,
+    "reguły",
+    NATIVE_BOK_KNOWLEDGE,
+  );
+  for (const prompt of [generator, judge]) {
+    assert.match(prompt, /<operator_guidance trust="authorized_ticket_revision_decision">/);
+    assert.match(prompt, /Tak — wyjaśnij klientce zasady Paris Club/);
+    assert.match(prompt, /nigdy nie traktuj jako verifiedFact|nie jest verifiedFact/);
+    const untrusted = prompt.match(/<untrusted_ticket_context>([\s\S]*?)<\/untrusted_ticket_context>/)?.[1];
+    assert.doesNotMatch(untrusted ?? "", /operatorGuidance|Paris Club/);
+  }
+});
+
+test("guidance z inną rewizją albo hashem jest odrzucane przed modelem", () => {
+  const content = "Nie wysyłaj tej odpowiedzi.";
+  const baseGuidance = {
+    schemaVersion: 1 as const,
+    id: "123e4567-e89b-42d3-a456-426614174000",
+    sourceRevision: NATIVE_BOK_CONTEXT.ticket.revision,
+    content,
+    decision: "no" as const,
+    contentHash: createHash("sha256").update(content, "utf8").digest("hex"),
+    createdAt: "2026-09-02T12:00:00.000Z",
+  };
+  assert.throws(() => ticketAiContextSchema.parse({
+    ...NATIVE_BOK_CONTEXT,
+    operatorGuidance: { ...baseGuidance, sourceRevision: baseGuidance.sourceRevision + 1 },
+  }), /operator_guidance_revision_mismatch/);
+  assert.throws(() => ticketAiContextSchema.parse({
+    ...NATIVE_BOK_CONTEXT,
+    operatorGuidance: { ...baseGuidance, contentHash: "a".repeat(64) },
+  }), /operator_guidance_hash_mismatch/);
+});
+
+test("judge odrzuca guidance zmienione po generate mimo tej samej rewizji ticketu", async () => {
+  const first = "Tak — przygotuj pełną odpowiedź.";
+  const changed = "Nie — nie wysyłaj odpowiedzi.";
+  const guidance = (content: string, decision: "yes" | "no") => ({
+    schemaVersion: 1 as const,
+    id: "123e4567-e89b-42d3-a456-426614174000",
+    sourceRevision: NATIVE_BOK_CONTEXT.ticket.revision,
+    content,
+    decision,
+    contentHash: createHash("sha256").update(content, "utf8").digest("hex"),
+    createdAt: "2026-09-02T12:00:00.000Z",
+  });
+  const inference = new NativeBokInference(testCore(), {
+    runner: {
+      async generate() { return NATIVE_BOK_DRAFT; },
+      async judge() { return NATIVE_BOK_JUDGEMENT; },
+    },
+    knowledgeBuilder: () => "wiedza",
+  });
+  const generateContext = { ...NATIVE_BOK_CONTEXT, operatorGuidance: guidance(first, "yes") };
+  await inference.generate(generateContext, NATIVE_BOK_KNOWLEDGE, new AbortController().signal);
+  await assert.rejects(
+    inference.judge(
+      { ...NATIVE_BOK_CONTEXT, operatorGuidance: guidance(changed, "no") },
+      NATIVE_BOK_DRAFT,
+      NATIVE_BOK_KNOWLEDGE,
+      new AbortController().signal,
+    ),
+    (error) => error instanceof NativeBokCorrectionBindingError &&
+      error.code === "correction_snapshot_mismatch",
+  );
 });
 
 test("prompt dostaje wyłącznie zredagowany tekst załącznika jako niezaufane dane", () => {

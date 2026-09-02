@@ -88,6 +88,37 @@ test("worker i native HTTP używają tej samej instancji BokAgentCore", () => {
   }
 });
 
+test("primary, reviewer i native mają jeden wybór modelu oraz reasoning z core", () => {
+  const core = new BokAgentCore(loadConfig({
+    BOK_AGENT_MODEL: "gpt-5.6-sol",
+    BOK_AGENT_REASONING_EFFORT: "high",
+  }, "/tmp/paryskie-bok-agent"), {
+    activeLearnedRules: () => [],
+    activeVerifiedHumanCorrections: () => ({
+      revision: 0, total: 0, truncated: false, corrections: [],
+    }),
+  } as unknown as AgentStore);
+  const primary = core.primaryThreadOptions();
+  const reviewer = core.reviewerThreadOptions();
+  const native = core.nativeThreadOptions("test-native");
+  assert.equal(primary.model, core.model);
+  assert.equal(reviewer.model, core.model);
+  assert.equal(native.model, core.model);
+  assert.equal(primary.modelReasoningEffort, "high");
+  assert.equal(reviewer.modelReasoningEffort, "high");
+  assert.equal(native.modelReasoningEffort, "high");
+
+  const managed = new BokAgentCore(loadConfig({}, "/tmp/paryskie-bok-agent"), {
+    activeLearnedRules: () => [],
+    activeVerifiedHumanCorrections: () => ({
+      revision: 0, total: 0, truncated: false, corrections: [],
+    }),
+  } as unknown as AgentStore);
+  assert.equal(managed.primaryThreadOptions().model, undefined);
+  assert.equal(managed.reviewerThreadOptions().model, undefined);
+  assert.equal(managed.nativeThreadOptions("test-native").model, undefined);
+});
+
 test("reviewer dostaje procedury BOK obok danych konkretnego zamówienia", () => {
   const context = buildReviewerBusinessContext(
     "Zamówienie 480032521 jest doręczone.",
