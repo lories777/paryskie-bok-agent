@@ -17,6 +17,8 @@ import {
 import {
   TICKET_OPERATIONAL_ACTION_DEFINITIONS,
   TICKET_OPERATIONAL_ACTION_TYPES,
+  operationalActionCatalogContract,
+  operationalActionCatalogHash,
 } from "../src/native-bok-operational-actions.js";
 import { createNativeBokHttpServerForConfig } from "../src/native-bok-server.js";
 import {
@@ -214,6 +216,24 @@ test("katalog i structured-output schema są dokładne i wymagają jawnego null"
   assert.ok(TICKET_AI_JUDGE_OUTPUT_JSON_SCHEMA.required.includes(
     "operationalActionDecision",
   ));
+});
+
+test("safety hash katalogu jest kanoniczny i nie zawiera pól UI ani channel ID", () => {
+  const contract = operationalActionCatalogContract();
+  const serialized = JSON.stringify(contract);
+  const actionTypes = contract.actions.map(({ actionType }) => actionType);
+
+  assert.equal(contract.schemaVersion, 2);
+  assert.deepEqual(actionTypes, [...actionTypes].sort());
+  for (const action of contract.actions) {
+    assert.deepEqual(action.allowedAiIntents, [...action.allowedAiIntents].sort());
+  }
+  assert.doesNotMatch(serialized, /label|channelId|107248/);
+  assert.match(operationalActionCatalogHash(), /^[a-f0-9]{64}$/);
+  assert.equal(
+    operationalActionCatalogHash(),
+    "ba9500f346a3bfea5f29213ac194799c84b99ca7ba4ac22a2362c71ed7767b2c",
+  );
 });
 
 test("prompty wiążą typed request bez ujawnienia prywatnych pól judge", () => {

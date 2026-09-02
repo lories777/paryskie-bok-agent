@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { TICKET_AI_INTENTS } from "./native-bok-knowledge.js";
 
@@ -46,6 +47,7 @@ export const TICKET_AI_OPERATIONAL_ACTION_DECISION_REASONS = [
 ] as const;
 
 export type TicketOperationalActionHandling = "masterlink" | "team_escalation";
+export const TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION = 2 as const;
 
 interface TicketOperationalActionDefinition {
   readonly actionType: TicketOperationalActionType;
@@ -315,6 +317,35 @@ export function operationalActionCatalogJson(): string {
       };
     }),
   );
+}
+
+/**
+ * Stable safety contract shared with MasterLink. Presentation labels and concrete
+ * Discord channel IDs are deliberately outside the hash.
+ */
+export function operationalActionCatalogContract() {
+  return {
+    schemaVersion: TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION,
+    actions: [...TICKET_OPERATIONAL_ACTION_TYPES]
+      .sort()
+      .map((actionType) => {
+        const definition = TICKET_OPERATIONAL_ACTION_DEFINITIONS[actionType];
+        return {
+          actionType,
+          handling: definition.handling,
+          destination: definition.destination,
+          orderRequired: definition.orderRequired,
+          allowedAiIntents: [...definition.allowedAiIntents].sort(),
+        };
+      }),
+    decisionReasonCodes: [...TICKET_AI_OPERATIONAL_ACTION_DECISION_REASONS].sort(),
+  } as const;
+}
+
+export function operationalActionCatalogHash(): string {
+  return createHash("sha256")
+    .update(JSON.stringify(operationalActionCatalogContract()), "utf8")
+    .digest("hex");
 }
 
 export const TICKET_AI_OPERATIONAL_ACTION_REQUEST_JSON_SCHEMA = {

@@ -16,8 +16,11 @@ import {
 export { TICKET_AI_INTENTS } from "./native-bok-knowledge.js";
 export {
   TICKET_AI_OPERATIONAL_ACTION_DECISION_REASONS,
+  TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION,
   TICKET_OPERATIONAL_ACTION_DEFINITIONS,
   TICKET_OPERATIONAL_ACTION_TYPES,
+  operationalActionCatalogContract,
+  operationalActionCatalogHash,
   ticketAiOperationalActionDecisionSchema,
   ticketAiOperationalActionRequestSchema,
 } from "./native-bok-operational-actions.js";
