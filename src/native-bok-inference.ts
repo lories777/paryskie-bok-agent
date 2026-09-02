@@ -24,14 +24,20 @@ import {
   parseTicketAiKnowledgeSnapshot,
   type TicketAiKnowledgeSnapshot,
 } from "./native-bok-knowledge.js";
+import {
+  operationalActionCatalogHash,
+  TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION,
+} from "./native-bok-operational-catalog.js";
 import type {
   StoredLearnedRule,
   StoredMessage,
   VerifiedHumanCorrectionSnapshot,
 } from "./types.js";
 import {
+  assertCompleteVerifiedCorrectionSnapshot as assertSharedVerifiedCorrectionSnapshot,
   renderVerifiedCorrectionsForPrompt,
   VERIFIED_CORRECTION_POLICY,
+  VerifiedCorrectionSnapshotError,
 } from "./verified-corrections-prompt.js";
 
 const EMPTY_VERIFIED_CORRECTIONS: VerifiedHumanCorrectionSnapshot = {
@@ -172,10 +178,16 @@ export class NativeBokInference {
         source: "verified-discord-corrections",
         revision: verified.revision,
         activeRules: verified.total,
+        total: verified.total,
+        truncated: false,
       },
       playbook: {
         source: "shared-agent-workspace",
         revision: sha256(this.core.playbook),
+      },
+      operationalActionCatalog: {
+        schemaVersion: TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION,
+        hash: operationalActionCatalogHash(),
       },
     };
   }
@@ -255,25 +267,13 @@ function correctionContextKey(context: TicketAiContext): string {
 function assertCompleteVerifiedCorrectionSnapshot(
   snapshot: VerifiedHumanCorrectionSnapshot,
 ): void {
-  if (
-    snapshot.truncated ||
-    !Number.isSafeInteger(snapshot.total) ||
-    snapshot.total < 0 ||
-    snapshot.total !== snapshot.corrections.length
-  ) {
-    throw new NativeBokCorrectionBindingError("correction_snapshot_truncated");
-  }
-  const sourceRevisions = snapshot.corrections.map((correction) => correction.sourceRevision);
-  if (
-    !Number.isSafeInteger(snapshot.revision) ||
-    snapshot.revision < 0 ||
-    sourceRevisions.some((revision) =>
-      !Number.isSafeInteger(revision) || revision < 1 || revision > snapshot.revision
-    ) ||
-    new Set(sourceRevisions).size !== sourceRevisions.length ||
-    sourceRevisions.some((revision, index) => index > 0 && revision >= sourceRevisions[index - 1]!)
-  ) {
-    throw new NativeBokCorrectionBindingError("correction_snapshot_mismatch");
+  try {
+    assertSharedVerifiedCorrectionSnapshot(snapshot);
+  } catch (error) {
+    if (error instanceof VerifiedCorrectionSnapshotError) {
+      throw new NativeBokCorrectionBindingError(error.code);
+    }
+    throw error;
   }
 }
 

@@ -46,10 +46,16 @@ function fakeInference(overrides: {
         source: "verified-discord-corrections" as const,
         revision: 7,
         activeRules: 3,
+        total: 3,
+        truncated: false as const,
       },
       playbook: {
         source: "shared-agent-workspace" as const,
         revision: "b".repeat(64),
+      },
+      operationalActionCatalog: {
+        schemaVersion: 2 as const,
+        hash: "9c6f8e5341d775d05875fc29afda2911b4e2346e2fdb7c92f5983929d6ca0d6b",
       },
     }),
     generate: overrides.generate ?? (async () => NATIVE_BOK_DRAFT),
@@ -79,12 +85,18 @@ test("runtime status wymaga Bearera i potwierdza wspólny Store/workspace bez tr
       },
       corrections: {
         source: "verified-discord-corrections",
-          revision: 7,
+        revision: 7,
         activeRules: 3,
+        total: 3,
+        truncated: false,
       },
       playbook: {
         source: "shared-agent-workspace",
         revision: "b".repeat(64),
+      },
+      operationalActionCatalog: {
+        schemaVersion: 2,
+        hash: "9c6f8e5341d775d05875fc29afda2911b4e2346e2fdb7c92f5983929d6ca0d6b",
       },
     });
     assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");

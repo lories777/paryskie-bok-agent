@@ -8,6 +8,7 @@ import { DEFAULT_NATIVE_BOK_MODEL, SAFE_NATIVE_BOK_MODEL } from "./native-bok-co
 import type { AgentStore } from "./store.js";
 import type { StoredMessage } from "./types.js";
 import { buildBokKnowledgeContext } from "./bok-knowledge.js";
+import { assertCompleteVerifiedCorrectionSnapshot } from "./verified-corrections-prompt.js";
 
 export const CHROME_READ_ONLY_TOOLS = [
   "list_pages",
@@ -31,6 +32,10 @@ export class BokAgentCore {
   }
 
   policySnapshot(messages: StoredMessage[]) {
+    const verifiedCorrections = structuredClone(
+      this.store.activeVerifiedHumanCorrections(100),
+    );
+    assertCompleteVerifiedCorrectionSnapshot(verifiedCorrections);
     return {
       playbook: this.playbook,
       untrustedReference: buildBokKnowledgeContext(
@@ -38,7 +43,7 @@ export class BokAgentCore {
         messages,
         this.store.activeLearnedRules(100),
       ),
-      verifiedCorrections: this.store.activeVerifiedHumanCorrections(100),
+      verifiedCorrections,
     };
   }
 

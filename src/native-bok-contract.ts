@@ -27,10 +27,16 @@ export interface NativeBokRuntimeStatus {
     source: "verified-discord-corrections";
     revision: number;
     activeRules: number;
+    total: number;
+    truncated: false;
   };
   playbook: {
     source: "shared-agent-workspace";
     revision: string;
+  };
+  operationalActionCatalog: {
+    schemaVersion: 2;
+    hash: string;
   };
 }
 export const MAX_NATIVE_BOK_INTERNAL_NOTE_CHARS = 1_200;

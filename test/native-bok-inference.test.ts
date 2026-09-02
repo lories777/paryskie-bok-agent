@@ -23,6 +23,11 @@ import {
   NATIVE_BOK_KNOWLEDGE,
 } from "./native-bok-fixtures.js";
 import { AgentStore } from "../src/store.js";
+import { VerifiedCorrectionSnapshotError } from "../src/verified-corrections-prompt.js";
+import {
+  operationalActionCatalogHash,
+  TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION,
+} from "../src/native-bok-operational-catalog.js";
 
 const EMPTY_VERIFIED_CORRECTIONS = {
   revision: 0,
@@ -87,6 +92,41 @@ test("wspólny core używa osobnych przebiegów generate i judge", async () => {
   assert.match(calls[1]!, /Generator i jego rozumowanie są niedostępne/);
   assert.equal(inference.generatorModel, "codex-subscription-managed");
   assert.equal(inference.judgeModel, "codex-subscription-managed");
+});
+
+test("runtime przypina kanoniczny kontrakt operacyjny współdzielony z MasterLink", () => {
+  assert.equal(TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION, 2);
+  assert.equal(
+    operationalActionCatalogHash(),
+    "9c6f8e5341d775d05875fc29afda2911b4e2346e2fdb7c92f5983929d6ca0d6b",
+  );
+  assert.deepEqual(testCore().policySnapshot([]).verifiedCorrections, EMPTY_VERIFIED_CORRECTIONS);
+  const status = new NativeBokInference(testCore(), {
+    runner: {
+      async generate() { return NATIVE_BOK_DRAFT; },
+      async judge() { return NATIVE_BOK_JUDGEMENT; },
+    },
+  }).runtimeStatus();
+  assert.deepEqual(status.operationalActionCatalog, {
+    schemaVersion: 2,
+    hash: operationalActionCatalogHash(),
+  });
+});
+
+test("wspólny core blokuje niepełną politykę przed uruchomieniem dowolnego ingressu", () => {
+  const core = testCore({
+    activeVerifiedHumanCorrections: () => ({
+      revision: 101,
+      total: 101,
+      truncated: true,
+      corrections: [],
+    }),
+  });
+  assert.throws(
+    () => core.policySnapshot([]),
+    (error) => error instanceof VerifiedCorrectionSnapshotError &&
+      error.code === "correction_snapshot_truncated",
+  );
 });
 
 test("prompt utrzymuje treść klienta wewnątrz jawnej granicy danych", () => {
@@ -638,6 +678,12 @@ test("niepełny snapshot ponad limit jest jawny i zatrzymuje native inference pr
         NATIVE_BOK_KNOWLEDGE,
         new AbortController().signal,
       ),
+      (error) =>
+        error instanceof NativeBokCorrectionBindingError &&
+        error.code === "correction_snapshot_truncated",
+    );
+    assert.throws(
+      () => inference.runtimeStatus(),
       (error) =>
         error instanceof NativeBokCorrectionBindingError &&
         error.code === "correction_snapshot_truncated",

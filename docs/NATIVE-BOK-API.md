@@ -43,17 +43,28 @@ Status współdzielonego runtime ma postać:
   "corrections": {
     "source": "verified-discord-corrections",
     "revision": 12,
-    "activeRules": 12
+    "activeRules": 12,
+    "total": 12,
+    "truncated": false
   },
   "playbook": {
     "source": "shared-agent-workspace",
     "revision": "sha256"
+  },
+  "operationalActionCatalog": {
+    "schemaVersion": 2,
+    "hash": "sha256"
   }
 }
 ```
 
-Hashe są sygnałem zmiany i tożsamości źródła, nie zawierają treści pamięci. Sam `/healthz` nie
+Endpoint nie zwraca statusu gotowości, jeśli snapshot korekt jest ucięty albo wewnętrznie
+niespójny. `revision` identyfikuje mutację pełnego snapshotu, a `total` musi być zgodne z
+`activeRules`; treści korekt nie opuszczają runtime. Hashe są sygnałem zmiany i tożsamości źródła,
+nie zawierają treści pamięci. Sam `/healthz` nie
 wystarcza MasterLinkowi do uznania, że połączył się z właściwym agentem.
+MasterLink musi również porównać `operationalActionCatalog` z własnym, przypiętym kontraktem;
+inna wersja lub hash oznacza brak gotowości do bezpiecznej obsługi akcji.
 
 ## Wiedza i bezpieczeństwo
 
