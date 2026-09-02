@@ -107,3 +107,16 @@ Kod connectora oraz pełny zestaw testów znajduje się w `connectors/masterlink
 działa przez chronione konto API oraz osobną rolę PostgreSQL z 41 tabelami tylko do odczytu. Lokalna
 usługa utrzymuje wymagany relay TLS do Railway. Raporty ML na Discordzie pozostają wyłącznie
 pomocniczym kontekstem; źródłem faktów o konkretnym zamówieniu jest connector.
+
+## Załączniki w natywnym API BOK
+
+Consumer przyjmuje stary kontrakt bez pól załącznikowych wyłącznie wtedy, gdy każdy
+`attachmentCount` wynosi zero. Równolegle obsługuje ścisły `verified-text-v1`: maksymalnie 20
+załączników, z czego najwyżej 4 odczytane pliki TXT/CSV, 64 KiB na plik, 12 tys. znaków na plik i
+24 tys. znaków łącznie. Tekst musi być NFC, bez znaków sterujących i po redakcji e-maila,
+telefonu, IBAN/NRB oraz numeru karty. Pozostaje niezaufaną treścią klienta.
+
+`sourceHash` i `textHash` są wewnętrznym audytem MasterLinka i nie należą do kontraktu promptu.
+Każdy obraz, PDF, niepełne pokrycie albo status `unsupported`, `failed` lub `truncated` kończy
+request fail-closed przed uruchomieniem Codexa. Ta gałąź jest consumer-first: należy wdrożyć ją
+przed producentem MasterLink wysyłającym `verified-text-v1`.

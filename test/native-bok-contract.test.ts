@@ -10,7 +10,11 @@ import {
   ticketAiGeneratorOutputSchema,
   ticketAiContextSchema,
 } from "../src/native-bok-contract.js";
-import { NATIVE_BOK_CONTEXT, NATIVE_BOK_DRAFT } from "./native-bok-fixtures.js";
+import {
+  NATIVE_BOK_ATTACHMENT_CONTEXT,
+  NATIVE_BOK_CONTEXT,
+  NATIVE_BOK_DRAFT,
+} from "./native-bok-fixtures.js";
 
 test("kontrakt generate i judge przyjmuje dokładny payload MasterLink", () => {
   assert.deepEqual(
@@ -34,6 +38,54 @@ test("kontrakt jest strict i wymaga jawnego contextTruncated oraz polityki read-
     ...NATIVE_BOK_CONTEXT,
     policy: { ...NATIVE_BOK_CONTEXT.policy, tools: "write" },
   }));
+});
+
+test("consumer-first przyjmuje legacy bez plików i verified-text-v1", () => {
+  assert.deepEqual(ticketAiContextSchema.parse(NATIVE_BOK_CONTEXT), NATIVE_BOK_CONTEXT);
+  assert.deepEqual(
+    ticketAiContextSchema.parse(NATIVE_BOK_ATTACHMENT_CONTEXT),
+    NATIVE_BOK_ATTACHMENT_CONTEXT,
+  );
+
+  const legacyUnread = structuredClone(NATIVE_BOK_CONTEXT);
+  legacyUnread.conversation[0]!.attachmentCount = 1;
+  assert.throws(() => ticketAiContextSchema.parse(legacyUnread), /attachment_unread/);
+});
+
+test("załącznik binarny lub niepełne pokrycie blokuje request przed modelem", () => {
+  const unread = structuredClone(NATIVE_BOK_ATTACHMENT_CONTEXT) as any;
+  unread.conversation[0].attachments[0] = {
+    ...unread.conversation[0].attachments[0],
+    fileName: "dowod.jpg",
+    contentType: "image/jpeg",
+    status: "unsupported",
+    extractor: null,
+    text: null,
+  };
+  unread.attachmentCoverage.readCount = 0;
+  unread.attachmentCoverage.operatorRequiredCount = 1;
+  assert.throws(() => ticketAiContextSchema.parse(unread), /attachment_unread/);
+
+  const incomplete = structuredClone(NATIVE_BOK_ATTACHMENT_CONTEXT) as any;
+  incomplete.attachmentCoverage.totalCount = 2;
+  incomplete.attachmentCoverage.operatorRequiredCount = 1;
+  assert.throws(() => ticketAiContextSchema.parse(incomplete), /attachment_coverage_invalid/);
+});
+
+test("kontrakt promptu odrzuca wewnętrzne hashe i niezredagowane polskie PII", () => {
+  const withHashes = structuredClone(NATIVE_BOK_ATTACHMENT_CONTEXT) as any;
+  withHashes.conversation[0].attachments[0].sourceHash = "c".repeat(64);
+  withHashes.conversation[0].attachments[0].textHash = "d".repeat(64);
+  assert.throws(() => ticketAiContextSchema.parse(withHashes));
+
+  for (const text of [
+    "Telefon 500 600 700",
+    "Rachunek 12 3456 7890 1234 5678 9012 3456",
+  ]) {
+    const payload = structuredClone(NATIVE_BOK_ATTACHMENT_CONTEXT) as any;
+    payload.conversation[0].attachments[0].text = text;
+    assert.throws(() => ticketAiContextSchema.parse(payload));
+  }
 });
 
 test("generator nie może deklarować nieznanego ani zdublowanego klucza faktu", () => {

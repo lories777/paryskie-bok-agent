@@ -6,7 +6,12 @@ import {
   NATIVE_BOK_PROVIDER,
 } from "../src/native-bok-contract.js";
 import { createNativeBokHttpServerForConfig } from "../src/native-bok-server.js";
-import { NATIVE_BOK_CONTEXT, NATIVE_BOK_DRAFT, NATIVE_BOK_JUDGEMENT } from "./native-bok-fixtures.js";
+import {
+  NATIVE_BOK_ATTACHMENT_CONTEXT,
+  NATIVE_BOK_CONTEXT,
+  NATIVE_BOK_DRAFT,
+  NATIVE_BOK_JUDGEMENT,
+} from "./native-bok-fixtures.js";
 
 const TOKEN = "native-bok-test-token-minimum-32-characters";
 
@@ -135,6 +140,38 @@ test("Bearer jest obowiązkowy, a payload strict jest odrzucany przed inference"
     });
     assert.equal(invalid.status, 400);
     assert.deepEqual(await invalid.json(), { ok: false, error: "invalid_contract" });
+    assert.equal(calls, 0);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("nieodczytany obraz jest odrzucany przed inference", async () => {
+  let calls = 0;
+  const server = createServer(fakeInference({
+    async generate() {
+      calls += 1;
+      return NATIVE_BOK_DRAFT;
+    },
+  }));
+  const runtime = await listen(server);
+  try {
+    const unread = structuredClone(NATIVE_BOK_ATTACHMENT_CONTEXT) as any;
+    unread.conversation[0].attachments[0] = {
+      ...unread.conversation[0].attachments[0],
+      fileName: "dowod.jpg",
+      contentType: "image/jpeg",
+      status: "unsupported",
+      extractor: null,
+      text: null,
+    };
+    unread.attachmentCoverage.readCount = 0;
+    unread.attachmentCoverage.operatorRequiredCount = 1;
+
+    const response = await post(runtime.origin, "/v1/bok/generate", { context: unread });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { ok: false, error: "invalid_contract" });
     assert.equal(calls, 0);
   } finally {
     await runtime.close();
