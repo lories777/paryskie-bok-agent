@@ -188,8 +188,20 @@ test("akcja MasterLink jest typed, ale nie staje się eskalacją Discord", () =>
     handling: "masterlink",
     destination: "masterlink",
     orderRequired: true,
-    allowedAiIntents: ["cancellation", "complaint"],
+    allowedAiIntents: ["cancellation"],
   });
+});
+
+test("reklamacja nie może utworzyć order.stop i kończy się fail-closed", () => {
+  assert.throws(() => parseGeneratorOutput({
+    ...NATIVE_BOK_DRAFT,
+    intent: "complaint",
+    operationalActionRequest: {
+      schemaVersion: 2,
+      actionType: "order.stop",
+      factKeys: ["order.status"],
+    },
+  }, NATIVE_BOK_CONTEXT), /generator_operational_intent_mismatch/);
 });
 
 test("katalog i structured-output schema są dokładne i wymagają jawnego null", () => {

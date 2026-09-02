@@ -191,7 +191,7 @@ export const TICKET_OPERATIONAL_ACTION_DEFINITIONS = {
     handling: "masterlink",
     destination: "masterlink",
     orderRequired: true,
-    allowedAiIntents: ["cancellation", "complaint"],
+    allowedAiIntents: ["cancellation"],
   },
   "erp.correct": {
     actionType: "erp.correct",
