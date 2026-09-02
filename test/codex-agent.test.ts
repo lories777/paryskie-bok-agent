@@ -829,6 +829,31 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
     },
   ]);
 
+  const nestedErrorCalls = (JSON.parse(evidence("dpd")) as Array<Record<string, any>>)
+    .map((entry, index): ThreadItem => ({
+      id: `nested-error-${index}`,
+      type: "mcp_tool_call",
+      server: "masterlink",
+      tool: String(entry.tool),
+      arguments: entry.arguments,
+      result: {
+        content: [],
+        structured_content: {
+          ...entry.result,
+          error: index === 1 ? { code: "TIMEOUT", retryable: true } : null,
+        },
+      },
+      status: "completed",
+    }));
+  const nestedErrorEvidence = formatVerifiedToolEvidence(nestedErrorCalls);
+  assert.ok(nestedErrorEvidence);
+  assert.equal(buildVerifiedDeliveryPromiseFallback(
+    daktelaJob,
+    [complaint],
+    result("Błędny draft"),
+    nestedErrorEvidence,
+  ), null, "found:true z result.error nie jest zweryfikowanym odczytem");
+
   const incompleteIssues = deliveryPromiseResolutionIssues(
     [complaint],
     result("Dzień dobry, przepraszamy za niejasność. Oferta dostawy jutro dotyczy wyłącznie InPost, a w tym zamówieniu wybrano DPD. Pozdrawiamy, Zespół Paryskie Perfumy"),
@@ -1540,6 +1565,34 @@ test("regresja screenshot: DPD dostaje znany status i konkretny krok bez pytania
       result("Błędny draft"),
       evidence("dpd"),
     ), null, alternateConnector);
+  }
+  for (const delimitedSecondIntent of [
+    "; proszę usunąć moje konto",
+    " — proszę usunąć moje konto",
+    ": proszę usunąć moje konto",
+    " / proszę usunąć moje konto",
+    " - proszę usunąć moje konto",
+    ", proszę usunąć moje konto",
+    ", chcę rozmawiać z kierownikiem",
+    ", nie chcę newslettera",
+    ", składam skargę",
+    ", czy sklep jest otwarty jutro",
+  ]) {
+    const delimitedMultiIntent = {
+      ...complaint,
+      content: `Zamówienie 480033739 złożyłam do 19:00, miało być jutro, paczki nadal nie ma${delimitedSecondIntent}.`,
+    };
+    assert.equal(
+      deliveryPromiseMustResolveWithoutHuman([delimitedMultiIntent], evidence("dpd")),
+      false,
+      delimitedSecondIntent,
+    );
+    assert.equal(buildVerifiedDeliveryPromiseFallback(
+      daktelaJob,
+      [delimitedMultiIntent],
+      result("Błędny draft"),
+      evidence("dpd"),
+    ), null, delimitedSecondIntent);
   }
 
   const languageCases: Array<{ language: string; complaint: StoredMessage }> = [{

@@ -1207,13 +1207,15 @@ function deliveryPromiseAdditionalSentences(
   ).join("\n");
   const sentences = responseSentences(relevant).flatMap((sentence) =>
     sentence.split(
-      /\s*(?:,|;)?\s+\b(?:i|oraz|ale|a|natomiast|lecz|tylko|plus|and|but|however|also|také|avšak|ja|ning|aga|kuid|ent)\b\s+/iu,
+      /\s*(?:[;—–]|\s[-/]\s)\s*|\s*(?:,)?\s+\b(?:i|oraz|ale|a|natomiast|lecz|tylko|plus|and|but|however|also|také|avšak|ja|ning|aga|kuid|ent)\b\s+/iu,
     ).map((clause) => clause.trim()).filter(Boolean));
   const deliveryVocabulary = /(?:dostaw|doręcz|przesył|paczk|kurier|przewoźnik|inpost|dpd|tracking|śledzen|status\s+zamów|dotrze|zamów\w*[^.!?]{0,80}(?:19|jutro|dostaw|pacz)|objedn[aá]v\w*[^.!?]{0,80}(?:19|z[ií]tra|doruč|z[aá]sil)|doruč|z[aá]sil|bal[ií]k|dopravce|sledov[aá]n|stav\s+objedn|tellim\w*[^.!?]{0,80}(?:19|homme|tarne|saadet)|tarne|saadet|pakk|kuller|j[aä]lgimi|tellimuse\s+staatus)/iu;
   const deliveryPromiseFragment = /^(?:(?:mia(?:ł|ła|ło|ły)\p{L}*|obiecan\p{L}*|zapewn\p{L}*)[^.!?]{0,50}(?:jutro|nast[eę]pnego\s+dnia)|(?:mě(?:l|la|lo|ly)\p{L}*|sl[ií]b\p{L}*)[^.!?]{0,50}(?:z[ií]tra|n[aá]sleduj[ií]c[ií]\s+den)|(?:pidi|lubat\p{L}*)[^.!?]{0,50}(?:homme|j[aä]rgmisel\s+p[aä]eval)|(?:do|przed|enne(?:\s+kella)?)\s*19(?:\s*[:.]\s*00)?)[,.!?]*$/iu;
   const genericDeliveryFollowUp = /^(?:(?:proszę|pros[ií]m|palun)\s+)?(?:co\s+się\s+dzieje|co\s+dalej|kiedy\s+dotrze|jak\s+długo\s+mam\s+czekać|nadal\s+(?:go|jej|jej\s+nie|paczki|przesyłki)?\s*nie\s+ma|co\s+se\s+d[eě]je|co\s+d[aá]l|kdy\s+doraz[ií]|st[aá]le\s+ček[aá]m(?:\s+na\s+(?:ni|z[aá]silku|bal[ií]k))?|mis\s+toimub|mis\s+edasi|millal\s+(?:jõuab|saabub)|ootan\s+endiselt(?:\s+(?:seda|saadetist|pakki))?)[?.!]*$/iu;
   const courtesyOnly = /^(?:dzień\s+dobry|dobr[yý]\s+den|tere|proszę\s+(?:o\s+)?(?:pomoc|odpowiedź)|pros[ií]m\s+o\s+(?:pomoc|odpověď)|palun\s+(?:abi|vastust))[,.!?]*$/iu;
   const explicitOtherDomain = /(?:atomizer|flakon|perfum|produkt|kosmetycz|paragon|faktur|punkt\w*\s+lojal|punkty|nalicz|zwrot|refund|płatno|zapłat|adres(?:u|em)?\s+(?:dostaw|wysył)|punkt\w*\s+odbior|paczkomat|uszkod|rozlan|przeciek|brakuj\w*\s+(?:produkt|flakon|pr[oó]bk)|anul|kod\w*\s+rabat|rabat|\bN\s*[°ºo]?\s*\d{1,4}\b|pr[oó]bk|wysył\w*\s+(?:do|za\s+granic)|formularz\w*\s+(?:reklamac|zwrot)|účtenk|faktur|produkt|parf[eé]m|body|vr[aá]cen[ií]\s+peněz|poškozen|zruš|kviitung|arve|toode|punktid|raha\s+tagast|kahjust|t[uü]hista)/iu;
+  const highRiskOtherIntent = /(?:(?:^|\s)(?:konto\p{L}*|newsletter\p{L}*|marketing\p{L}*|kierownik\p{L}*|konsultant\p{L}*|skarg\p{L}*|[uü]čet\p{L}*|vedouc\p{L}*|st[ií]žnost\p{L}*|juht\p{L}*|kaebus\p{L}*)(?=\s|[.,!?;:]|$)|(?:moje|swoje|osobowe|m[eé]|osobn[ií]|minu|isiku)\s+(?:dane|údaj\p{L}*|andm\p{L}*)|sklep\p{L}*[^.!?]{0,20}(?:otwart|stacjonarn)|godzin\p{L}*\s+otwar|współprac\p{L}*|hurtow\p{L}*|kontakt\p{L}*\s+telefon|zmienił\p{L}*\s+nazwisk)/iu;
+  if (highRiskOtherIntent.test(relevant)) return ["high-risk-other-intent"];
   return sentences.filter((sentence) => {
     if (
       courtesyOnly.test(sentence) ||
@@ -1590,13 +1592,17 @@ export function formatVerifiedToolEvidence(items: ThreadItem[]): string | undefi
   for (const call of masterlinkCalls) {
     const key = `${call.tool}:${JSON.stringify(call.arguments ?? null)}`;
     const previous = deduplicatedMasterlinkCalls.get(key);
-    const currentFound = nestedValue(call.result, "found") === true && !call.error;
+    const currentFound = nestedValue(call.result, "found") === true &&
+      nestedValue(call.result, "error") == null && !call.error;
     const currentDeterministicNotFound =
       nestedValue(call.result, "found") === false &&
       nestedValue(call.result, "code") === "NOT_FOUND" &&
       nestedValue(call.result, "retryable") === false &&
       !call.error;
-    const previousFound = previous && nestedValue(previous.result, "found") === true && !previous.error;
+    const previousFound = previous &&
+      nestedValue(previous.result, "found") === true &&
+      nestedValue(previous.result, "error") == null &&
+      !previous.error;
     if (!previous || currentFound || currentDeterministicNotFound || !previousFound) {
       deduplicatedMasterlinkCalls.delete(key);
       deduplicatedMasterlinkCalls.set(key, call);
@@ -1736,6 +1742,7 @@ function verifiedToolEvidenceRecord(
         nestedValue(record.arguments, "order_number"),
       );
       const found = nestedValue(record.result, "found");
+      const resultError = nestedValue(record.result, "error");
       const resultOrderNumber = nonEmptyEvidenceString(
         nestedValue(record.result, "order_number"),
       );
@@ -1745,6 +1752,7 @@ function verifiedToolEvidenceRecord(
         !Array.isArray(item) &&
         record.tool === tool &&
         !record.error &&
+        (found !== true || resultError == null) &&
         argumentOrderNumber === expectedOrderNumber &&
         (found !== true || resultOrderNumber === expectedOrderNumber)
       ) {
