@@ -8,11 +8,31 @@ import {
 export { TICKET_AI_INTENTS } from "./native-bok-knowledge.js";
 
 export const NATIVE_BOK_PROVIDER = "paryskie-bok-agent" as const;
+export const NATIVE_BOK_RUNTIME = "discord-shared" as const;
 export const DEFAULT_NATIVE_BOK_MODEL = "codex-subscription-managed";
 export const MAX_NATIVE_BOK_REQUEST_BYTES = 1_000_000;
 export const MAX_NATIVE_BOK_CONTEXT_CHARS = 500_000;
 export const MAX_NATIVE_BOK_MESSAGE_BODY_CHARS = 100_000;
 export const MAX_NATIVE_BOK_DRAFT_BODY_CHARS = 20_000;
+
+export interface NativeBokRuntimeStatus {
+  schemaVersion: 1;
+  provider: typeof NATIVE_BOK_PROVIDER;
+  runtime: typeof NATIVE_BOK_RUNTIME;
+  store: {
+    source: "shared-agent-store";
+    identity: string;
+  };
+  corrections: {
+    source: "verified-discord-corrections";
+    revision: number;
+    activeRules: number;
+  };
+  playbook: {
+    source: "shared-agent-workspace";
+    revision: string;
+  };
+}
 export const MAX_NATIVE_BOK_INTERNAL_NOTE_CHARS = 1_200;
 export const MAX_NATIVE_BOK_NEXT_ACTIONS = 5;
 export const MAX_NATIVE_BOK_NEXT_ACTION_CHARS = 300;

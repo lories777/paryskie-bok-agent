@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   MAX_NATIVE_BOK_REQUEST_BYTES,
   NATIVE_BOK_PROVIDER,
+  NATIVE_BOK_RUNTIME,
 } from "../src/native-bok-contract.js";
 import { createNativeBokHttpServerForConfig } from "../src/native-bok-server.js";
 import { NativeBokCorrectionBindingError } from "../src/native-bok-inference.js";
@@ -33,10 +34,64 @@ function fakeInference(overrides: {
   return {
     generatorModel: "codex-generator-test",
     judgeModel: "codex-judge-test",
+    runtimeStatus: () => ({
+      schemaVersion: 1 as const,
+      provider: NATIVE_BOK_PROVIDER,
+      runtime: NATIVE_BOK_RUNTIME,
+      store: {
+        source: "shared-agent-store" as const,
+        identity: "c".repeat(64),
+      },
+      corrections: {
+        source: "verified-discord-corrections" as const,
+        revision: "a".repeat(64),
+        activeRules: 3,
+      },
+      playbook: {
+        source: "shared-agent-workspace" as const,
+        revision: "b".repeat(64),
+      },
+    }),
     generate: overrides.generate ?? (async () => NATIVE_BOK_DRAFT),
     judge: overrides.judge ?? (async () => NATIVE_BOK_JUDGEMENT),
   };
 }
+
+test("runtime status wymaga Bearera i potwierdza wspólny Store/workspace bez treści reguł", async () => {
+  const server = createServer();
+  const runtime = await listen(server);
+  try {
+    const unauthenticated = await fetch(`${runtime.origin}/v1/bok/runtime`);
+    assert.equal(unauthenticated.status, 401);
+
+    const response = await fetch(`${runtime.origin}/v1/bok/runtime`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      schemaVersion: 1,
+      provider: NATIVE_BOK_PROVIDER,
+      runtime: NATIVE_BOK_RUNTIME,
+      store: {
+        source: "shared-agent-store",
+        identity: "c".repeat(64),
+      },
+      corrections: {
+        source: "verified-discord-corrections",
+        revision: "a".repeat(64),
+        activeRules: 3,
+      },
+      playbook: {
+        source: "shared-agent-workspace",
+        revision: "b".repeat(64),
+      },
+    });
+    assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
+  } finally {
+    await runtime.close();
+  }
+});
 
 async function listen(server: Server): Promise<{ origin: string; close: () => Promise<void> }> {
   await new Promise<void>((resolve, reject) => {

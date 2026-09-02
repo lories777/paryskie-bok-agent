@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 import { assertLiveConfig, assertNativeBokApiConfig, loadConfig } from "../src/config.js";
 
@@ -78,27 +76,28 @@ test("włączony monitor Dakteli wymaga widoku i kanału eskalacji", () => {
   assert.throws(() => assertLiveConfig(withView), /DAKTELA_ESCALATION_CHANNEL_ID/);
 });
 
-test("natywne API jest loopback-only i wymaga sekretu oraz osobnego CODEX_HOME", () => {
+test("współdzielone API jest loopback-only i działa wyłącznie w procesie live z sekretem", () => {
   const defaults = loadConfig({}, "/tmp/project");
+  assert.equal(defaults.nativeApiEnabled, false);
   assert.equal(defaults.nativeApiHost, "127.0.0.1");
   assert.equal(defaults.nativeApiPort, 8787);
   assert.throws(() => assertNativeBokApiConfig(defaults), /BOK_NATIVE_API_TOKEN/);
-  assert.throws(() => assertNativeBokApiConfig(defaults), /BOK_NATIVE_CODEX_HOME/);
   assert.throws(() => loadConfig({ BOK_NATIVE_API_HOST: "0.0.0.0" }, "/tmp/project"));
   assert.throws(() => loadConfig({ BOK_NATIVE_API_TOKEN: "too-short" }, "/tmp/project"));
 
   const ready = loadConfig({
+    BOK_NATIVE_API_ENABLED: "true",
     BOK_NATIVE_API_HOST: "::1",
     BOK_NATIVE_API_TOKEN: "native-api-token-with-at-least-32-characters",
-    BOK_NATIVE_CODEX_HOME: "/tmp/.codex-native-bok",
   }, "/tmp/project");
   assert.doesNotThrow(() => assertNativeBokApiConfig(ready));
   assert.equal(ready.nativeApiHost, "::1");
-  assert.equal(ready.nativeCodexHome, "/tmp/.codex-native-bok");
 
-  const shared = loadConfig({
-    BOK_NATIVE_API_TOKEN: "native-api-token-with-at-least-32-characters",
-    BOK_NATIVE_CODEX_HOME: path.join(os.homedir(), ".codex"),
+  const liveWithoutToken = loadConfig({
+    DISCORD_BOT_TOKEN: "test-token",
+    BOK_AGENT_COMMAND_CHANNEL_IDS: "1",
+    BOK_AGENT_ALLOWED_USER_IDS: "10",
+    BOK_NATIVE_API_ENABLED: "true",
   }, "/tmp/project");
-  assert.throws(() => assertNativeBokApiConfig(shared), /odseparowany od ~\/\.codex/);
+  assert.throws(() => assertLiveConfig(liveWithoutToken), /BOK_NATIVE_API_TOKEN/);
 });

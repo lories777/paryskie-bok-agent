@@ -29,11 +29,6 @@ const optionalSecretFromEnv = z.preprocess(
   z.string().min(32).max(4096).optional(),
 );
 
-const optionalPathFromEnv = z.preprocess(
-  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
-  z.string().trim().min(1).optional(),
-);
-
 const loopbackHost = z
   .enum(["127.0.0.1", "::1"])
   .default("127.0.0.1");
@@ -68,14 +63,12 @@ const envSchema = z.object({
   DAKTELA_ESCALATION_CHANNEL_ID: z.string().optional(),
   DAKTELA_POLL_INTERVAL_MS: z.coerce.number().int().min(30_000).max(3_600_000).default(120_000),
   DAKTELA_MAX_TICKETS_PER_SCAN: z.coerce.number().int().min(1).max(5).default(1),
+  BOK_NATIVE_API_ENABLED: booleanFromEnv,
   BOK_NATIVE_API_HOST: loopbackHost,
   BOK_NATIVE_API_PORT: z.coerce.number().int().min(1024).max(65_535).default(8787),
   BOK_NATIVE_API_TOKEN: optionalSecretFromEnv,
   BOK_NATIVE_API_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
   BOK_NATIVE_API_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(120_000).default(110_000),
-  BOK_NATIVE_API_GENERATOR_MODEL: z.string().trim().min(1).max(200).optional(),
-  BOK_NATIVE_API_JUDGE_MODEL: z.string().trim().min(1).max(200).optional(),
-  BOK_NATIVE_CODEX_HOME: optionalPathFromEnv,
 });
 
 export interface AppConfig {
@@ -106,14 +99,12 @@ export interface AppConfig {
   daktelaEscalationChannelId?: string;
   daktelaPollIntervalMs: number;
   daktelaMaxTicketsPerScan: number;
+  nativeApiEnabled: boolean;
   nativeApiHost: "127.0.0.1" | "::1";
   nativeApiPort: number;
   nativeApiToken?: string;
   nativeApiMaxConcurrency: number;
   nativeApiTimeoutMs: number;
-  nativeApiGeneratorModel?: string;
-  nativeApiJudgeModel?: string;
-  nativeCodexHome?: string;
 }
 
 export function loadConfig(
@@ -162,6 +153,7 @@ export function loadConfig(
       : {}),
     daktelaPollIntervalMs: parsed.DAKTELA_POLL_INTERVAL_MS,
     daktelaMaxTicketsPerScan: parsed.DAKTELA_MAX_TICKETS_PER_SCAN,
+    nativeApiEnabled: parsed.BOK_NATIVE_API_ENABLED,
     nativeApiHost: parsed.BOK_NATIVE_API_HOST,
     nativeApiPort: parsed.BOK_NATIVE_API_PORT,
     ...(parsed.BOK_NATIVE_API_TOKEN
@@ -169,36 +161,17 @@ export function loadConfig(
       : {}),
     nativeApiMaxConcurrency: parsed.BOK_NATIVE_API_MAX_CONCURRENCY,
     nativeApiTimeoutMs: parsed.BOK_NATIVE_API_TIMEOUT_MS,
-    ...(parsed.BOK_NATIVE_API_GENERATOR_MODEL
-      ? { nativeApiGeneratorModel: parsed.BOK_NATIVE_API_GENERATOR_MODEL }
-      : {}),
-    ...(parsed.BOK_NATIVE_API_JUDGE_MODEL
-      ? { nativeApiJudgeModel: parsed.BOK_NATIVE_API_JUDGE_MODEL }
-      : {}),
-    ...(parsed.BOK_NATIVE_CODEX_HOME
-      ? { nativeCodexHome: resolveConfigPath(cwd, parsed.BOK_NATIVE_CODEX_HOME) }
-      : {}),
   };
 }
 
 export function assertNativeBokApiConfig(config: AppConfig): asserts config is AppConfig & {
   nativeApiToken: string;
-  nativeCodexHome: string;
 } {
   const errors: string[] = [];
   if (!config.nativeApiToken) errors.push("BOK_NATIVE_API_TOKEN");
-  if (!config.nativeCodexHome) {
-    errors.push("BOK_NATIVE_CODEX_HOME");
-  } else if (sameFilesystemPath(config.nativeCodexHome, path.join(os.homedir(), ".codex"))) {
-    errors.push("BOK_NATIVE_CODEX_HOME musi być odseparowany od ~/.codex");
-  }
   if (errors.length > 0) {
-    throw new Error(`Brak lub niebezpieczna konfiguracja natywnego API BOK: ${errors.join(", ")}`);
+    throw new Error(`Brak konfiguracji współdzielonego API BOK: ${errors.join(", ")}`);
   }
-}
-
-function sameFilesystemPath(left: string, right: string): boolean {
-  return path.resolve(left) === path.resolve(right);
 }
 
 function resolveConfigPath(cwd: string, value: string): string {
@@ -217,6 +190,13 @@ export function assertLiveConfig(config: AppConfig): asserts config is AppConfig
   if (config.daktelaMonitorEnabled && !config.daktelaViewUrl) errors.push("DAKTELA_VIEW_URL");
   if (config.daktelaMonitorEnabled && !config.daktelaEscalationChannelId) {
     errors.push("DAKTELA_ESCALATION_CHANNEL_ID");
+  }
+  if (config.nativeApiEnabled) {
+    try {
+      assertNativeBokApiConfig(config);
+    } catch {
+      errors.push("BOK_NATIVE_API_TOKEN");
+    }
   }
   if (errors.length > 0) {
     throw new Error(`Brak wymaganej konfiguracji trybu live: ${errors.join(", ")}`);

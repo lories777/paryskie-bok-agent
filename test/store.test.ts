@@ -22,6 +22,31 @@ function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
   };
 }
 
+test("tożsamość runtime jest trwała dla jednego SQLite i różna między store'ami", () => {
+  const firstDir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-identity-a-"));
+  const secondDir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-identity-b-"));
+  try {
+    const first = new AgentStore(firstDir);
+    const firstIdentity = first.runtimeIdentity();
+    first.close();
+
+    const reopened = new AgentStore(firstDir);
+    const reopenedIdentity = reopened.runtimeIdentity();
+    reopened.close();
+
+    const second = new AgentStore(secondDir);
+    const secondIdentity = second.runtimeIdentity();
+    second.close();
+
+    assert.match(firstIdentity, /^[0-9a-f-]{36}$/i);
+    assert.equal(reopenedIdentity, firstIdentity);
+    assert.notEqual(secondIdentity, firstIdentity);
+  } finally {
+    fs.rmSync(firstDir, { recursive: true, force: true });
+    fs.rmSync(secondDir, { recursive: true, force: true });
+  }
+});
+
 test("wiadomość jest deduplikowana, a zadanie powstaje tylko raz", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-store-"));
   const store = new AgentStore(dir);
