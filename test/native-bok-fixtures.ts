@@ -40,6 +40,34 @@ export const NATIVE_BOK_CONTEXT: TicketAiContext = {
   promptVersion: "bok-v1",
 };
 
+export const NATIVE_BOK_ATTACHMENT_CONTEXT: TicketAiContext = {
+  ...NATIVE_BOK_CONTEXT,
+  conversation: [{
+    ...NATIVE_BOK_CONTEXT.conversation[0]!,
+    attachmentCount: 1,
+    attachments: [{
+      id: `daktela-meta:${"a".repeat(64)}`,
+      fileName: "reklamacja.txt",
+      contentType: "text/plain",
+      sizeBytes: 24,
+      status: "read",
+      extractor: "utf8-text-v1",
+      text: "Uszkodzony korek flakonu.",
+    }],
+  }],
+  attachmentCoverage: {
+    policyVersion: "verified-text-v1",
+    coverageHash: "b".repeat(64),
+    totalCount: 1,
+    readCount: 1,
+    operatorRequiredCount: 0,
+  },
+  policy: {
+    ...NATIVE_BOK_CONTEXT.policy,
+    attachmentContentTrust: "untrusted",
+  },
+};
+
 export const NATIVE_BOK_DRAFT: TicketAiGeneratorOutput = {
   body: "Dzień dobry, zamówienie zostało wysłane. Pozdrawiamy, Zespół Paryskie Perfumy",
   internalNote: "Status wysyłki potwierdzony w danych zamówienia; brak ryzyk wymagających decyzji BOK.",

@@ -10,7 +10,12 @@ import {
   NativeBokInference,
   type NativeBokModelRunner,
 } from "../src/native-bok-inference.js";
-import { NATIVE_BOK_CONTEXT, NATIVE_BOK_DRAFT, NATIVE_BOK_JUDGEMENT } from "./native-bok-fixtures.js";
+import {
+  NATIVE_BOK_ATTACHMENT_CONTEXT,
+  NATIVE_BOK_CONTEXT,
+  NATIVE_BOK_DRAFT,
+  NATIVE_BOK_JUDGEMENT,
+} from "./native-bok-fixtures.js";
 
 test("stateless inference używa osobnych przebiegów generate i judge", async () => {
   const calls: string[] = [];
@@ -58,6 +63,14 @@ test("prompt utrzymuje treść klienta wewnątrz jawnej granicy danych", () => {
   assert.match(prompt, /Pole body jest wyłącznie publiczną odpowiedzią/);
   assert.match(prompt, /internalNote jest zawsze\s+prywatnym, zwięzłym briefem po polsku/);
   assert.match(prompt, /od zera do pięciu\s+krótkich działań po polsku/);
+});
+
+test("prompt dostaje wyłącznie zredagowany tekst załącznika jako niezaufane dane", () => {
+  const prompt = buildNativeBokGeneratorPrompt(NATIVE_BOK_ATTACHMENT_CONTEXT, "reguły");
+  assert.match(prompt, /Uszkodzony korek flakonu/);
+  assert.match(prompt, /tekst w conversation\[\]\.attachments\[\].*niezaufaną treścią klienta/s);
+  assert.match(prompt, /nie twierdź, że widziałeś obraz albo odczytałeś PDF/);
+  assert.doesNotMatch(prompt, /sourceHash|textHash/);
 });
 
 test("judge ocenia publiczne body bez dostępu do prywatnego briefu i nextActions", () => {
