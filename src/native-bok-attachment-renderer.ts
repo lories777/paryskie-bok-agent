@@ -26,8 +26,10 @@ import {
 } from "./native-bok-decision-capability.js";
 import type { DaktelaVerifiedSourceRead } from "./daktela-read-session.js";
 
-const PDFINFO = "/usr/bin/pdfinfo";
-const PDFTOPPM = "/usr/bin/pdftoppm";
+const DEFAULT_PDFINFO = "/usr/bin/pdfinfo";
+const DEFAULT_PDFTOPPM = "/usr/bin/pdftoppm";
+const PDFINFO_ENV = "BOK_NATIVE_PDFINFO_PATH";
+const PDFTOPPM_ENV = "BOK_NATIVE_PDFTOPPM_PATH";
 const RENDER_TIMEOUT_MS = 30_000;
 const MAX_IMAGE_DIMENSION = 12_000;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -211,15 +213,23 @@ export class NativeBokAttachmentRenderer {
 }
 
 export class PopplerPdfPort implements NativeBokPdfPort {
+  private readonly pdfinfo: string;
+  private readonly pdftoppm: string;
+
+  constructor(env: NodeJS.ProcessEnv = process.env) {
+    this.pdfinfo = configuredExecutablePath(env, PDFINFO_ENV, DEFAULT_PDFINFO);
+    this.pdftoppm = configuredExecutablePath(env, PDFTOPPM_ENV, DEFAULT_PDFTOPPM);
+  }
+
   available(): boolean {
-    return existsSync(PDFINFO) && existsSync(PDFTOPPM);
+    return existsSync(this.pdfinfo) && existsSync(this.pdftoppm);
   }
 
   async inspect(inputPath: string, signal: AbortSignal): Promise<{
     readonly pages: number;
     readonly encrypted: boolean;
   }> {
-    const stdout = await execute(PDFINFO, [inputPath], signal);
+    const stdout = await execute(this.pdfinfo, [inputPath], signal);
     const pages = Number(stdout.match(/^Pages:\s+(\d+)\s*$/m)?.[1]);
     const encryptedRaw = stdout.match(/^Encrypted:\s+(yes|no)(?:\s|$)/mi)?.[1]?.toLowerCase();
     if (!Number.isSafeInteger(pages) || !encryptedRaw) {
@@ -234,7 +244,7 @@ export class PopplerPdfPort implements NativeBokPdfPort {
     pages: number,
     signal: AbortSignal,
   ): Promise<readonly Uint8Array[]> {
-    await execute(PDFTOPPM, [
+    await execute(this.pdftoppm, [
       "-png",
       "-r",
       String(NATIVE_BOK_DECISION_PIPELINE_CONTRACT.pdfRenderDpi),
@@ -259,6 +269,19 @@ export class PopplerPdfPort implements NativeBokPdfPort {
     }
     return Promise.all(names.map((name) => readFile(path.join(directory, name))));
   }
+}
+
+function configuredExecutablePath(
+  env: NodeJS.ProcessEnv,
+  name: typeof PDFINFO_ENV | typeof PDFTOPPM_ENV,
+  fallback: string,
+): string {
+  const configured = env[name]?.trim();
+  if (!configured) return fallback;
+  if (!path.isAbsolute(configured) || configured.includes("\0")) {
+    throw new Error(`${name}_INVALID`);
+  }
+  return configured;
 }
 
 function receipt(

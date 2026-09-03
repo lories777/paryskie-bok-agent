@@ -296,6 +296,9 @@ BOK_NATIVE_RUNTIME_IDENTITY=<stała-uuid-tej-instalacji>
 BOK_NATIVE_OUTBOUND_URL=https://ml.paryskie.pl
 BOK_NATIVE_OUTBOUND_TOKEN=<osobny-sekret-minimum-32-znaki>
 BOK_NATIVE_OUTBOUND_POLL_INTERVAL_MS=5000
+# Opcjonalne, gdy poppler-utils jest zainstalowany poza /usr/bin:
+BOK_NATIVE_PDFINFO_PATH=/bezwzgledna/sciezka/pdfinfo
+BOK_NATIVE_PDFTOPPM_PATH=/bezwzgledna/sciezka/pdftoppm
 
 BOK_AGENT_EXTERNAL_ACTIONS=true
 BOK_NATIVE_OPERATIONAL_DISPATCH_ENABLED=true
