@@ -15,6 +15,7 @@ import {
   catalogRecommendationResolutionIssues,
   draftReviewIntegrityIssues,
   extractExplicitOrderNumbers,
+  extractSafeOperatorTranslationSummary,
   assertDaktelaTicketIntegrity,
   correctionEscalationIsActionable,
   correctionRequiresCustomerDraft,
@@ -31,6 +32,7 @@ import {
   requireStandardReshipmentForConfirmedMissingProduct,
   requiredMasterlinkResearch,
   suppressReplyAfterSubstantiveOutgoing,
+  sanitizeOperatorFacingReply,
 } from "../src/codex-agent.js";
 import { BokAgentCore } from "../src/bok-agent-core.js";
 import { loadConfig } from "../src/config.js";
@@ -404,6 +406,48 @@ test("pusta próbka ma standardową bezpłatną dosyłkę bez pytania BOK o wyb�
   assert.match(guarded.reply, /zamówienia 372495998/i);
   assert.doesNotMatch(guarded.reply, /\?/);
   assert.equal(guarded.caseState, "action_proposed");
+});
+
+test("literalny wzór tłumaczenia z promptu nigdy nie trafia do wyniku operatora", () => {
+  const leaked = [
+    "DAKTELA #100238",
+    "**Tłumaczenie z [język]:** … z krótkim i wiernym tłumaczeniem, a dopiero potem zdanie operacyjne.",
+    "Przygotuj bezpłatną dosyłkę próbki N° 548 na adres z zamówienia 372495998.",
+  ].join("\n");
+
+  const sanitized = sanitizeOperatorFacingReply(leaked);
+  assert.match(sanitized, /DAKTELA #100238/);
+  assert.match(sanitized, /Przygotuj bezpłatną dosyłkę próbki N° 548/);
+  assert.doesNotMatch(sanitized, /\[język\]|krótkim i wiernym|dopiero potem/i);
+  assert.equal(extractSafeOperatorTranslationSummary(leaked), undefined);
+});
+
+test("rzeczywiste tłumaczenie LLM przechodzi bez zmiany", () => {
+  const translation = "**Tłumaczenie z estońskiego:** Klientka pyta, kiedy paczka zostanie wysłana.";
+  assert.equal(extractSafeOperatorTranslationSummary(translation), translation);
+  assert.equal(sanitizeOperatorFacingReply(translation), translation);
+});
+
+test("reguła dosyłki nie propaguje metainstrukcji jako tłumaczenia", () => {
+  const messages: StoredMessage[] = [{
+    ...message,
+    content: `<customer_history><customer_activity direction="incoming">
+      Order number 372495998. Próbka N° 548 była całkowicie pusta.
+    </customer_activity></customer_history>`,
+  }];
+  const guarded = requireStandardReshipmentForConfirmedMissingProduct(
+    daktelaJob,
+    messages,
+    {
+      ...output,
+      reply: "**Tłumaczenie z [język]:** … z krótkim i wiernym tłumaczeniem. Czy dosyłamy?",
+      caseState: "waiting_for_human",
+      proposedActions: [],
+    },
+    "daktela-ticket:99570",
+  );
+  assert.match(guarded.reply, /bezpłatną dosyłkę próbki N° 548/i);
+  assert.doesNotMatch(guarded.reply, /Tłumaczenie z|\[język\]|wiernym tłumaczeniem/i);
 });
 
 test("źle oznaczony autoresponder nie chowa wcześniejszego potwierdzonego braku", () => {

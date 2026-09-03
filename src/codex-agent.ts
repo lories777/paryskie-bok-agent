@@ -480,6 +480,10 @@ function reviewedRun(
   evidenceItems: readonly ThreadItem[],
   policy: ReturnType<BokAgentCore["policySnapshot"]>,
 ): BokAgentReviewedRun {
+  const reviewedOutput = {
+    ...output,
+    reply: sanitizeOperatorFacingReply(output.reply),
+  };
   const toolEvidence: Array<{
     kind: "mcp" | "command";
     name: string;
@@ -512,7 +516,7 @@ function reviewedRun(
   }
   const toolNames = [...new Set(toolEvidence.map((item) => item.name))].sort();
   return Object.freeze({
-    output,
+    output: reviewedOutput,
     provenance: Object.freeze({
       toolEvidenceHash: nativeBokDecisionHash(toolEvidence),
       toolNames: Object.freeze(toolNames),
@@ -808,10 +812,10 @@ export function requireStandardReshipmentForConfirmedMissingProduct(
     ? "**Tłumaczenie z estońskiego:** Klientka chce zwrócić niedopasowane produkty, zamówić ulubione w większych pojemnościach i zgłasza, że próbka N° 548 była całkowicie pusta."
     : undefined;
   const translatedSummary = knownEstonianEmptySampleSummary
-    ?? output.reply.match(/\*\*Tłumaczenie z [^\n]+:\*\*[^\n]*/iu)?.[0]
+    ?? extractSafeOperatorTranslationSummary(output.reply)
     ?? [...messages]
       .reverse()
-      .map((message) => message.content.match(/\*\*Tłumaczenie z [^\n]+:\*\*[^\n]*/iu)?.[0])
+      .map((message) => extractSafeOperatorTranslationSummary(message.content))
       .find(Boolean);
   const instruction = `Przygotuj bezpłatną dosyłkę ${isSample ? "próbki" : "produktu"} N° ${productNumber}${
     orderNumber ? ` na adres z zamówienia ${orderNumber}` : ""
@@ -823,6 +827,57 @@ export function requireStandardReshipmentForConfirmedMissingProduct(
     caseState: "action_proposed",
     proposedActions: output.proposedActions.filter((action) => action.kind !== "reply_customer"),
   }, conversationExternalId);
+}
+
+const OPERATOR_REPLY_PROMPT_LEAK_PATTERNS = [
+  /Tłumaczenie\s+z\s*(?:\[\s*język\s*\]|\[\s*language\s*\]|<\s*(?:język|language)\s*>|język\s*:\s*…)/iu,
+  /z\s+krótkim(?:\s+i|,)?\s*wiernym\s+tłumaczeniem/iu,
+  /a\s+dopiero\s+potem\s+(?:zdanie|informacj|pytanie)/iu,
+  /(?:pole|field)\s+[`"'„”*]*reply[`"'„”*]*\s+(?:ma|powinno|zacznij|rozpocznij)/iu,
+  /\breply_customer\b/iu,
+  /\bcaseState\b/u,
+  /nie\s+(?:kopiuj|wspominaj)[^\n]{0,80}(?:prompt|schemat|instrukcj|draft)/iu,
+  /<(?:customer_history|verified_[a-z_]+|authorized_[a-z_]+)[^>]*>/iu,
+] as const;
+
+function containsOperatorPromptLeak(value: string): boolean {
+  return OPERATOR_REPLY_PROMPT_LEAK_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+/**
+ * Zwraca wyłącznie rzeczywiste, krótkie tłumaczenie operatora. Literalne przykłady i fragmenty
+ * promptu są danymi sterującymi, a nie treścią, którą wolno pokazać na Discordzie lub w ML.
+ */
+export function extractSafeOperatorTranslationSummary(value: string): string | undefined {
+  for (const line of value.split(/\r?\n/)) {
+    const match = line.trim().match(
+      /^\*{0,2}Tłumaczenie\s+z\s+([\p{L}\p{M}][\p{L}\p{M} -]{1,39}):\*{0,2}\s*(.+)$/iu,
+    );
+    if (!match?.[1] || !match[2]) continue;
+    const language = match[1].trim();
+    const summary = match[2].trim();
+    if (/^(?:język|language|lang|nazwa języka)$/iu.test(language)) continue;
+    if (/[\[\]<>]/u.test(language) || summary.length < 4) continue;
+    if (containsOperatorPromptLeak(line) || /^(?:…|\.\.\.)$/u.test(summary)) continue;
+    return `**Tłumaczenie z ${language}:** ${summary}`;
+  }
+  return undefined;
+}
+
+/** Ostatnia, deterministyczna bramka prezentacyjna wspólna dla Discorda i natywnego ML. */
+export function sanitizeOperatorFacingReply(value: string): string {
+  const kept: string[] = [];
+  for (const rawLine of value.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (/Tłumaczenie\s+z/iu.test(line)) {
+      const translation = extractSafeOperatorTranslationSummary(line);
+      if (translation) kept.push(translation);
+      continue;
+    }
+    if (containsOperatorPromptLeak(line)) continue;
+    kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function extractConfirmedMissingProductNumber(value: string): string | undefined {

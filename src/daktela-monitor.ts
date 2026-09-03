@@ -304,8 +304,9 @@ sprawie powinien zobaczyć człowiek. Bez stałego szablonu i bez sekcji. Jeśli
 człowieka, napisz prosto: czego chce klient i co dokładnie trzeba zrobić. Jeśli potrzebna jest decyzja,
 zadaj jedno konkretne pytanie. Jeśli masz gotowy draft, reply ma być najwyżej jednym zdaniem kontekstu.
 Jeśli najnowsza merytoryczna wiadomość klienta nie jest po polsku, po numerze ticketu dodaj osobny
-wiersz „**Tłumaczenie z [język]:** …” z krótkim i wiernym tłumaczeniem jej bieżącej treści na polski,
-a dopiero potem zdanie operacyjne lub pytanie. Pomiń cytowaną historię, stopkę i autoresponder. Draft
+wiersz z wykrytą nazwą języka, na przykład „**Tłumaczenie z estońskiego:** Klient pyta o termin
+dostawy.”, a dopiero potem zdanie operacyjne lub pytanie. Nazwij faktycznie wykryty język; nigdy nie
+kopiuj wzoru, nawiasów ani opisu tego polecenia. Pomiń cytowaną historię, stopkę i autoresponder. Draft
 reply_customer napisz nadal w oryginalnym, naturalnym języku klienta. Dla polskiej wiadomości nie
 dodawaj tłumaczenia. Nie publikuj na Discordzie imienia i nazwiska, e-maila, telefonu ani adresu klienta.
 
