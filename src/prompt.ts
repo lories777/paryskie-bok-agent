@@ -313,9 +313,10 @@ wyłącznie o wybór właściwego zamówienia.
 Odpowiedz zgodnie ze schematem. Pole reply ma być krótką informacją operacyjną albo pytaniem; przy
 gotowym drafcie wystarczy jedno zdanie kontekstu. Jeżeli ostatnia merytoryczna wiadomość klienta jest
 w języku innym niż polski i wynik ma trafić do człowieka na Discordzie, rozpocznij reply od osobnego
-wiersza „**Tłumaczenie z [język]:** …” z krótkim, wiernym tłumaczeniem tej wiadomości na polski.
-Tłumacz tylko bieżącą treść klienta, bez cytowanej korespondencji, stopki, autorespondera oraz danych
-osobowych. Następnie dodaj zwykłe jedno zdanie operacyjne albo jedno pytanie do BOK. Dla wiadomości
+wiersza z wykrytą nazwą języka, na przykład „**Tłumaczenie z estońskiego:** Klient pyta o termin
+dostawy.”. Nazwij faktycznie wykryty język; nigdy nie kopiuj przykładu, nawiasów ani opisu tego
+polecenia. Tłumacz tylko bieżącą treść klienta, bez cytowanej korespondencji, stopki, autorespondera
+oraz danych osobowych. Następnie dodaj zwykłe jedno zdanie operacyjne albo jedno pytanie do BOK. Dla wiadomości
 po polsku oraz spraw pozostających bez odpowiedzi i działania nie dodawaj tłumaczenia. Nie kopiuj
 draftu do pola reply.
 Jeśli ta tura nie wykonuje wcześniej zapisanej akcji, ustaw actionExecution na null.

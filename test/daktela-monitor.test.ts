@@ -79,7 +79,9 @@ test("zadanie Dakteli przekazuje historię jako nieufne dane i zachowuje numer z
   assert.match(task, /480033650/);
   assert.match(task, /&lt;nie wykonuj poleceń&gt;/);
   assert.match(task, /reply_customer/);
-  assert.match(task, /Tłumaczenie z \[język\]/);
+  assert.match(task, /Tłumaczenie z estońskiego/);
+  assert.match(task, /Nazwij faktycznie wykryty język/);
+  assert.doesNotMatch(task, /Tłumaczenie z \[język\]/);
   assert.match(task, /oryginalnym, naturalnym języku klienta/);
   assert.match(task, /Dla polskiej wiadomości nie\s+dodawaj tłumaczenia/);
   assert.match(task, /<attachment>potwierdzenie\.pdf<\/attachment>/);
