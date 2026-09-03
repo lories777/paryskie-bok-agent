@@ -141,7 +141,8 @@ request fail-closed przed uruchomieniem Codexa. Ta gałąź jest consumer-first:
 przed producentem MasterLink wysyłającym `verified-text-v1`.
 
 Powyższy `verified-text-v1` dotyczy wyłącznie lokalnych, diagnostycznych endpointów
-`/v1/bok/generate` i `/v1/bok/judge`. Produkcyjny outbound decision używa kontraktu
-`daktela-discord-parity-v1`: exact source z Dakteli, byte/render hash, lokalnych obrazów JPEG/PNG
-i stron PDF oraz tego samego `BokCodexAgent` i reviewera co Discord. Szczegóły i readiness są w
+`/v1/bok/generate` i `/v1/bok/judge`. Produkcyjny outbound decision przyjmuje bieżący carrier
+MasterLinka `verified-content-v2` i używa kontraktu `daktela-discord-parity-v1`: exact source z
+Dakteli, byte/render hash, lokalnych obrazów JPEG/PNG i stron PDF oraz tego samego `BokCodexAgent`
+i reviewera co Discord. Szczegóły i readiness są w
 [`docs/NATIVE-BOK-API.md`](docs/NATIVE-BOK-API.md).

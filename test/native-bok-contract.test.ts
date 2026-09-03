@@ -20,6 +20,7 @@ import {
   NATIVE_BOK_CONTEXT,
   NATIVE_BOK_DRAFT,
   NATIVE_BOK_KNOWLEDGE,
+  NATIVE_BOK_MASTERLINK_OUTBOUND_CONTEXT,
 } from "./native-bok-fixtures.js";
 
 test("kontrakt generate i judge przyjmuje dokładny payload MasterLink", () => {
@@ -96,6 +97,20 @@ test("consumer-first przyjmuje legacy bez plików i verified-text-v1", () => {
   const legacyUnread = structuredClone(NATIVE_BOK_CONTEXT);
   legacyUnread.conversation[0]!.attachmentCount = 1;
   assert.throws(() => ticketAiContextSchema.parse(legacyUnread), /attachment_unread/);
+});
+
+test("outbound decision przyjmuje aktualny verified-content-v2 MasterLinka", () => {
+  assert.deepEqual(
+    ticketAiContextSchema.parse(NATIVE_BOK_MASTERLINK_OUTBOUND_CONTEXT),
+    NATIVE_BOK_MASTERLINK_OUTBOUND_CONTEXT,
+  );
+  assert.throws(() => ticketAiContextSchema.parse({
+    ...NATIVE_BOK_MASTERLINK_OUTBOUND_CONTEXT,
+    attachmentCoverage: {
+      ...NATIVE_BOK_MASTERLINK_OUTBOUND_CONTEXT.attachmentCoverage,
+      policyVersion: "unknown-content-v3",
+    },
+  }));
 });
 
 test("załącznik binarny lub niepełne pokrycie blokuje request przed modelem", () => {

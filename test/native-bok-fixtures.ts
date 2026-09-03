@@ -73,6 +73,26 @@ export const NATIVE_BOK_ATTACHMENT_CONTEXT: TicketAiContext = {
   },
 };
 
+/** Dokładny kształt kontekstu produkowany obecnie przez natywny provider MasterLinka. */
+export const NATIVE_BOK_MASTERLINK_OUTBOUND_CONTEXT = {
+  ...NATIVE_BOK_CONTEXT,
+  conversation: [{
+    ...NATIVE_BOK_CONTEXT.conversation[0]!,
+    attachments: [],
+  }],
+  attachmentCoverage: {
+    policyVersion: "verified-content-v2",
+    coverageHash: "c".repeat(64),
+    totalCount: 0,
+    readCount: 0,
+    operatorRequiredCount: 0,
+  },
+  policy: {
+    ...NATIVE_BOK_CONTEXT.policy,
+    attachmentContentTrust: "untrusted",
+  },
+} as const satisfies TicketAiContext;
+
 const knowledgeContent = "Po nadaniu przesyłki klient otrzymuje link do śledzenia.";
 const knowledgeHashInput: Omit<TicketAiKnowledgeSnapshot, "snapshotHash"> = {
   schemaVersion: 1,
