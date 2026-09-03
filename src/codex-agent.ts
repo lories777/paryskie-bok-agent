@@ -30,6 +30,13 @@ import { NativeBokInference } from "./native-bok-inference.js";
 import type { NativeBokRenderedAttachmentEvidence } from "./native-bok-attachment-renderer.js";
 import { nativeBokDecisionHash } from "./native-bok-decision-result.js";
 import {
+  parseSharedAgentOperationalActionProposal,
+  parseSharedAgentOperationalActionReview,
+  SHARED_AGENT_OPERATIONAL_ACTION_REVIEW_JSON_SCHEMA,
+  TICKET_OPERATIONAL_ACTION_DEFINITIONS,
+  type ReviewedSharedAgentOperationalAction,
+} from "./native-bok-operational-actions.js";
+import {
   AGENT_OUTPUT_JSON_SCHEMA,
   agentTurnOutputSchema,
   type AgentTurnOutput,
@@ -129,6 +136,48 @@ export class BokCodexAgent {
   ): Promise<BokAgentReviewedRun> {
     return this.exclusivePipeline(() =>
       prepare((job, visualEvidence) => this.runSharedPipeline(job, signal, visualEvidence)));
+  }
+
+  /**
+   * Druga, niezależna decyzja dla typowanej operacji. Reviewer dostaje wyłącznie
+   * zamknięty katalog, zadeklarowane klucze oraz bieżący snapshot verifiedFacts.
+   * Nie wolno mu tworzyć akcji z tekstu reply/proposedActions.
+   */
+  async reviewNativeOperationalAction(
+    output: AgentTurnOutput,
+    verifiedFacts: Readonly<Record<string, string | number | boolean | null>>,
+    signal?: AbortSignal,
+  ): Promise<ReviewedSharedAgentOperationalAction | null> {
+    if (!output.operationalActionProposal) return null;
+    let proposal;
+    try {
+      proposal = parseSharedAgentOperationalActionProposal(
+        output.operationalActionProposal,
+        verifiedFacts,
+      );
+    } catch {
+      return null;
+    }
+    try {
+      const thread = this.reviewerCodex.startThread(this.reviewThreadOptions());
+      const result = await thread.run(
+        buildOperationalActionReviewPrompt(proposal, verifiedFacts),
+        {
+          outputSchema: SHARED_AGENT_OPERATIONAL_ACTION_REVIEW_JSON_SCHEMA,
+          ...(signal ? { signal } : {}),
+        },
+      );
+      return {
+        proposal,
+        review: parseSharedAgentOperationalActionReview(
+          JSON.parse(result.finalResponse),
+          proposal,
+        ),
+      };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return null;
+    }
   }
 
   private async runSharedPipeline(
@@ -475,6 +524,31 @@ export class BokCodexAgent {
 }
 
 export { buildCodexConfigOverrides, buildPrimaryThreadOptions, CHROME_READ_ONLY_TOOLS };
+
+function buildOperationalActionReviewPrompt(
+  proposal: NonNullable<AgentTurnOutput["operationalActionProposal"]>,
+  verifiedFacts: Readonly<Record<string, string | number | boolean | null>>,
+): string {
+  const definition = TICKET_OPERATIONAL_ACTION_DEFINITIONS[proposal.request.actionType];
+  const facts = Object.fromEntries(
+    proposal.request.factKeys.map((key) => [key, verifiedFacts[key] ?? null]),
+  );
+  return `
+Jesteś niezależnym kontrolerem typowanej operacji BOK. Nie twórz nowej akcji i nie czytaj jej z
+tekstu odpowiedzi. Oceń wyłącznie poniższy plan względem zamkniętej definicji i faktów.
+
+<operational_action_proposal>${JSON.stringify(proposal)}</operational_action_proposal>
+<trusted_catalog_definition>${JSON.stringify(definition)}</trusted_catalog_definition>
+<verified_facts>${JSON.stringify(facts)}</verified_facts>
+
+Zwróć approve wyłącznie, gdy każdy factKey istnieje i ma niepustą wartość, actionType dopuszcza
+podaną intent, a plan nie wymaga zgadywania decyzji biznesowej. Dla approve ustaw grounded=true,
+policyCompliant=true i dokładnie posortowane reasonCodes ["facts_verified","intent_match"].
+W innym przypadku zwróć reject z co najmniej jednym pasującym kodem: missing_fact,
+intent_mismatch, unsafe_action albo unsupported. Nigdy nie dodawaj tekstu zadania, routingu ani
+danych klienta. Odpowiedz wyłącznie zgodnie ze schematem.
+  `.trim();
+}
 
 function reviewedRun(
   output: AgentTurnOutput,

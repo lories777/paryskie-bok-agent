@@ -22,7 +22,7 @@ import {
 import type {
   NativeBokDecisionCapabilityStatus,
 } from "./native-bok-decision-capability.js";
-import type { NativeBokDecisionResultV3 } from "./native-bok-decision-result.js";
+import type { NativeBokDecisionResult } from "./native-bok-decision-result.js";
 import { DaktelaReadSessionError } from "./daktela-read-session.js";
 import { NativeBokAttachmentRenderError } from "./native-bok-attachment-renderer.js";
 
@@ -203,7 +203,7 @@ type NativeBokOutboundResult = NativeBokOutboundResultBase & (
       outcome:
         | {
             status: "completed";
-            result: NativeBokDecisionResultV3;
+            result: NativeBokDecisionResult;
           }
         | { status: "failed"; errorCode: string; retryable: boolean };
     }
@@ -218,7 +218,7 @@ type NativeBokOutboundResult = NativeBokOutboundResultBase & (
 export interface NativeBokOutboundInferencePort {
   runtimeStatus(): NativeBokRuntimeStatus;
   decisionCapabilityStatus(): NativeBokDecisionCapabilityStatus;
-  decide(request: unknown, signal: AbortSignal): Promise<NativeBokDecisionResultV3>;
+  decide(request: unknown, signal: AbortSignal): Promise<NativeBokDecisionResult>;
 }
 
 export interface NativeBokOutboundDispatcherPort {

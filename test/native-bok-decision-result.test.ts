@@ -13,7 +13,9 @@ import {
 } from "../src/native-bok-decision-capability.js";
 import {
   buildNativeBokDecisionResultV3,
+  buildNativeBokDecisionResultV4,
   nativeBokDecisionResultV3Schema,
+  nativeBokDecisionResultV4Schema,
 } from "../src/native-bok-decision-result.js";
 import type { AgentTurnOutput } from "../src/types.js";
 
@@ -145,6 +147,55 @@ test("guidance receipt nie może pochodzić z innego wspólnego Store", () => {
       storeIdentity: "8".repeat(64),
     },
   }), /guidance_store_identity_mismatch/);
+});
+
+test("V4 dopuszcza dokładnie jedną zatwierdzoną operację bez udawania odpowiedzi klientowi", () => {
+  const raw = output();
+  raw.caseState = "action_proposed";
+  raw.proposedActions = raw.proposedActions.filter((action) => action.kind !== "reply_customer");
+  const result = buildNativeBokDecisionResultV4({
+    output: raw,
+    operationalAction: {
+      proposal: {
+        schemaVersion: 1,
+        intent: "delivery_status",
+        request: {
+          schemaVersion: 2,
+          actionType: "fulfillment.locate",
+          factKeys: ["order.status"],
+        },
+      },
+      review: {
+        schemaVersion: 1,
+        grounded: true,
+        policyCompliant: true,
+        decision: {
+          schemaVersion: 2,
+          actionType: "fulfillment.locate",
+          verdict: "approve",
+          reasonCodes: ["facts_verified", "intent_match"],
+        },
+      },
+    },
+    source: source(),
+    attachmentEvidence: evidence(),
+    toolEvidenceHash: "a".repeat(64),
+    toolNames: ["masterlink.ml_get_fulfillment"],
+    policyHash: "c".repeat(64),
+    playbookRevision: "d".repeat(64),
+    correctionsRevision: 2,
+    storeIdentity: "9".repeat(64),
+  });
+  assert.equal(result.schemaVersion, 4);
+  assert.equal(result.state, "ready");
+  assert.equal(result.readyKind, "operational_action");
+  assert.equal(result.customerReply, null);
+  assert.deepEqual(result.reasonCodes, ["reviewed_action_ready"]);
+  assert.equal(nativeBokDecisionResultV4Schema.parse(result).operationalAction?.review.decision.verdict, "approve");
+  assert.equal(nativeBokDecisionResultV4Schema.safeParse({
+    ...result,
+    customerReply: output().proposedActions[0],
+  }).success, false);
 });
 
 function output(): AgentTurnOutput {

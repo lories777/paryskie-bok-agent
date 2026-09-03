@@ -21,6 +21,7 @@ import {
   operationalActionCatalogContract,
   operationalActionCatalogHash,
 } from "../src/native-bok-operational-actions.js";
+import { AGENT_OUTPUT_JSON_SCHEMA } from "../src/types.js";
 import { createNativeBokHttpServerForConfig } from "../src/native-bok-server.js";
 import {
   NATIVE_BOK_CONTEXT,
@@ -218,6 +219,9 @@ test("katalog i structured-output schema są dokładne i wymagają jawnego null"
   ));
   assert.ok(TICKET_AI_JUDGE_OUTPUT_JSON_SCHEMA.required.includes(
     "operationalActionDecision",
+  ));
+  assert.ok(AGENT_OUTPUT_JSON_SCHEMA.required.includes(
+    "operationalActionProposal",
   ));
 });
 

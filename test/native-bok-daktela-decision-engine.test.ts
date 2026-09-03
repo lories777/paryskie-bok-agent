@@ -320,6 +320,76 @@ test("guidance ML dostaje immutable receipt, wchodzi tylko do ticketu i nie twor
   }
 });
 
+test("wspólny agent zwraca typowaną operację, a niezależny reviewer wiąże ją z verifiedFacts", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-daktela-typed-action-"));
+  const store = new AgentStore(dir);
+  try {
+    const config = loadConfig({
+      BOK_AGENT_STATE_DIR: dir,
+      BOK_AGENT_WORKSPACE: path.join(process.cwd(), "agent-workspace"),
+      MASTERLINK_MCP_ENABLED: "true",
+      DAKTELA_VIEW_URL: "https://pariscosmetics.daktela.com/tickets",
+    }, process.cwd());
+    const primary = new FakeCodexClient(() => JSON.stringify({
+      reply: "DAKTELA #100328\nOdnajdź przesyłkę na magazynie.",
+      caseState: "action_proposed",
+      proposedActions: [],
+      operationalActionProposal: {
+        schemaVersion: 1,
+        intent: "delivery_status",
+        request: {
+          schemaVersion: 2,
+          actionType: "fulfillment.locate",
+          factKeys: ["order.status"],
+        },
+      },
+      learnedRules: [],
+      actionExecution: null,
+    }));
+    const reviewer = new FakeCodexClient(() => JSON.stringify({
+      schemaVersion: 1,
+      grounded: true,
+      policyCompliant: true,
+      decision: {
+        schemaVersion: 2,
+        actionType: "fulfillment.locate",
+        verdict: "approve",
+        reasonCodes: ["facts_verified", "intent_match"],
+      },
+    }));
+    const agent = new BokCodexAgent(new BokAgentCore(config, store), undefined, {
+      primaryCodex: primary,
+      reviewerCodex: reviewer,
+    });
+    const engine = new NativeBokDaktelaDecisionEngine(
+      agent,
+      new DaktelaReadSession(config, new FakeDaktelaPort()),
+      new NativeBokAttachmentRenderer(new ReadyPdfPort()),
+    );
+    await engine.verifyDaktelaReadiness();
+    const source = decisionSource();
+    const result = await engine.decide({
+      context: decisionContext(source),
+      knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+      source,
+    }, new AbortController().signal);
+
+    assert.equal(result.schemaVersion, 4);
+    assert.equal(result.state, "ready");
+    assert.equal(result.readyKind, "operational_action");
+    assert.equal(result.customerReply, null);
+    assert.equal(result.operationalAction?.proposal.request.actionType, "fulfillment.locate");
+    assert.deepEqual(result.reasonCodes, ["reviewed_action_ready"]);
+    assert.equal(reviewer.inputs.length, 1);
+    assert.match(firstText(primary.inputs[0]), /trusted_operational_action_catalog/);
+    assert.match(firstText(reviewer.inputs[0]), /"order\.status":"shipped"/);
+    assert.doesNotMatch(JSON.stringify(result.operationalAction), /channelId|destination|payload/);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("świeży ticket ML rekoncyliuje wspólną rozmowę przed pollingiem i retry nie duplikuje", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-daktela-native-fresh-"));
   const store = new AgentStore(dir);
@@ -550,6 +620,7 @@ function agentOutput() {
       reason: "Zdjęcie potwierdza uszkodzenie.",
       risk: "low",
     }],
+    operationalActionProposal: null,
     learnedRules: [],
     actionExecution: null,
   };
