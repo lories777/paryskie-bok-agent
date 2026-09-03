@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   NativeBokAttachmentRenderError,
   NativeBokAttachmentRenderer,
+  PopplerPdfPort,
   type NativeBokPdfPort,
 } from "../src/native-bok-attachment-renderer.js";
 import {
@@ -18,6 +19,23 @@ import type { DaktelaVerifiedSourceRead } from "../src/daktela-read-session.js";
 const MESSAGE_ID = "10310b54-06c2-4c1f-84a5-bc19f7c83b10";
 const PNG = png(4, 3);
 const JPEG = jpeg(5, 4);
+
+test("Poppler może być przypięty do bezwzględnych ścieżek instalacji użytkownika", () => {
+  const configured = new PopplerPdfPort({
+    BOK_NATIVE_PDFINFO_PATH: "/opt/bok-tools/pdfinfo",
+    BOK_NATIVE_PDFTOPPM_PATH: "/opt/bok-tools/pdftoppm",
+  });
+  assert.equal(configured.available(), false);
+
+  assert.throws(
+    () => new PopplerPdfPort({ BOK_NATIVE_PDFINFO_PATH: "relative/pdfinfo" }),
+    /BOK_NATIVE_PDFINFO_PATH_INVALID/,
+  );
+  assert.throws(
+    () => new PopplerPdfPort({ BOK_NATIVE_PDFTOPPM_PATH: "..\/pdftoppm" }),
+    /BOK_NATIVE_PDFTOPPM_PATH_INVALID/,
+  );
+});
 
 class FakePdfPort implements NativeBokPdfPort {
   isAvailable = true;
