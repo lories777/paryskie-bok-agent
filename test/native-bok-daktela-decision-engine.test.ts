@@ -54,6 +54,8 @@ class FakeCodexClient {
 class FakeDaktelaPort implements DaktelaAuthenticatedReadPort {
   verifyFails = false;
   verifyCalls = 0;
+  ticketExternalId = "100328";
+  ticketExternalRevision = "2026-09-02T20:00:00.000Z";
   async verify() {
     this.verifyCalls += 1;
     if (this.verifyFails) throw new Error("session expired");
@@ -67,12 +69,15 @@ class FakeDaktelaPort implements DaktelaAuthenticatedReadPort {
   }
   async readTicketActivities() { return []; }
   async openExactTicket() {
-    return { externalId: "100328", externalRevision: "2026-09-02T20:00:00.000Z" };
+    return {
+      externalId: this.ticketExternalId,
+      externalRevision: this.ticketExternalRevision,
+    };
   }
   async readExactActivity() {
     return {
       externalId: "activity_123456",
-      ticketExternalId: "100328",
+      ticketExternalId: this.ticketExternalId,
       queueExternalId: "email_pl",
       direction: "inbound" as const,
       attachments: [{
@@ -227,18 +232,6 @@ test("guidance ML dostaje immutable receipt, wchodzi tylko do ticketu i nie twor
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-daktela-guidance-engine-"));
   const store = new AgentStore(dir);
   try {
-    store.ingest({
-      platform: "discord",
-      conversationExternalId: "daktela-ticket:100328",
-      externalMessageId: "daktela:v7:100328:source",
-      channelId: "bok-agent-test",
-      authorId: "daktela-monitor",
-      authorName: "Monitor Daktela",
-      content: "Klient zgłasza uszkodzenie.",
-      createdAt: "2026-09-02T20:00:00.000Z",
-      shouldRespond: false,
-      role: "context",
-    });
     const config = loadConfig({
       BOK_AGENT_STATE_DIR: dir,
       BOK_AGENT_WORKSPACE: path.join(process.cwd(), "agent-workspace"),
@@ -285,6 +278,11 @@ test("guidance ML dostaje immutable receipt, wchodzi tylko do ticketu i nie twor
       source: wrongSource,
     }, new AbortController().signal), /daktela_read_ticket_mismatch/);
     assert.equal(store.ticketScopedGuidance(context.operatorGuidance.id), null);
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS count FROM native_daktela_context_bindings").get() as { count: number }).count),
+      0,
+      "cross-ticket source must not mutate the shared store",
+    );
 
     const result = await engine.decide({
       context,
@@ -295,10 +293,166 @@ test("guidance ML dostaje immutable receipt, wchodzi tylko do ticketu i nie twor
     assert.equal(result.guidanceReceipt?.externalTicketId, "100328");
     assert.equal(store.activeLearnedRules().length, 0);
     assert.equal(store.activeVerifiedHumanCorrections(100).total, 0);
+    const job = store.syntheticDaktelaDecisionJob({
+      externalTicketId: "100328",
+      sourceSnapshotHash: validSource.snapshotHash,
+      guidanceMessageId: store.ticketScopedGuidance(context.operatorGuidance.id)!.messageId,
+      channelId: "bok-agent-test",
+    });
+    const messages = store.recentMessages(job.conversationId, 20);
+    assert.equal(messages.filter((message) => message.authorId === "masterlink-native-context").length, 1);
+    assert.equal(messages.filter((message) => message.authorId === "masterlink-guidance").length, 1);
     assert.match(
       firstText(primary.inputs[0]),
       /bezpłatnie doślij uszkodzone produkty/,
     );
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("świeży ticket ML rekoncyliuje wspólną rozmowę przed pollingiem i retry nie duplikuje", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-daktela-native-fresh-"));
+  const store = new AgentStore(dir);
+  try {
+    const config = loadConfig({
+      BOK_AGENT_STATE_DIR: dir,
+      BOK_AGENT_WORKSPACE: path.join(process.cwd(), "agent-workspace"),
+      MASTERLINK_MCP_ENABLED: "true",
+      DAKTELA_VIEW_URL: "https://pariscosmetics.daktela.com/tickets",
+    }, process.cwd());
+    const primary = new FakeCodexClient(() => JSON.stringify(agentOutput()));
+    const reviewer = new FakeCodexClient(() => JSON.stringify({
+      verdict: "pass", revisedPayload: null, issues: [], confidence: "high", polishTranslation: null,
+    }));
+    const port = new FakeDaktelaPort();
+    const agent = new BokCodexAgent(new BokAgentCore(config, store), undefined, {
+      primaryCodex: primary, reviewerCodex: reviewer,
+    });
+    const engine = new NativeBokDaktelaDecisionEngine(
+      agent,
+      new DaktelaReadSession(config, port),
+      new NativeBokAttachmentRenderer(new ReadyPdfPort()),
+    );
+    await engine.verifyDaktelaReadiness();
+    const source = decisionSource();
+    const request = {
+      context: decisionContext(source),
+      knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+      source,
+    };
+
+    const first = await engine.decide(request, new AbortController().signal);
+    const retry = await engine.decide(structuredClone(request), new AbortController().signal);
+    assert.equal(first.state, "ready");
+    assert.equal(retry.state, "ready");
+    const job = store.syntheticDaktelaDecisionJob({
+      externalTicketId: source.externalTicketId,
+      sourceSnapshotHash: source.snapshotHash,
+      channelId: "bok-agent-test",
+    });
+    const messages = store.recentMessages(job.conversationId, 20);
+    assert.equal(messages.filter((message) => message.authorId === "masterlink-native-context").length, 1);
+    assert.match(messages[0]?.content ?? "", /Gdzie jest moje zamówienie\?/);
+    assert.equal(store.claimNextJob(), null, "reconciliation must not enqueue a second worker job");
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS count FROM native_daktela_context_bindings").get() as { count: number }).count),
+      1,
+    );
+    assert.equal(primary.inputs.length, 2);
+
+    const changedContext = decisionContext(source);
+    changedContext.conversation[0]!.body = "Podmieniona treść bez zmiany rewizji.";
+    await assert.rejects(engine.decide({
+      ...request,
+      context: changedContext,
+    }, new AbortController().signal), (error: unknown) =>
+      error instanceof Error && error.message === "decision_context_binding_invalid");
+    assert.equal(primary.inputs.length, 2, "conflict must stop before the model");
+
+    port.ticketExternalRevision = "2026-09-02T20:05:00.000Z";
+    const changedSource = decisionSource({
+      externalRevision: port.ticketExternalRevision,
+    });
+    await assert.rejects(engine.decide({
+      ...request,
+      source: changedSource,
+      context: decisionContext(changedSource),
+    }, new AbortController().signal), (error: unknown) =>
+      error instanceof Error && error.message === "decision_context_binding_invalid");
+    assert.equal(primary.inputs.length, 2);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("stara rewizja i próba przepięcia ML↔Daktela kończą się fail-closed", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-daktela-native-binding-"));
+  const store = new AgentStore(dir);
+  try {
+    const config = loadConfig({
+      BOK_AGENT_STATE_DIR: dir,
+      BOK_AGENT_WORKSPACE: path.join(process.cwd(), "agent-workspace"),
+      MASTERLINK_MCP_ENABLED: "true",
+      DAKTELA_VIEW_URL: "https://pariscosmetics.daktela.com/tickets",
+    }, process.cwd());
+    const primary = new FakeCodexClient(() => JSON.stringify(agentOutput()));
+    const agent = new BokCodexAgent(new BokAgentCore(config, store), undefined, {
+      primaryCodex: primary,
+      reviewerCodex: new FakeCodexClient(() => JSON.stringify({
+        verdict: "pass", revisedPayload: null, issues: [], confidence: "high", polishTranslation: null,
+      })),
+    });
+    const engine = new NativeBokDaktelaDecisionEngine(
+      agent,
+      new DaktelaReadSession(config, new FakeDaktelaPort()),
+      new NativeBokAttachmentRenderer(new ReadyPdfPort()),
+    );
+    await engine.verifyDaktelaReadiness();
+    const source = decisionSource();
+    const revisionSeven = decisionContext(source);
+    revisionSeven.ticket.revision = 7;
+    await engine.decide({
+      context: revisionSeven,
+      knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+      source,
+    }, new AbortController().signal);
+    const revisionEight = decisionContext(source);
+    revisionEight.ticket.revision = 8;
+    await engine.decide({
+      context: revisionEight,
+      knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+      source,
+    }, new AbortController().signal);
+
+    await assert.rejects(engine.decide({
+      context: structuredClone(revisionSeven),
+      knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+      source,
+    }, new AbortController().signal), (error: unknown) =>
+      error instanceof Error && error.message === "decision_context_binding_invalid");
+
+    const stale = decisionContext(source);
+    stale.ticket.revision = 6;
+    await assert.rejects(engine.decide({
+      context: stale,
+      knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+      source,
+    }, new AbortController().signal), (error: unknown) =>
+      error instanceof Error && error.message === "decision_context_binding_invalid");
+
+    const remapped = decisionContext(source);
+    remapped.ticket.revision = 9;
+    remapped.ticket.id = "29767dd1-a7df-41a1-b6bd-ec9e819675e5";
+    await assert.rejects(engine.decide({
+      context: remapped,
+      knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+      source,
+    }, new AbortController().signal), (error: unknown) =>
+      error instanceof Error && error.message === "decision_context_binding_invalid");
+    assert.equal(primary.inputs.length, 2, "stale/remapped requests must stop before the model");
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -370,7 +524,9 @@ function agentOutput() {
   };
 }
 
-function decisionSource(): NativeBokDaktelaDecisionSource {
+function decisionSource(
+  overrides: Partial<Omit<NativeBokDaktelaDecisionSource, "snapshotHash">> = {},
+): NativeBokDaktelaDecisionSource {
   const base = {
     schemaVersion: 1 as const,
     pipelineHash: NATIVE_BOK_DECISION_PIPELINE_HASH,
@@ -389,6 +545,7 @@ function decisionSource(): NativeBokDaktelaDecisionSource {
       sizeBytes: PNG.byteLength,
       sourceHash: sha256(PNG),
     }],
+    ...overrides,
   };
   return { ...base, snapshotHash: nativeBokDaktelaSourceSnapshotHash(base) };
 }

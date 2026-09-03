@@ -46,6 +46,20 @@ interface TicketScopedGuidanceRow {
   stored_at: string;
 }
 
+interface NativeDaktelaContextBindingRow {
+  external_ticket_id: string;
+  source_revision: number;
+  masterlink_ticket_id: string;
+  masterlink_trigger_message_id: string;
+  source_snapshot_hash: string;
+  source_external_revision: string;
+  source_trigger_event_id: string;
+  context_hash: string;
+  conversation_id: number;
+  source_message_id: number;
+  stored_at: string;
+}
+
 export interface DaktelaTicketObservation {
   ticketId: string;
   title: string;
@@ -129,6 +143,24 @@ export interface TicketScopedGuidanceReceipt {
 
 export interface TicketScopedGuidanceRecord {
   readonly receipt: TicketScopedGuidanceReceipt;
+  readonly conversationId: number;
+  readonly messageId: number;
+}
+
+export interface NativeDaktelaContextReconciliationInput {
+  readonly externalTicketId: string;
+  readonly sourceRevision: number;
+  readonly masterlinkTicketId: string;
+  readonly masterlinkTriggerMessageId: string;
+  readonly sourceSnapshotHash: string;
+  readonly sourceExternalRevision: string;
+  readonly sourceTriggerEventId: string;
+  readonly contextHash: string;
+  readonly content: string;
+}
+
+export interface NativeDaktelaContextReconciliationRecord {
+  readonly inserted: boolean;
   readonly conversationId: number;
   readonly messageId: number;
 }
@@ -259,6 +291,59 @@ function renderTicketScopedGuidance(input: TicketScopedGuidanceInput): string {
     input.content,
     "Nie uogólniaj tej wskazówki na inne tickety ani klientów.",
   ].join("\n\n");
+}
+
+function assertNativeDaktelaContextReconciliationInput(
+  input: NativeDaktelaContextReconciliationInput,
+): void {
+  const safeId = /^[A-Za-z0-9_]{1,100}$/;
+  if (!safeId.test(input.externalTicketId) || !safeId.test(input.sourceTriggerEventId)) {
+    throw new Error("native_daktela_context_source_invalid");
+  }
+  if (
+    !Number.isSafeInteger(input.sourceRevision)
+    || input.sourceRevision < 1
+    || input.masterlinkTicketId.length < 1
+    || input.masterlinkTicketId.length > 100
+    || input.masterlinkTicketId.trim() !== input.masterlinkTicketId
+    || input.masterlinkTriggerMessageId.length < 1
+    || input.masterlinkTriggerMessageId.length > 100
+    || input.masterlinkTriggerMessageId.trim() !== input.masterlinkTriggerMessageId
+  ) {
+    throw new Error("native_daktela_context_binding_invalid");
+  }
+  if (
+    !/^[a-f0-9]{64}$/.test(input.sourceSnapshotHash)
+    || !/^[a-f0-9]{64}$/.test(input.contextHash)
+    || createHash("sha256").update(input.content, "utf8").digest("hex") !== input.contextHash
+  ) {
+    throw new Error("native_daktela_context_hash_invalid");
+  }
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(
+      input.sourceExternalRevision,
+    )
+    || Number.isNaN(Date.parse(input.sourceExternalRevision))
+    || input.content.length < 1
+    || input.content.length > 600_000
+    || input.content.trim().length < 1
+  ) {
+    throw new Error("native_daktela_context_payload_invalid");
+  }
+}
+
+function nativeDaktelaContextBindingMatches(
+  row: NativeDaktelaContextBindingRow,
+  input: NativeDaktelaContextReconciliationInput,
+): boolean {
+  return row.external_ticket_id === input.externalTicketId
+    && row.source_revision === input.sourceRevision
+    && row.masterlink_ticket_id === input.masterlinkTicketId
+    && row.masterlink_trigger_message_id === input.masterlinkTriggerMessageId
+    && row.source_snapshot_hash === input.sourceSnapshotHash
+    && row.source_external_revision === input.sourceExternalRevision
+    && row.source_trigger_event_id === input.sourceTriggerEventId
+    && row.context_hash === input.contextHash;
 }
 
 export class AgentStore {
@@ -466,6 +551,22 @@ export class AgentStore {
         stored_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS native_daktela_context_bindings (
+        external_ticket_id TEXT NOT NULL,
+        source_revision INTEGER NOT NULL CHECK(source_revision >= 1),
+        masterlink_ticket_id TEXT NOT NULL,
+        masterlink_trigger_message_id TEXT NOT NULL,
+        source_snapshot_hash TEXT NOT NULL,
+        source_external_revision TEXT NOT NULL,
+        source_trigger_event_id TEXT NOT NULL,
+        context_hash TEXT NOT NULL,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE RESTRICT,
+        source_message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id) ON DELETE RESTRICT,
+        stored_at TEXT NOT NULL,
+        PRIMARY KEY(external_ticket_id, source_revision),
+        UNIQUE(masterlink_ticket_id, source_revision)
+      );
+
       CREATE INDEX IF NOT EXISTS jobs_status_id_idx ON jobs(status, id);
       CREATE INDEX IF NOT EXISTS messages_conversation_id_idx ON messages(conversation_id, id);
       CREATE INDEX IF NOT EXISTS actions_status_id_idx ON actions(status, id);
@@ -480,6 +581,8 @@ export class AgentStore {
         ON operational_action_dispatches(status, updated_at);
       CREATE INDEX IF NOT EXISTS ticket_scoped_guidance_ticket_idx
         ON ticket_scoped_guidance(external_ticket_id, source_revision);
+      CREATE INDEX IF NOT EXISTS native_daktela_context_masterlink_idx
+        ON native_daktela_context_bindings(masterlink_ticket_id, source_revision);
     `);
     this.db.prepare(`
       INSERT OR IGNORE INTO runtime_metadata(key, value)
@@ -545,6 +648,188 @@ export class AgentStore {
       throw new Error("Brak tożsamości wspólnego AgentStore.");
     }
     return row.value;
+  }
+
+  /**
+   * Reconciles the exact ML snapshot into the same conversation used by the Discord pipeline.
+   * The caller may invoke this only after independently verifying the canonical Daktela source.
+   * A revision is immutable: retrying identical input is a no-op, while changed context/source
+   * fails closed before guidance or inference can observe it.
+   */
+  reconcileNativeDaktelaContext(
+    input: NativeDaktelaContextReconciliationInput,
+  ): NativeDaktelaContextReconciliationRecord {
+    assertNativeDaktelaContextReconciliationInput(input);
+    const conversationExternalId = `daktela-ticket:${input.externalTicketId}`;
+    const externalMessageId = `masterlink-native:v1:${input.externalTicketId}:${input.sourceRevision}`;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const exact = this.nativeDaktelaContextBinding(
+        input.externalTicketId,
+        input.sourceRevision,
+      );
+      const byMasterlink = this.db
+        .prepare(`
+          SELECT external_ticket_id, source_revision, masterlink_ticket_id,
+                 masterlink_trigger_message_id, source_snapshot_hash,
+                 source_external_revision, source_trigger_event_id, context_hash,
+                 conversation_id, source_message_id, stored_at
+          FROM native_daktela_context_bindings
+          WHERE masterlink_ticket_id = ? AND source_revision = ?
+        `)
+        .get(input.masterlinkTicketId, input.sourceRevision) as
+          | NativeDaktelaContextBindingRow
+          | undefined;
+      const existing = exact ?? byMasterlink;
+      const newest = this.db
+        .prepare(`
+          SELECT MAX(source_revision) AS source_revision
+          FROM native_daktela_context_bindings
+          WHERE external_ticket_id = ? OR masterlink_ticket_id = ?
+        `)
+        .get(input.externalTicketId, input.masterlinkTicketId) as
+          | { source_revision: number | null }
+          | undefined;
+      if (
+        newest?.source_revision !== null
+        && newest?.source_revision !== undefined
+        && newest.source_revision > input.sourceRevision
+      ) {
+        throw new Error("native_daktela_context_stale");
+      }
+      if (existing) {
+        if (!nativeDaktelaContextBindingMatches(existing, input)) {
+          throw new Error("native_daktela_context_conflict");
+        }
+        const storedMessage = this.db
+          .prepare(`
+            SELECT messages.content, messages.external_message_id, conversations.external_id
+            FROM messages
+            JOIN conversations ON conversations.id = messages.conversation_id
+            WHERE messages.id = ? AND messages.conversation_id = ?
+          `)
+          .get(existing.source_message_id, existing.conversation_id) as
+            | { content: string; external_message_id: string; external_id: string }
+            | undefined;
+        if (
+          !storedMessage
+          || storedMessage.content !== input.content
+          || storedMessage.external_message_id !== externalMessageId
+          || storedMessage.external_id !== conversationExternalId
+        ) {
+          throw new Error("native_daktela_context_conflict");
+        }
+        this.db.exec("COMMIT");
+        return {
+          inserted: false,
+          conversationId: existing.conversation_id,
+          messageId: existing.source_message_id,
+        };
+      }
+
+      const incompatibleMapping = this.db
+        .prepare(`
+          SELECT 1
+          FROM native_daktela_context_bindings
+          WHERE (external_ticket_id = ? AND masterlink_ticket_id != ?)
+             OR (masterlink_ticket_id = ? AND external_ticket_id != ?)
+          LIMIT 1
+        `)
+        .get(
+          input.externalTicketId,
+          input.masterlinkTicketId,
+          input.masterlinkTicketId,
+          input.externalTicketId,
+        );
+      if (incompatibleMapping) throw new Error("native_daktela_context_conflict");
+
+      const timestamp = now();
+      this.db
+        .prepare(`
+          INSERT INTO conversations(platform, external_id, created_at, updated_at)
+          VALUES ('discord', ?, ?, ?)
+          ON CONFLICT(platform, external_id) DO UPDATE SET updated_at = excluded.updated_at
+        `)
+        .run(conversationExternalId, timestamp, timestamp);
+      const conversation = this.db
+        .prepare(`
+          SELECT id
+          FROM conversations
+          WHERE platform = 'discord' AND external_id = ?
+        `)
+        .get(conversationExternalId) as { id: number } | undefined;
+      if (!conversation) throw new Error("native_daktela_context_conversation_missing");
+
+      const insertedMessage = this.db
+        .prepare(`
+          INSERT OR IGNORE INTO messages(
+            conversation_id, external_message_id, role, author_id, author_name, content,
+            shared_context, created_at
+          ) VALUES (?, ?, 'context', 'masterlink-native-context',
+                    'MasterLink — zweryfikowany kontekst ticketu', ?, 0, ?)
+        `)
+        .run(
+          conversation.id,
+          externalMessageId,
+          input.content,
+          input.sourceExternalRevision,
+        );
+      const message = this.db
+        .prepare(`
+          SELECT id, content
+          FROM messages
+          WHERE conversation_id = ? AND external_message_id = ?
+        `)
+        .get(conversation.id, externalMessageId) as { id: number; content: string } | undefined;
+      if (!message || insertedMessage.changes !== 1 || message.content !== input.content) {
+        throw new Error("native_daktela_context_conflict");
+      }
+
+      this.db
+        .prepare(`
+          INSERT INTO native_daktela_context_bindings(
+            external_ticket_id, source_revision, masterlink_ticket_id,
+            masterlink_trigger_message_id, source_snapshot_hash,
+            source_external_revision, source_trigger_event_id, context_hash,
+            conversation_id, source_message_id, stored_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          input.externalTicketId,
+          input.sourceRevision,
+          input.masterlinkTicketId,
+          input.masterlinkTriggerMessageId,
+          input.sourceSnapshotHash,
+          input.sourceExternalRevision,
+          input.sourceTriggerEventId,
+          input.contextHash,
+          conversation.id,
+          message.id,
+          timestamp,
+        );
+      this.db.exec("COMMIT");
+      return { inserted: true, conversationId: conversation.id, messageId: message.id };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private nativeDaktelaContextBinding(
+    externalTicketId: string,
+    sourceRevision: number,
+  ): NativeDaktelaContextBindingRow | null {
+    const row = this.db
+      .prepare(`
+        SELECT external_ticket_id, source_revision, masterlink_ticket_id,
+               masterlink_trigger_message_id, source_snapshot_hash,
+               source_external_revision, source_trigger_event_id, context_hash,
+               conversation_id, source_message_id, stored_at
+        FROM native_daktela_context_bindings
+        WHERE external_ticket_id = ? AND source_revision = ?
+      `)
+      .get(externalTicketId, sourceRevision) as NativeDaktelaContextBindingRow | undefined;
+    return row ?? null;
   }
 
   recordTicketScopedGuidance(input: TicketScopedGuidanceInput): TicketScopedGuidanceRecord {
