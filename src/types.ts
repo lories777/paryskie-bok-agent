@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  SHARED_AGENT_OPERATIONAL_ACTION_PROPOSAL_JSON_SCHEMA,
+  sharedAgentOperationalActionProposalSchema,
+} from "./native-bok-operational-actions.js";
 
 export const actionKindSchema = z.enum([
   "reply_customer",
@@ -32,6 +36,9 @@ export const agentTurnOutputSchema = z.object({
   reply: z.string(),
   caseState: z.enum(["answered", "needs_data", "waiting_for_human", "action_proposed"]),
   proposedActions: z.array(proposedActionSchema).max(8),
+  // Tylko ten zamknięty sidecar może stać się operacją w MasterLink. Legacy
+  // proposedActions pozostają prezentacją dla Discorda i nigdy nie są mapowane z tekstu.
+  operationalActionProposal: sharedAgentOperationalActionProposalSchema.nullable().optional(),
   learnedRules: z
     .array(
       z.object({
@@ -90,6 +97,7 @@ export const AGENT_OUTPUT_JSON_SCHEMA = {
         additionalProperties: false,
       },
     },
+    operationalActionProposal: SHARED_AGENT_OPERATIONAL_ACTION_PROPOSAL_JSON_SCHEMA,
     learnedRules: {
       type: "array",
       maxItems: 1,
@@ -118,7 +126,14 @@ export const AGENT_OUTPUT_JSON_SCHEMA = {
       ],
     },
   },
-  required: ["reply", "caseState", "proposedActions", "learnedRules", "actionExecution"],
+  required: [
+    "reply",
+    "caseState",
+    "proposedActions",
+    "operationalActionProposal",
+    "learnedRules",
+    "actionExecution",
+  ],
   additionalProperties: false,
 } as const;
 
