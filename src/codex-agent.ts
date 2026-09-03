@@ -9,6 +9,7 @@ import {
 } from "@openai/codex-sdk";
 import {
   BokAgentCore,
+  bokPlaybookRevision,
   buildPrimaryCodexConfigOverrides as buildCodexConfigOverrides,
   buildPrimaryThreadOptions,
   CHROME_READ_ONLY_TOOLS,
@@ -521,7 +522,7 @@ function reviewedRun(
       toolEvidenceHash: nativeBokDecisionHash(toolEvidence),
       toolNames: Object.freeze(toolNames),
       policyHash: nativeBokDecisionHash(policy),
-      playbookRevision: nativeBokDecisionHash(policy.playbook),
+      playbookRevision: bokPlaybookRevision(policy.playbook),
       correctionsRevision: policy.verifiedCorrections.revision,
     }),
   });

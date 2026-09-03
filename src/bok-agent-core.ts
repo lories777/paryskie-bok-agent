@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,9 +19,14 @@ export const CHROME_READ_ONLY_TOOLS = [
   "wait_for",
 ] as const;
 
+export function bokPlaybookRevision(playbook: string): string {
+  return createHash("sha256").update(playbook, "utf8").digest("hex");
+}
+
 /** Jeden obiekt polityki/runtime współdzielony przez ingress Discord/Daktela i ML HTTP. */
 export class BokAgentCore {
   readonly playbook: string;
+  readonly playbookRevision: string;
   readonly model: string;
 
   constructor(
@@ -28,6 +34,7 @@ export class BokAgentCore {
     readonly store: AgentStore,
   ) {
     this.playbook = readBokPlaybook(config.workspacePath);
+    this.playbookRevision = bokPlaybookRevision(this.playbook);
     this.model = resolveModel(config.model ?? DEFAULT_NATIVE_BOK_MODEL);
   }
 

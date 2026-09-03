@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { buildBokKnowledgeContext } from "../src/bok-knowledge.js";
-import { BokAgentCore } from "../src/bok-agent-core.js";
+import { BokAgentCore, bokPlaybookRevision } from "../src/bok-agent-core.js";
 import { loadConfig } from "../src/config.js";
 import {
   buildNativeBokCodexConfigOverrides,
@@ -30,6 +30,7 @@ import {
   TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION,
 } from "../src/native-bok-operational-catalog.js";
 import { ticketAiContextSchema } from "../src/native-bok-contract.js";
+import { nativeBokDecisionHash } from "../src/native-bok-decision-result.js";
 
 const EMPTY_VERIFIED_CORRECTIONS = {
   revision: 0,
@@ -113,6 +114,22 @@ test("runtime przypina kanoniczny kontrakt operacyjny współdzielony z MasterLi
     schemaVersion: 2,
     hash: operationalActionCatalogHash(),
   });
+});
+
+test("rewizja playbooka hashuje surowy tekst identycznie w heartbeat i wyniku", () => {
+  const playbook = "Linia 1\n\"cytat\" i \\slash";
+  const rawHash = createHash("sha256").update(playbook, "utf8").digest("hex");
+  assert.equal(bokPlaybookRevision(playbook), rawHash);
+  assert.notEqual(bokPlaybookRevision(playbook), nativeBokDecisionHash(playbook));
+
+  const core = testCore();
+  const runtime = new NativeBokInference(core, {
+    runner: {
+      async generate() { return NATIVE_BOK_DRAFT; },
+      async judge() { return NATIVE_BOK_JUDGEMENT; },
+    },
+  }).runtimeStatus();
+  assert.equal(runtime.playbook.revision, core.playbookRevision);
 });
 
 test("wspólny core blokuje niepełną politykę przed uruchomieniem dowolnego ingressu", () => {
