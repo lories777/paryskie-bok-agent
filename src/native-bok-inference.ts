@@ -184,7 +184,7 @@ export class NativeBokInference {
       },
       playbook: {
         source: "shared-agent-workspace",
-        revision: sha256(this.core.playbook),
+        revision: this.core.playbookRevision,
       },
       operationalActionCatalog: {
         schemaVersion: TICKET_OPERATIONAL_ACTION_CATALOG_SCHEMA_VERSION,

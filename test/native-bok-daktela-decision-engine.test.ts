@@ -204,6 +204,11 @@ test("native i entrypoint Discord używają byte-identycznego shared pipeline or
     const [native] = await Promise.all([nativePromise, parallelDiscord]);
 
     assert.equal(native.state, "ready");
+    assert.equal(
+      native.provenance.playbookRevision,
+      engine.runtimeStatus().playbook.revision,
+      "completed decision must use the exact playbook revision advertised in the lease heartbeat",
+    );
     assert.equal(native.customerReply?.body, direct.output.proposedActions[0]?.payload);
     assert.equal(native.internalNote, direct.output.reply);
     assert.equal(store.claimNextJob(), null);
