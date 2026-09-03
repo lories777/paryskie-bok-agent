@@ -66,6 +66,7 @@ export const MAX_NATIVE_BOK_ATTACHMENT_BYTES = 64 * 1024;
 export const MAX_NATIVE_BOK_ATTACHMENT_TEXT_CHARS = 12_000;
 export const MAX_NATIVE_BOK_ATTACHMENT_TOTAL_TEXT_CHARS = 24_000;
 export const NATIVE_BOK_ATTACHMENT_POLICY_VERSION = "verified-text-v1" as const;
+export const MASTERLINK_TICKET_AI_ATTACHMENT_POLICY_VERSION = "verified-content-v2" as const;
 export const NATIVE_BOK_ATTACHMENT_TEXT_EXTRACTOR = "utf8-text-v1" as const;
 
 export const TICKET_AI_JUDGE_REASON_CODES = [
@@ -281,7 +282,10 @@ const legacyTicketAiContextSchema = z
 
 const attachmentCoverageSchema = z
   .object({
-    policyVersion: z.literal(NATIVE_BOK_ATTACHMENT_POLICY_VERSION),
+    policyVersion: z.enum([
+      NATIVE_BOK_ATTACHMENT_POLICY_VERSION,
+      MASTERLINK_TICKET_AI_ATTACHMENT_POLICY_VERSION,
+    ]),
     coverageHash: z.string().regex(SAFE_SHA256),
     totalCount: z.number().int().min(0).max(MAX_NATIVE_BOK_ATTACHMENTS),
     readCount: z.number().int().min(0).max(MAX_NATIVE_BOK_ATTACHMENTS),

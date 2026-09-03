@@ -44,6 +44,7 @@ import {
   NATIVE_BOK_DRAFT,
   NATIVE_BOK_JUDGEMENT,
   NATIVE_BOK_KNOWLEDGE,
+  NATIVE_BOK_MASTERLINK_OUTBOUND_CONTEXT,
 } from "./native-bok-fixtures.js";
 
 const NOW = Date.parse("2026-09-02T20:00:00.000Z");
@@ -225,7 +226,7 @@ function leaseAck(lease: unknown) {
 
 function decisionLease(overrides: Record<string, unknown> = {}) {
   const request = {
-    context: structuredClone(NATIVE_BOK_CONTEXT),
+    context: structuredClone(NATIVE_BOK_MASTERLINK_OUTBOUND_CONTEXT),
     knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
     source: decisionSource(),
   };
@@ -234,7 +235,7 @@ function decisionLease(overrides: Record<string, unknown> = {}) {
     source: request.source,
   });
   const operatorGuidanceHash = null;
-  const sourceRevision = NATIVE_BOK_CONTEXT.ticket.revision;
+  const sourceRevision = NATIVE_BOK_MASTERLINK_OUTBOUND_CONTEXT.ticket.revision;
   const requestHash = nativeBridgeHash({
     kind: "decision",
     sourceRevision,
