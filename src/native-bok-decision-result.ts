@@ -18,7 +18,7 @@ const SAFE_DAKTELA_ID = /^[A-Za-z0-9_]{1,100}$/;
 const SAFE_TOOL_NAME = /^[A-Za-z0-9_.:-]{1,200}$/;
 const MAX_INTERNAL_NOTE = 12_000;
 
-export const NATIVE_BOK_DECISION_RESULT_SCHEMA_VERSION = 2 as const;
+export const NATIVE_BOK_DECISION_RESULT_SCHEMA_VERSION = 3 as const;
 export const NATIVE_BOK_DECISION_REASON_CODES = [
   "reviewed_reply_ready",
   "no_customer_reply",
@@ -53,6 +53,7 @@ const guidanceReceiptSchema = z
     scope: z.literal("ticket"),
     externalTicketId: z.string().regex(SAFE_DAKTELA_ID),
     storeReceiptId: z.string().regex(SHA256),
+    storeIdentity: z.string().regex(SHA256),
   })
   .strict();
 
@@ -78,6 +79,7 @@ const provenanceSchema = z
     policyHash: z.string().regex(SHA256),
     playbookRevision: z.string().regex(SHA256),
     correctionsRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    storeIdentity: z.string().regex(SHA256),
   })
   .strict()
   .superRefine((provenance, issue) => {
@@ -86,12 +88,13 @@ const provenanceSchema = z
     }
   });
 
-export const nativeBokDecisionResultV2Schema = z
+export const nativeBokDecisionResultV3Schema = z
   .object({
     schemaVersion: z.literal(NATIVE_BOK_DECISION_RESULT_SCHEMA_VERSION),
     provider: z.literal(NATIVE_BOK_PROVIDER),
     pipeline: z.literal(NATIVE_BOK_DECISION_PIPELINE),
     pipelineHash: z.literal(NATIVE_BOK_DECISION_PIPELINE_HASH),
+    storeIdentity: z.string().regex(SHA256),
     sourceSnapshotHash: z.string().regex(SHA256),
     state: z.enum(["ready", "blocked"]),
     customerReply: customerReplySchema.nullable(),
@@ -109,6 +112,13 @@ export const nativeBokDecisionResultV2Schema = z
         code: "custom",
         path: ["sourceSnapshotHash"],
         message: "result_source_snapshot_mismatch",
+      });
+    }
+    if (result.storeIdentity !== result.provenance.storeIdentity) {
+      issue.addIssue({
+        code: "custom",
+        path: ["provenance", "storeIdentity"],
+        message: "provenance_store_identity_mismatch",
       });
     }
     if (!isCanonicalStrings(result.reasonCodes)) {
@@ -148,10 +158,20 @@ export const nativeBokDecisionResultV2Schema = z
         message: "guidance_ticket_mismatch",
       });
     }
+    if (
+      result.guidanceReceipt
+      && result.guidanceReceipt.storeIdentity !== result.provenance.storeIdentity
+    ) {
+      issue.addIssue({
+        code: "custom",
+        path: ["guidanceReceipt", "storeIdentity"],
+        message: "guidance_store_identity_mismatch",
+      });
+    }
   });
 
-export type NativeBokDecisionResultV2 = z.infer<typeof nativeBokDecisionResultV2Schema>;
-export type NativeBokGuidanceReceipt = NonNullable<NativeBokDecisionResultV2["guidanceReceipt"]>;
+export type NativeBokDecisionResultV3 = z.infer<typeof nativeBokDecisionResultV3Schema>;
+export type NativeBokGuidanceReceipt = NonNullable<NativeBokDecisionResultV3["guidanceReceipt"]>;
 
 export interface NativeBokDecisionResultInput {
   readonly output: AgentTurnOutput;
@@ -162,12 +182,13 @@ export interface NativeBokDecisionResultInput {
   readonly policyHash: string;
   readonly playbookRevision: string;
   readonly correctionsRevision: number;
+  readonly storeIdentity: string;
   readonly guidanceReceipt?: NativeBokGuidanceReceipt;
 }
 
-export function buildNativeBokDecisionResultV2(
+export function buildNativeBokDecisionResultV3(
   input: NativeBokDecisionResultInput,
-): NativeBokDecisionResultV2 {
+): NativeBokDecisionResultV3 {
   assertNativeBokAttachmentEvidenceBound(input.source, input.attachmentEvidence);
   if (
     input.guidanceReceipt
@@ -202,11 +223,12 @@ export function buildNativeBokDecisionResultV2(
     customerReply,
     reasonCodes: canonicalReasons,
   });
-  return nativeBokDecisionResultV2Schema.parse({
+  return nativeBokDecisionResultV3Schema.parse({
     schemaVersion: NATIVE_BOK_DECISION_RESULT_SCHEMA_VERSION,
     provider: NATIVE_BOK_PROVIDER,
     pipeline: NATIVE_BOK_DECISION_PIPELINE,
     pipelineHash: NATIVE_BOK_DECISION_PIPELINE_HASH,
+    storeIdentity: input.storeIdentity,
     sourceSnapshotHash: input.source.snapshotHash,
     state,
     customerReply,
@@ -220,6 +242,7 @@ export function buildNativeBokDecisionResultV2(
       policyHash: input.policyHash,
       playbookRevision: input.playbookRevision,
       correctionsRevision: input.correctionsRevision,
+      storeIdentity: input.storeIdentity,
     },
     ...(input.guidanceReceipt ? { guidanceReceipt: input.guidanceReceipt } : {}),
     nonExecutableActions: input.output.proposedActions
@@ -231,7 +254,7 @@ export function buildNativeBokDecisionResultV2(
 
 export function nativeBokDecisionReviewHash(input: {
   readonly state: "ready" | "blocked";
-  readonly customerReply: NativeBokDecisionResultV2["customerReply"];
+  readonly customerReply: NativeBokDecisionResultV3["customerReply"];
   readonly reasonCodes: readonly (typeof NATIVE_BOK_DECISION_REASON_CODES)[number][];
 }): string {
   return nativeBokDecisionHash(input);

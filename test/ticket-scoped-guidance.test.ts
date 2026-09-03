@@ -40,12 +40,14 @@ test("guidance jest immutable, idempotent i wyłącznie ticket-scoped", () => {
     assert.deepEqual(store.ticketScopedGuidance(INPUT.guidanceId), first);
     assert.equal(first.conversationId, conversation.conversationId);
     assert.match(first.receipt.storeReceiptId, /^[a-f0-9]{64}$/);
+    assert.equal(first.receipt.storeIdentity, store.runtimeStoreIdentity());
     assert.deepEqual(first.receipt, {
       guidanceId: INPUT.guidanceId,
       guidanceHash: INPUT.guidanceHash,
       scope: "ticket",
       externalTicketId: "100328",
       storeReceiptId: first.receipt.storeReceiptId,
+      storeIdentity: store.runtimeStoreIdentity(),
     });
     const messages = store.recentMessages(conversation.conversationId, 10);
     assert.equal(messages.filter((message) => message.authorId === "masterlink-guidance").length, 1);

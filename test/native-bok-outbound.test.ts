@@ -36,7 +36,7 @@ import {
   nativeBokDecisionCapabilityStatus,
 } from "../src/native-bok-decision-capability.js";
 import {
-  buildNativeBokDecisionResultV2,
+  buildNativeBokDecisionResultV3,
   nativeBokDecisionHash,
 } from "../src/native-bok-decision-result.js";
 import {
@@ -179,6 +179,7 @@ function heartbeatAck(request: CapturedRequest): Response {
   const body = JSON.parse(request.body) as {
     poller: { instanceId: string };
     runtime: { store: { identity: string } };
+    lease?: unknown;
   };
   return json({
     ok: true,
@@ -187,7 +188,39 @@ function heartbeatAck(request: CapturedRequest): Response {
     runtimeIdentity: body.poller.instanceId,
     storeIdentity: body.runtime.store.identity,
     statusHash: nativeBridgeHash(body.runtime),
+    ...(body.lease ? { leaseValid: true } : {}),
   });
+}
+
+function heartbeatLease(lease: ReturnType<typeof decisionLease> | ReturnType<typeof dispatchLease>) {
+  return {
+    jobId: lease.jobId,
+    leaseToken: lease.leaseToken,
+    kind: lease.kind,
+    requestHash: lease.requestHash,
+  };
+}
+
+function fullRuntime() {
+  return {
+    ok: true as const,
+    ...RUNTIME,
+    decisionCapability: DECISION_CAPABILITY,
+    operationalActionDispatch: DISPATCH_RUNTIME,
+  };
+}
+
+function leaseAck(lease: unknown) {
+  return {
+    ok: true as const,
+    schemaVersion: 1 as const,
+    provider: NATIVE_BOK_PROVIDER,
+    runtimeIdentity: INSTANCE_ID,
+    storeIdentity: RUNTIME.store.identity,
+    processStartedAt: new Date(NOW).toISOString(),
+    statusHash: nativeBridgeHash(fullRuntime()),
+    lease,
+  };
 }
 
 function decisionLease(overrides: Record<string, unknown> = {}) {
@@ -213,6 +246,9 @@ function decisionLease(overrides: Record<string, unknown> = {}) {
     jobId: JOB_ID,
     leaseToken: LEASE_TOKEN,
     leaseExpiresAt: new Date(NOW + 300_000).toISOString(),
+    runtimeIdentity: INSTANCE_ID,
+    storeIdentity: RUNTIME.store.identity,
+    processStartedAt: new Date(NOW).toISOString(),
     kind: "decision",
     stages: ["generate", "judge"],
     sourceRevision,
@@ -248,7 +284,7 @@ function decisionResult() {
     snapshotHash: source.snapshotHash,
     receipts: [],
   };
-  return buildNativeBokDecisionResultV2({
+  return buildNativeBokDecisionResultV3({
     output: {
       reply: "DAKTELA #100328 · gotowe",
       caseState: "action_proposed",
@@ -273,6 +309,7 @@ function decisionResult() {
     policyHash: "d".repeat(64),
     playbookRevision: "e".repeat(64),
     correctionsRevision: 3,
+    storeIdentity: RUNTIME.store.identity,
   });
 }
 
@@ -320,6 +357,9 @@ function dispatchLease(overrides: Record<string, unknown> = {}) {
     jobId: JOB_ID,
     leaseToken: LEASE_TOKEN,
     leaseExpiresAt: new Date(NOW + 300_000).toISOString(),
+    runtimeIdentity: INSTANCE_ID,
+    storeIdentity: RUNTIME.store.identity,
+    processStartedAt: new Date(NOW).toISOString(),
     kind: "dispatch",
     stages: ["dispatch"],
     sourceRevision: request.sourceRevision,
@@ -367,7 +407,7 @@ test("atomowy decision robi generate→judge na tym samym snapshotcie i jeden te
   const dispatcher = new FakeDispatcher();
   const lease = decisionLease();
   const transport = capture([
-    json({ ok: true, schemaVersion: 1, lease }),
+    json(leaseAck(lease)),
     json({ ok: true, schemaVersion: 1, deduplicated: false }),
   ]);
   const result = await poller(transport.fetcher, inference, dispatcher).runOnce(
@@ -397,6 +437,8 @@ test("atomowy decision robi generate→judge na tym samym snapshotcie i jeden te
   const resultBody = JSON.parse(transport.requests[1]!.body) as Record<string, unknown>;
   assert.deepEqual(resultBody, {
     schemaVersion: 1,
+    poller: { instanceId: INSTANCE_ID, processStartedAt: new Date(NOW).toISOString() },
+    storeIdentity: RUNTIME.store.identity,
     jobId: JOB_ID,
     leaseToken: LEASE_TOKEN,
     requestHash: lease.requestHash,
@@ -406,6 +448,141 @@ test("atomowy decision robi generate→judge na tym samym snapshotcie i jeden te
       result: decisionResult(),
     },
   });
+});
+
+test("lease z obcą tożsamością Store jest odrzucany przed inferencją", async () => {
+  const inference = new FakeInference();
+  const response = {
+    ...leaseAck(decisionLease()),
+    storeIdentity: "a".repeat(64),
+  };
+  const transport = capture([json(response)]);
+  await assert.rejects(
+    poller(transport.fetcher, inference).runOnce(new AbortController().signal),
+    (error: unknown) =>
+      error instanceof NativeBokOutboundPollerError
+      && error.code === "native_outbound_store_identity"
+      && !error.retryable,
+  );
+  assert.deepEqual(inference.callOrder, []);
+  assert.equal(transport.requests.length, 1);
+});
+
+test("lease wymaga exact tożsamości instalacji i procesu w ACK oraz w samym jobie", async () => {
+  const otherRuntime = "e7ef2fc7-924f-491f-b837-565348989275";
+  const otherProcess = "2026-09-02T19:59:59.000Z";
+  const cases: Array<{
+    response: ReturnType<typeof leaseAck>;
+    errorCode: NativeBokOutboundPollerError["code"];
+  }> = [
+    {
+      response: { ...leaseAck(decisionLease()), runtimeIdentity: otherRuntime },
+      errorCode: "native_outbound_runtime_identity",
+    },
+    {
+      response: { ...leaseAck(decisionLease()), processStartedAt: otherProcess },
+      errorCode: "native_outbound_runtime_process_stale",
+    },
+    {
+      response: leaseAck(decisionLease({ runtimeIdentity: otherRuntime })),
+      errorCode: "native_outbound_runtime_identity",
+    },
+    {
+      response: leaseAck(decisionLease({ storeIdentity: "a".repeat(64) })),
+      errorCode: "native_outbound_store_identity",
+    },
+    {
+      response: leaseAck(decisionLease({ processStartedAt: otherProcess })),
+      errorCode: "native_outbound_runtime_process_stale",
+    },
+  ];
+  for (const scenario of cases) {
+    const inference = new FakeInference();
+    const transport = capture([json(scenario.response)]);
+    await assert.rejects(
+      poller(transport.fetcher, inference).runOnce(new AbortController().signal),
+      (error: unknown) =>
+        error instanceof NativeBokOutboundPollerError
+        && error.code === scenario.errorCode
+        && !error.retryable,
+    );
+    assert.deepEqual(inference.callOrder, []);
+    assert.equal(transport.requests.length, 1);
+  }
+});
+
+test("jawne błędy pinów ML zatrzymują poller fail-closed przed inferencją", async () => {
+  const cases = [
+    [409, "runtime_identity_mismatch", "native_outbound_runtime_identity"],
+    [409, "store_identity_mismatch", "native_outbound_store_identity"],
+    [409, "runtime_process_stale", "native_outbound_runtime_process_stale"],
+    [503, "runtime_identity_not_configured", "native_outbound_runtime_identity_not_configured"],
+  ] as const;
+  for (const [status, remoteCode, localCode] of cases) {
+    const inference = new FakeInference();
+    const transport = capture([json({
+      ok: false,
+      error: remoteCode,
+      message: "Bez danych klienta: pin runtime został odrzucony.",
+    }, status)]);
+    await assert.rejects(
+      poller(transport.fetcher, inference).runOnce(new AbortController().signal),
+      (error: unknown) =>
+        error instanceof NativeBokOutboundPollerError
+        && error.code === localCode
+        && !error.retryable,
+    );
+    assert.deepEqual(inference.callOrder, []);
+    assert.equal(transport.requests.length, 1);
+  }
+});
+
+test("zmiana lokalnego Store w trakcie życia pollera zatrzymuje transport przed lease", async () => {
+  const inference = new FakeInference();
+  const originalRuntimeStatus = inference.runtimeStatus.bind(inference);
+  let reads = 0;
+  inference.runtimeStatus = () => {
+    reads += 1;
+    const status = originalRuntimeStatus();
+    return reads === 1
+      ? status
+      : { ...status, store: { ...status.store, identity: "a".repeat(64) } };
+  };
+  const transport = capture([]);
+  const runtime = poller(transport.fetcher, inference);
+  await assert.rejects(
+    runtime.runOnce(new AbortController().signal),
+    (error: unknown) =>
+      error instanceof NativeBokOutboundPollerError
+      && error.code === "native_outbound_store_identity"
+      && !error.retryable,
+  );
+  assert.equal(transport.requests.length, 0);
+});
+
+test("decision result musi pochodzić z przypiętego Store na root i w provenance", async () => {
+  for (const mutate of [
+    (result: ReturnType<typeof decisionResult>) => ({
+      ...result,
+      storeIdentity: "a".repeat(64),
+    }),
+    (result: ReturnType<typeof decisionResult>) => ({
+      ...result,
+      provenance: { ...result.provenance, storeIdentity: "a".repeat(64) },
+    }),
+  ]) {
+    const inference = new FakeInference();
+    inference.decide = async () => mutate(decisionResult());
+    const transport = capture([json(leaseAck(decisionLease()))]);
+    await assert.rejects(
+      poller(transport.fetcher, inference).runOnce(new AbortController().signal),
+      (error: unknown) =>
+        error instanceof NativeBokOutboundPollerError
+        && error.code === "native_outbound_store_identity"
+        && !error.retryable,
+    );
+    assert.equal(transport.requests.length, 1, "foreign-store result is never posted to ML");
+  }
 });
 
 test("długie generate→judge utrzymuje niezależny heartbeat bez lease'owania drugiego joba", async () => {
@@ -428,7 +605,7 @@ test("długie generate→judge utrzymuje niezależny heartbeat bez lease'owania 
   const heartbeatObserved = new Promise<void>((resolve) => { markHeartbeatObserved = resolve; });
   let heartbeatSleeps = 0;
   const transport = capture([
-    json({ ok: true, schemaVersion: 1, lease: decisionLease() }),
+    json(leaseAck(decisionLease())),
     (request) => {
       markHeartbeatObserved();
       return heartbeatAck(request);
@@ -467,6 +644,7 @@ test("długie generate→judge utrzymuje niezależny heartbeat bez lease'owania 
       decisionCapability: DECISION_CAPABILITY,
       operationalActionDispatch: DISPATCH_RUNTIME,
     },
+    lease: heartbeatLease(decisionLease()),
   });
   releaseGenerate();
   assert.equal(await run, "completed");
@@ -491,7 +669,7 @@ test("lease wymaga exact stages, source/context/guidance/request hash zanim uruc
     { ...decisionLease(), destination: "bok" },
   ]) {
     const inference = new FakeInference();
-    const transport = capture([json({ ok: true, schemaVersion: 1, lease: invalid })]);
+    const transport = capture([json(leaseAck(invalid))]);
     await assert.rejects(
       poller(transport.fetcher, inference).runOnce(new AbortController().signal),
       (error: unknown) =>
@@ -518,7 +696,9 @@ test("dispatch pending jest reconciliowany w tym samym lease i tylko sent trafia
   const waits: number[] = [];
   const lease = dispatchLease();
   const transport = capture([
-    json({ ok: true, schemaVersion: 1, lease }),
+    json(leaseAck(lease)),
+    heartbeatAck,
+    heartbeatAck,
     json({ ok: true, schemaVersion: 1, deduplicated: false }),
   ]);
   const runtime = poller(transport.fetcher, new FakeInference(), dispatcher, {
@@ -527,7 +707,7 @@ test("dispatch pending jest reconciliowany w tym samym lease i tylko sent trafia
   assert.equal(await runtime.runOnce(new AbortController().signal), "completed");
   assert.equal(dispatcher.requests.length, 2);
   assert.deepEqual(waits, [5_000]);
-  const body = JSON.parse(transport.requests[1]!.body) as {
+  const body = JSON.parse(transport.requests[3]!.body) as {
     kind: string;
     outcome: { status: string; result: NativeOperationalActionDispatchResult };
   };
@@ -536,10 +716,60 @@ test("dispatch pending jest reconciliowany w tym samym lease i tylko sent trafia
   assert.deepEqual(body.outcome.result, sentDispatch(true));
 });
 
+test("dispatch nie dotyka Discorda bez świeżego server-side potwierdzenia exact lease", async () => {
+  const dispatcher = new FakeDispatcher();
+  const transport = capture([
+    json(leaseAck(dispatchLease())),
+    (request) => {
+      const accepted = heartbeatAck(request);
+      return accepted.json().then((body) => json({
+        ...(body as Record<string, unknown>),
+        leaseValid: false,
+      }));
+    },
+  ]);
+  assert.equal(
+    await poller(transport.fetcher, new FakeInference(), dispatcher).runOnce(
+      new AbortController().signal,
+    ),
+    "lease_lost",
+  );
+  assert.equal(dispatcher.requests.length, 0);
+  assert.deepEqual(
+    transport.requests.map((request) => new URL(request.url).pathname),
+    ["/api/bok-runtime/v1/lease", "/api/bok-runtime/v1/heartbeat"],
+  );
+  const heartbeat = JSON.parse(transport.requests[1]!.body) as { lease?: unknown };
+  assert.deepEqual(heartbeat.lease, heartbeatLease(dispatchLease()));
+});
+
+test("stary proces nie wykonuje dispatch po 409 runtime_process_stale", async () => {
+  const dispatcher = new FakeDispatcher();
+  const transport = capture([
+    json(leaseAck(dispatchLease())),
+    json({
+      ok: false,
+      error: "runtime_process_stale",
+      message: "Nowszy proces przejął runtime.",
+    }, 409),
+  ]);
+  await assert.rejects(
+    poller(transport.fetcher, new FakeInference(), dispatcher).runOnce(
+      new AbortController().signal,
+    ),
+    (error: unknown) =>
+      error instanceof NativeBokOutboundPollerError
+      && error.code === "native_outbound_runtime_process_stale"
+      && !error.retryable,
+  );
+  assert.equal(dispatcher.requests.length, 0);
+  assert.equal(transport.requests.length, 2);
+});
+
 test("utracony ACK result jest ponawiany exact body bez ponownej inferencji", async () => {
   const inference = new FakeInference();
   const transport = capture([
-    json({ ok: true, schemaVersion: 1, lease: decisionLease() }),
+    json(leaseAck(decisionLease())),
     new Error("ECONNRESET after commit"),
     json({ ok: true, schemaVersion: 1, deduplicated: true }),
   ]);
@@ -555,7 +785,8 @@ test("utracony ACK result jest ponawiany exact body bez ponownej inferencji", as
 test("409 result oznacza lease_lost i nie uruchamia działania drugi raz", async () => {
   const dispatcher = new FakeDispatcher();
   const transport = capture([
-    json({ ok: true, schemaVersion: 1, lease: dispatchLease() }),
+    json(leaseAck(dispatchLease())),
+    heartbeatAck,
     json({ ok: false, error: "lease_lost" }, 409),
   ]);
   assert.equal(
@@ -565,13 +796,14 @@ test("409 result oznacza lease_lost i nie uruchamia działania drugi raz", async
     "lease_lost",
   );
   assert.equal(dispatcher.requests.length, 1);
-  assert.equal(transport.requests.length, 2);
+  assert.equal(transport.requests.length, 3);
 });
 
 test("409 result_conflict jest jawnym nieretryowalnym błędem kontraktu", async () => {
   const dispatcher = new FakeDispatcher();
   const transport = capture([
-    json({ ok: true, schemaVersion: 1, lease: dispatchLease() }),
+    json(leaseAck(dispatchLease())),
+    heartbeatAck,
     json({ ok: false, error: "result_conflict" }, 409),
   ]);
   await assert.rejects(
@@ -584,7 +816,31 @@ test("409 result_conflict jest jawnym nieretryowalnym błędem kontraktu", async
       && !error.retryable,
   );
   assert.equal(dispatcher.requests.length, 1);
-  assert.equal(transport.requests.length, 2);
+  assert.equal(transport.requests.length, 3);
+});
+
+test("409 store_identity_mismatch na result nie jest maskowany jako lease_lost", async () => {
+  const dispatcher = new FakeDispatcher();
+  const transport = capture([
+    json(leaseAck(dispatchLease())),
+    heartbeatAck,
+    json({
+      ok: false,
+      error: "store_identity_mismatch",
+      message: "Agent przedstawił inną bazę pamięci.",
+    }, 409),
+  ]);
+  await assert.rejects(
+    poller(transport.fetcher, new FakeInference(), dispatcher).runOnce(
+      new AbortController().signal,
+    ),
+    (error: unknown) =>
+      error instanceof NativeBokOutboundPollerError
+      && error.code === "native_outbound_store_identity"
+      && !error.retryable,
+  );
+  assert.equal(dispatcher.requests.length, 1);
+  assert.equal(transport.requests.length, 3);
 });
 
 test("nieznany 409 nie jest maskowany jako utrata lease", async () => {
@@ -597,7 +853,7 @@ test("nieznany 409 nie jest maskowany jako utrata lease", async () => {
     }),
   ]) {
     const transport = capture([
-      json({ ok: true, schemaVersion: 1, lease: decisionLease() }),
+      json(leaseAck(decisionLease())),
       conflict,
     ]);
     await assert.rejects(
@@ -615,7 +871,7 @@ test("lease bez bezpiecznego budżetu nie uruchamia modelu i raportuje retryable
   const inference = new FakeInference();
   const lease = decisionLease({ leaseExpiresAt: new Date(NOW + 5_000).toISOString() });
   const transport = capture([
-    json({ ok: true, schemaVersion: 1, lease }),
+    json(leaseAck(lease)),
     json({ ok: true, schemaVersion: 1, deduplicated: false }),
   ]);
   assert.equal(
@@ -640,7 +896,7 @@ test("runForever robi ograniczony reconnect backoff i resetuje go po heartbeat",
   const transport = capture([
     new Error("offline-1"),
     new Error("offline-2"),
-    json({ ok: true, schemaVersion: 1, lease: null }),
+    json(leaseAck(null)),
   ]);
   const runtime = poller(transport.fetcher, new FakeInference(), new FakeDispatcher(), {
     log: (code) => { logs.push(code); },
@@ -654,6 +910,32 @@ test("runForever robi ograniczony reconnect backoff i resetuje go po heartbeat",
   assert.deepEqual(logs, ["native_outbound_network", "native_outbound_network"]);
   assert.equal(transport.requests.length, 3);
   assert.equal(reconnectBackoffMs(5_000, 20), 30_000);
+});
+
+test("runForever nie zapętla nieretryowalnego konfliktu tożsamości", async () => {
+  const logs: string[] = [];
+  const delays: number[] = [];
+  const transport = capture([
+    json({
+      ok: false,
+      error: "store_identity_mismatch",
+      message: "Obca baza pamięci.",
+    }, 409),
+  ]);
+  const runtime = poller(transport.fetcher, new FakeInference(), new FakeDispatcher(), {
+    log: (code) => { logs.push(code); },
+    sleep: async (milliseconds) => { delays.push(milliseconds); },
+  });
+  await assert.rejects(
+    runtime.runForever(new AbortController().signal),
+    (error: unknown) =>
+      error instanceof NativeBokOutboundPollerError
+      && error.code === "native_outbound_store_identity"
+      && !error.retryable,
+  );
+  assert.deepEqual(logs, ["native_outbound_store_identity"]);
+  assert.deepEqual(delays, []);
+  assert.equal(transport.requests.length, 1);
 });
 
 test("abortableSleep usuwa listener po każdym idle i po abort", async () => {

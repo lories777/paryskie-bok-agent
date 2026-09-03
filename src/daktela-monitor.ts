@@ -123,9 +123,8 @@ export class DaktelaMonitor {
         shouldRespond: true,
         role: "context",
       };
-      const result = this.store.ingest(incoming);
-      if (result.inserted && result.jobId) {
-        this.store.linkDaktelaJob(ticket.ticketId, ticket.fingerprint, result.jobId);
+      const result = this.store.enqueueDaktelaMonitorCandidate(ticket, incoming);
+      if (result.status === "queued") {
         enqueued += 1;
       }
     }

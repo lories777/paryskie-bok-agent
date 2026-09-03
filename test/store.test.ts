@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { AgentStore } from "../src/store.js";
-import type { DaktelaTicketObservation } from "../src/store.js";
+import type {
+  DaktelaTicketObservation,
+  NativeDaktelaContextReconciliationInput,
+} from "../src/store.js";
 import type { IncomingMessage } from "../src/types.js";
 
 function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
@@ -19,6 +23,64 @@ function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
     createdAt: "2026-08-26T12:00:00.000Z",
     shouldRespond: true,
     ...overrides,
+  };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function reconciledDaktelaContext(
+  overrides: Partial<NativeDaktelaContextReconciliationInput> = {},
+): NativeDaktelaContextReconciliationInput {
+  const content = overrides.content ?? "Zweryfikowany kontekst Daktela #700.";
+  return {
+    masterlinkOperationId: "9c711ebc-8be7-4d23-bdbc-936807d565f8",
+    externalTicketId: "700",
+    sourceRevision: 7,
+    masterlinkTicketId: "50ecb64a-3484-4b10-a869-a49445775117",
+    masterlinkTriggerMessageId: "1a797e4b-a9d5-48b0-a83c-d2982d20dbe8",
+    sourceSnapshotHash: sha256("daktela-source-700-r1"),
+    sourceExternalRevision: "2026-09-03T08:00:00.000Z",
+    sourceTriggerEventId: "activity_700_1",
+    contextHash: sha256(content),
+    content,
+    ...overrides,
+  };
+}
+
+function observedDaktelaTicket(
+  overrides: Partial<DaktelaTicketObservation> = {},
+): DaktelaTicketObservation {
+  return {
+    ticketId: "700",
+    title: "Ticket 700",
+    category: "Pytanie",
+    assignedUser: "",
+    status: "Nowe",
+    stage: "Open",
+    edited: "2026-09-03T08:00:00.000Z",
+    editedBy: "System",
+    url: "https://daktela.example/tickets/update/700",
+    fingerprint: "v7:source-700-r1",
+    ...overrides,
+  };
+}
+
+function daktelaMonitorMessage(
+  ticket: DaktelaTicketObservation,
+): IncomingMessage {
+  return {
+    platform: "discord",
+    conversationExternalId: `daktela-ticket:${ticket.ticketId}`,
+    externalMessageId: `daktela:v6:${ticket.ticketId}:${ticket.fingerprint.slice(0, 16)}`,
+    channelId: "bok-agent-test",
+    authorId: "daktela-monitor",
+    authorName: "Monitor Daktela",
+    content: `Przeanalizuj Daktela #${ticket.ticketId}`,
+    createdAt: "2026-09-03T08:00:01.000Z",
+    shouldRespond: true,
+    role: "context",
   };
 }
 
@@ -297,6 +359,224 @@ test("propozycje działań dostają stabilne identyfikatory i wymagają approval
     assert.equal(store.status().actions_executed, 1);
   } finally {
     store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("native→monitor: exact źródło jest markerem bez fikcyjnego joba, a nowa aktywność kolejkuje", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-native-monitor-marker-"));
+  const store = new AgentStore(dir);
+  try {
+    const input = reconciledDaktelaContext();
+    const first = store.reconcileNativeDaktelaContext(input);
+    assert.equal(first.inserted, true);
+    assert.equal(store.reconcileNativeDaktelaContext(structuredClone(input)).inserted, false);
+
+    const sameSource = observedDaktelaTicket();
+    assert.deepEqual(store.recordDaktelaScan([sameSource], 1), []);
+    const observation = store.db.prepare(`
+      SELECT external_revision, last_job_id, last_queued_fingerprint,
+             last_queued_external_revision
+      FROM daktela_observations
+      WHERE ticket_id = '700'
+    `).get() as {
+      external_revision: string;
+      last_job_id: number | null;
+      last_queued_fingerprint: string | null;
+      last_queued_external_revision: string | null;
+    };
+    assert.equal(observation.external_revision, input.sourceExternalRevision);
+    assert.equal(observation.last_job_id, null, "native inference is not a standalone worker job");
+    assert.equal(observation.last_queued_fingerprint, null);
+    assert.equal(observation.last_queued_external_revision, null);
+    assert.equal(store.hasQueuedDaktelaJob("700"), false);
+
+    const newer = observedDaktelaTicket({
+      edited: "2026-09-03T08:05:00.000Z",
+      fingerprint: "v7:source-700-r2",
+    });
+    assert.deepEqual(store.recordDaktelaScan([newer], 1), [newer]);
+    const queued = store.enqueueDaktelaMonitorCandidate(newer, daktelaMonitorMessage(newer));
+    assert.equal(queued.status, "queued");
+    assert.equal(store.claimNextJob()?.id, queued.status === "queued" ? queued.jobId : -1);
+    assert.equal(store.claimNextJob(), null);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migracja bindingu revision-keyed zachowuje marker i dopuszcza nową operację z nowymi faktami", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-native-binding-migration-"));
+  let openStore: AgentStore | undefined = new AgentStore(dir);
+  try {
+    const initial = reconciledDaktelaContext();
+    openStore.reconcileNativeDaktelaContext(initial);
+    openStore.db.exec(`
+      BEGIN IMMEDIATE;
+      DROP INDEX native_daktela_context_masterlink_idx;
+      DROP INDEX native_daktela_context_source_idx;
+      ALTER TABLE native_daktela_context_bindings
+        RENAME TO native_daktela_context_bindings_current;
+      CREATE TABLE native_daktela_context_bindings (
+        external_ticket_id TEXT NOT NULL,
+        source_revision INTEGER NOT NULL CHECK(source_revision >= 1),
+        masterlink_ticket_id TEXT NOT NULL,
+        masterlink_trigger_message_id TEXT NOT NULL,
+        source_snapshot_hash TEXT NOT NULL,
+        source_external_revision TEXT NOT NULL,
+        source_trigger_event_id TEXT NOT NULL,
+        context_hash TEXT NOT NULL,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE RESTRICT,
+        source_message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id) ON DELETE RESTRICT,
+        stored_at TEXT NOT NULL,
+        PRIMARY KEY(external_ticket_id, source_revision),
+        UNIQUE(masterlink_ticket_id, source_revision)
+      );
+      INSERT INTO native_daktela_context_bindings(
+        external_ticket_id, source_revision, masterlink_ticket_id,
+        masterlink_trigger_message_id, source_snapshot_hash, source_external_revision,
+        source_trigger_event_id, context_hash, conversation_id, source_message_id, stored_at
+      )
+      SELECT external_ticket_id, source_revision, masterlink_ticket_id,
+             masterlink_trigger_message_id, source_snapshot_hash, source_external_revision,
+             source_trigger_event_id, context_hash, conversation_id, source_message_id, stored_at
+      FROM native_daktela_context_bindings_current;
+      DROP TABLE native_daktela_context_bindings_current;
+      COMMIT;
+    `);
+    openStore.close();
+    openStore = new AgentStore(dir);
+
+    const columns = openStore.db.prepare("PRAGMA table_info(native_daktela_context_bindings)")
+      .all() as Array<{ name: string; pk: number }>;
+    assert.equal(
+      columns.find((column) => column.name === "masterlink_operation_id")?.pk,
+      1,
+    );
+    assert.deepEqual(openStore.recordDaktelaScan([observedDaktelaTicket()], 1), []);
+
+    const content = "Ten sam ticket i source, ale odświeżone zweryfikowane fakty zamówienia.";
+    assert.equal(openStore.reconcileNativeDaktelaContext(reconciledDaktelaContext({
+      masterlinkOperationId: "4e8330a6-8b43-473f-8478-bd9c27ff68e3",
+      contextHash: sha256(content),
+      content,
+    })).inserted, true);
+    assert.equal(
+      Number((openStore.db.prepare(`
+        SELECT COUNT(*) AS count FROM native_daktela_context_bindings
+      `).get() as { count: number }).count),
+      2,
+    );
+  } finally {
+    openStore?.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wyścig scan→native→enqueue kończy się jednym native runem bez joba monitora", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-monitor-native-race-"));
+  const monitorStore = new AgentStore(dir);
+  const nativeStore = new AgentStore(dir);
+  try {
+    const ticket = observedDaktelaTicket();
+    assert.deepEqual(monitorStore.recordDaktelaScan([ticket], 1), [ticket]);
+
+    const input = reconciledDaktelaContext();
+    assert.equal(nativeStore.reconcileNativeDaktelaContext(input).inserted, true);
+    assert.deepEqual(
+      monitorStore.enqueueDaktelaMonitorCandidate(ticket, daktelaMonitorMessage(ticket)),
+      { status: "native_reconciled" },
+    );
+    assert.equal(monitorStore.claimNextJob(), null);
+    assert.equal(monitorStore.hasQueuedDaktelaJob("700"), false);
+    assert.deepEqual(monitorStore.recordDaktelaScan([ticket], 1), []);
+  } finally {
+    nativeStore.close();
+    monitorStore.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("monitor→native: prawdziwy job zachowuje własność exact rewizji i blokuje drugi run", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-monitor-native-owner-"));
+  const monitorStore = new AgentStore(dir);
+  const nativeStore = new AgentStore(dir);
+  try {
+    const ticket = observedDaktelaTicket();
+    assert.deepEqual(monitorStore.recordDaktelaScan([ticket], 1), [ticket]);
+    const first = monitorStore.enqueueDaktelaMonitorCandidate(
+      ticket,
+      daktelaMonitorMessage(ticket),
+    );
+    assert.equal(first.status, "queued");
+    const retry = monitorStore.enqueueDaktelaMonitorCandidate(
+      ticket,
+      daktelaMonitorMessage(ticket),
+    );
+    assert.equal(retry.status, "duplicate");
+    assert.throws(
+      () => nativeStore.reconcileNativeDaktelaContext(reconciledDaktelaContext()),
+      /native_daktela_context_monitor_owned/,
+    );
+    assert.equal(
+      Number((monitorStore.db.prepare(`
+        SELECT COUNT(*) AS count FROM native_daktela_context_bindings
+      `).get() as { count: number }).count),
+      0,
+    );
+    assert.equal(
+      Number((monitorStore.db.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count),
+      1,
+    );
+  } finally {
+    nativeStore.close();
+    monitorStore.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy scan→ingest bez linku nadal blokuje native i retry naprawia realny last_job_id", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-monitor-native-legacy-gap-"));
+  const monitorStore = new AgentStore(dir);
+  const nativeStore = new AgentStore(dir);
+  try {
+    const ticket = observedDaktelaTicket();
+    assert.deepEqual(monitorStore.recordDaktelaScan([ticket], 1), [ticket]);
+    const legacy = monitorStore.ingest(daktelaMonitorMessage(ticket));
+    assert.ok(legacy.jobId, "legacy ingest created a real standalone job");
+    assert.equal(monitorStore.hasQueuedDaktelaJob(ticket.ticketId), false, "link was lost");
+
+    assert.throws(
+      () => nativeStore.reconcileNativeDaktelaContext(reconciledDaktelaContext()),
+      /native_daktela_context_monitor_owned/,
+      "an unlinked but exact real job still owns the source",
+    );
+
+    const repaired = monitorStore.enqueueDaktelaMonitorCandidate(
+      ticket,
+      daktelaMonitorMessage(ticket),
+    );
+    assert.equal(repaired.status, "duplicate");
+    assert.equal(repaired.status === "duplicate" ? repaired.jobId : -1, legacy.jobId);
+    assert.equal(monitorStore.hasQueuedDaktelaJob(ticket.ticketId), true);
+    const observation = monitorStore.db.prepare(`
+      SELECT last_job_id, last_queued_external_revision
+      FROM daktela_observations
+      WHERE ticket_id = ?
+    `).get(ticket.ticketId) as {
+      last_job_id: number;
+      last_queued_external_revision: string;
+    };
+    assert.equal(observation.last_job_id, legacy.jobId);
+    assert.equal(observation.last_queued_external_revision, ticket.edited);
+    assert.equal(
+      Number((monitorStore.db.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count),
+      1,
+    );
+  } finally {
+    nativeStore.close();
+    monitorStore.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

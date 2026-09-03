@@ -192,8 +192,8 @@ Poller korzysta z dedykowanych endpointów `POST /api/bok-runtime/v1/lease`,
 credentiali raportu: bot ma osobny `BOK_NATIVE_OUTBOUND_TOKEN`, a MasterLink osobny
 `BOK_RUNTIME_PULL_TOKEN`.
 
-Każdy lease przekazuje pełny exact runtime status, losowy identyfikator procesu i czas jego
-startu. MasterLink zwraca najwyżej jeden trwały lease na 300 sekund. Po otrzymaniu joba poller
+Każdy lease request przekazuje pełny exact runtime status, stały identyfikator instalacji i czas
+startu bieżącego procesu. MasterLink zwraca najwyżej jeden trwały lease na 300 sekund. Po otrzymaniu joba poller
 nie pobiera następnego: co 10 sekund wysyła niezależny heartbeat z tą samą tożsamością i
 aktualnym runtime statusem, aż terminalny wynik zostanie potwierdzony. Długie generate/judge nie
 oznacza więc fałszywego offline:
@@ -201,10 +201,39 @@ oznacza więc fałszywego offline:
 - `decision` ma jawne etapy `generate → judge`, ale wykonuje je jeden dokładny shared pipeline
   `BokCodexAgent`; model główny i niezależny reviewer dostają te same zweryfikowane obrazy,
   ten sam ticket/store/playbook, `contextHash`, `sourceRevision` i `operatorGuidanceHash`, a wynik
-  `NativeBokDecisionResultV2` trafia do jednego terminalnego CAS;
+  `NativeBokDecisionResultV3` trafia do jednego terminalnego CAS;
 - `dispatch` ma jeden etap i wywołuje bezpośrednio tę samą instancję
   `NativeOperationalActionDispatcher`; MasterLink nie wydaje go, gdy exact dispatch readiness
   jest fałszywe.
+
+Tożsamość shared SQLite jest częścią protokołu, a nie tylko diagnostyką. Poller przypina
+`runtime.store.identity` przy starcie procesu i zatrzymuje się fail-closed, jeśli lokalny Store
+zmieni się w trakcie pracy. Odpowiedź na `/lease` musi zawierać top-level `provider`,
+`runtimeIdentity`, `storeIdentity`, `processStartedAt` i `statusHash` odpowiadające dokładnie
+requestowi; sam lease powtarza exact `runtimeIdentity`, `storeIdentity` i `processStartedAt`.
+ACK `/heartbeat` zawiera `provider`, `runtimeIdentity`, `storeIdentity` i `statusHash`. Poller nie
+uruchomi modelu przed pełnym ACK. Aktywny heartbeat niesie też exact identyfikatory lease i wymaga
+`leaseValid=true`; bezpośrednio przed każdym potencjalnie nieodwracalnym dispatch do Discorda
+poller powtarza tę kontrolę. Envelope `/result` zawsze niesie top-level
+`poller.{instanceId,processStartedAt}` oraz `storeIdentity`; dla decision wynik schema v3 powtarza
+tożsamość Store na root, w `provenance` i — jeśli występuje — w `guidanceReceipt`.
+
+MasterLink musi mieć jawnie skonfigurowaną pełną parę pinów
+`BOK_RUNTIME_PINNED_RUNTIME_IDENTITY` (UUID instalacji) i
+`BOK_RUNTIME_PINNED_STORE_IDENTITY` (SHA-256 wspólnego SQLite). Brak albo błędna para kończy każde
+wejście transportu `503 { "ok": false, "error": "runtime_identity_not_configured" }`; pierwszy
+przypadkowy heartbeat nie może sam ustalić tych wartości. Kolejne `/lease`, `/heartbeat` i
+`/result` z obcą tożsamością zwracają odpowiednio `409 runtime_identity_mismatch` albo
+`409 store_identity_mismatch`, a starszy proces tej samej instalacji —
+`409 runtime_process_stale`, bez aktualizacji heartbeat-u, przejęcia lease ani zapisania wyniku.
+Nie wolno realizować tego jako bezwarunkowego upsertu ostatniego heartbeat-u. Kontrolowana rotacja
+wymaga jednoczesnej, audytowanej pary
+`BOK_RUNTIME_PINNED_RUNTIME_IDENTITY_POPRZEDNI` +
+`BOK_RUNTIME_PINNED_STORE_IDENTITY_POPRZEDNI` i braku aktywnych lease'ów.
+`BOK_NATIVE_RUNTIME_IDENTITY` jest stałą UUID instalacji; restart zmienia wyłącznie
+`processStartedAt`, nie UUID. Echo po stronie protokołu TS wykrywa niespójny ACK, ale nie zastępuje
+serwerowego pinningu. Nieretryowalny konflikt tożsamości kończy pętlę pollera zamiast wpadać w
+reconnect loop.
 
 Poller ponownie wylicza kanoniczne hashe i odrzuca obcy etap, rewizję, kontekst, guidance lub
 request przed uruchomieniem modelu/Discorda. Przerywa pracę z marginesem przed końcem lease.
@@ -232,8 +261,19 @@ Treść obrazu/PDF jest jawnie oznaczona jako niezaufane dane klienta, nigdy ins
 Discord są serializowane jednym pipeline mutexem, a read-session pozostaje zablokowana od exact
 read aż do końca niezależnego reviewera.
 
-Wynik v2 zawiera wyłącznie reviewed customer reply albo stan `blocked`, internal note, reason
-codes, pełne attachment receipts/evidence hash oraz hashe provenance narzędzi/polityki/review.
+Po exact read native zapisuje w shared SQLite immutable binding operacji ML do rewizji źródła
+Dakteli. To osobny marker, nie fikcyjny `job` ani sztuczny `last_job_id`. Skan monitora i jego
+enqueue ponownie sprawdzają marker we wspólnej transakcji: identyczna aktywność nie tworzy drugiego
+runu ani komunikatu Discord, a nowsza rewizja Dakteli nadal staje się realnym jobem. W drugą stronę
+istniejący realny job monitora — także odzyskany po dawnym crash-window między ingestem i linkiem —
+jest właścicielem source i blokuje równoległą inferencję native. Retry tej samej operacji jest
+idempotentny; nowa operacja może odświeżyć zweryfikowane fakty przy tej samej rewizji ticketu ML,
+o ile immutable snapshot/event Dakteli pozostają identyczne. Stare rewizje i remapy ticketów kończą
+się fail-closed.
+
+Wynik v3 zawiera wyłącznie reviewed customer reply albo stan `blocked`, internal note, reason
+codes, pełne attachment receipts/evidence hash oraz hashe provenance narzędzi/polityki/review i
+jawną, zgodną na root i w provenance tożsamość wspólnego Store.
 Pozostałe akcje są nieegzekwowalnymi podsumowaniami bez targetu/payloadu/routingu. Wskazówka
 managera jest po zweryfikowaniu exact source zapisywana immutable i tylko w rozmowie ticketu;
 receipt wiąże jej id/hash/ticket/rewizję/tożsamość Store. Nie tworzy globalnej reguły ani joba
@@ -252,6 +292,7 @@ BOK_NATIVE_API_MAX_CONCURRENCY=2
 BOK_NATIVE_API_TIMEOUT_MS=110000
 
 BOK_NATIVE_OUTBOUND_ENABLED=true
+BOK_NATIVE_RUNTIME_IDENTITY=<stała-uuid-tej-instalacji>
 BOK_NATIVE_OUTBOUND_URL=https://ml.paryskie.pl
 BOK_NATIVE_OUTBOUND_TOKEN=<osobny-sekret-minimum-32-znaki>
 BOK_NATIVE_OUTBOUND_POLL_INTERVAL_MS=5000

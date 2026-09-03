@@ -22,7 +22,7 @@ import {
 import type {
   NativeBokDecisionCapabilityStatus,
 } from "./native-bok-decision-capability.js";
-import type { NativeBokDecisionResultV2 } from "./native-bok-decision-result.js";
+import type { NativeBokDecisionResultV3 } from "./native-bok-decision-result.js";
 import { DaktelaReadSessionError } from "./daktela-read-session.js";
 import { NativeBokAttachmentRenderError } from "./native-bok-attachment-renderer.js";
 
@@ -41,6 +41,9 @@ const leaseBaseShape = {
   jobId: z.string().uuid(),
   leaseToken: z.string().uuid(),
   leaseExpiresAt: z.string().datetime({ offset: true }),
+  runtimeIdentity: z.string().uuid(),
+  storeIdentity: z.string().regex(SHA256),
+  processStartedAt: z.string().datetime({ offset: true }),
   sourceRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   contextHash: z.string().regex(SHA256),
   operatorGuidanceHash: z.string().regex(SHA256).nullable(),
@@ -129,6 +132,11 @@ export const nativeOutboundLeaseResponseSchema = z
   .object({
     ok: z.literal(true),
     schemaVersion: z.literal(NATIVE_BOK_OUTBOUND_SCHEMA_VERSION),
+    provider: z.literal(NATIVE_BOK_PROVIDER),
+    runtimeIdentity: z.string().uuid(),
+    storeIdentity: z.string().regex(SHA256),
+    processStartedAt: z.string().datetime({ offset: true }),
+    statusHash: z.string().regex(SHA256),
     lease: z.union([decisionLeaseSchema, dispatchLeaseSchema]).nullable(),
   })
   .strict();
@@ -149,6 +157,7 @@ const nativeOutboundHeartbeatResponseSchema = z
     runtimeIdentity: z.string().uuid(),
     storeIdentity: z.string().regex(SHA256),
     statusHash: z.string().regex(SHA256),
+    leaseValid: z.boolean().optional(),
   })
   .strict();
 
@@ -159,39 +168,57 @@ const nativeOutboundResultConflictResponseSchema = z
   })
   .strict();
 
+const nativeOutboundIdentityErrorResponseSchema = z
+  .object({
+    ok: z.literal(false),
+    error: z.enum([
+      "runtime_identity_mismatch",
+      "store_identity_mismatch",
+      "runtime_process_stale",
+      "runtime_identity_not_configured",
+    ]),
+    message: z.string().min(1).max(1_000).optional(),
+  })
+  .strict();
+
 export type NativeBokOutboundLease = NonNullable<
   z.infer<typeof nativeOutboundLeaseResponseSchema>["lease"]
 >;
 
-type NativeBokOutboundResult =
+interface NativeBokOutboundResultBase {
+  readonly schemaVersion: 1;
+  readonly poller: {
+    readonly instanceId: string;
+    readonly processStartedAt: string;
+  };
+  readonly storeIdentity: string;
+  readonly jobId: string;
+  readonly leaseToken: string;
+  readonly requestHash: string;
+}
+
+type NativeBokOutboundResult = NativeBokOutboundResultBase & (
   | {
-      schemaVersion: 1;
-      jobId: string;
-      leaseToken: string;
-      requestHash: string;
       kind: "decision";
       outcome:
         | {
             status: "completed";
-            result: NativeBokDecisionResultV2;
+            result: NativeBokDecisionResultV3;
           }
         | { status: "failed"; errorCode: string; retryable: boolean };
     }
   | {
-      schemaVersion: 1;
-      jobId: string;
-      leaseToken: string;
-      requestHash: string;
       kind: "dispatch";
       outcome:
         | { status: "completed"; result: NativeOperationalActionDispatchResult }
         | { status: "failed"; errorCode: string; retryable: boolean };
-    };
+    }
+);
 
 export interface NativeBokOutboundInferencePort {
   runtimeStatus(): NativeBokRuntimeStatus;
   decisionCapabilityStatus(): NativeBokDecisionCapabilityStatus;
-  decide(request: unknown, signal: AbortSignal): Promise<NativeBokDecisionResultV2>;
+  decide(request: unknown, signal: AbortSignal): Promise<NativeBokDecisionResultV3>;
 }
 
 export interface NativeBokOutboundDispatcherPort {
@@ -229,6 +256,10 @@ export class NativeBokOutboundPollerError extends Error {
       | "native_outbound_timeout"
       | "native_outbound_rejected"
       | "native_outbound_result_conflict"
+      | "native_outbound_runtime_identity"
+      | "native_outbound_store_identity"
+      | "native_outbound_runtime_process_stale"
+      | "native_outbound_runtime_identity_not_configured"
       | "native_outbound_malformed",
     readonly retryable: boolean,
   ) {
@@ -238,6 +269,7 @@ export class NativeBokOutboundPollerError extends Error {
 }
 
 class NativeBokOutboundShutdown extends Error {}
+class NativeBokOutboundLeaseLost extends Error {}
 
 export class NativeBokOutboundPoller {
   readonly instanceId: string;
@@ -253,6 +285,7 @@ export class NativeBokOutboundPoller {
   private readonly leaseSafetyMarginMs: number;
   private readonly dispatchRetryMs: number;
   private readonly activeHeartbeatIntervalMs: number;
+  private readonly storeIdentity: string;
 
   constructor(
     private readonly inference: NativeBokOutboundInferencePort,
@@ -276,6 +309,11 @@ export class NativeBokOutboundPoller {
     this.dispatchRetryMs = options.dispatchRetryMs ?? DEFAULT_DISPATCH_RETRY_MS;
     this.activeHeartbeatIntervalMs =
       options.activeHeartbeatIntervalMs ?? DEFAULT_ACTIVE_HEARTBEAT_INTERVAL_MS;
+    const initialStoreIdentity = inference.runtimeStatus().store.identity;
+    if (!SHA256.test(initialStoreIdentity)) {
+      throw new Error("native_outbound_store_identity_invalid");
+    }
+    this.storeIdentity = initialStoreIdentity;
     if (!z.string().uuid().safeParse(this.instanceId).success) {
       throw new Error("native_outbound_instance_id_invalid");
     }
@@ -301,11 +339,16 @@ export class NativeBokOutboundPoller {
   }
 
   runtimeStatus(): FullNativeBokRuntimeStatus {
-    return fullNativeBokRuntimeStatus(this.inference, this.dispatcher, this.inference);
+    const status = fullNativeBokRuntimeStatus(this.inference, this.dispatcher, this.inference);
+    if (status.store.identity !== this.storeIdentity) {
+      throw new NativeBokOutboundPollerError("native_outbound_store_identity", false);
+    }
+    return status;
   }
 
   async runOnce(signal: AbortSignal): Promise<NativeBokOutboundTickResult> {
     if (signal.aborted) throw new NativeBokOutboundShutdown();
+    const runtime = this.runtimeStatus();
     const response = await this.postJson(
       this.leaseUrl,
       JSON.stringify({
@@ -315,7 +358,7 @@ export class NativeBokOutboundPoller {
           instanceId: this.instanceId,
           processStartedAt: this.processStartedAt,
         },
-        runtime: this.runtimeStatus(),
+        runtime,
       }),
       signal,
       MAX_NATIVE_BOK_LEASE_RESPONSE_BYTES,
@@ -324,12 +367,38 @@ export class NativeBokOutboundPoller {
     if (!parsed.success) {
       throw new NativeBokOutboundPollerError("native_outbound_malformed", true);
     }
+    if (parsed.data.runtimeIdentity !== this.instanceId) {
+      throw new NativeBokOutboundPollerError("native_outbound_runtime_identity", false);
+    }
+    if (parsed.data.storeIdentity !== this.storeIdentity) {
+      throw new NativeBokOutboundPollerError("native_outbound_store_identity", false);
+    }
+    if (parsed.data.processStartedAt !== this.processStartedAt) {
+      throw new NativeBokOutboundPollerError("native_outbound_runtime_process_stale", false);
+    }
+    if (parsed.data.statusHash !== nativeBridgeHash(runtime)) {
+      throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
+    }
     const lease = parsed.data.lease;
     if (!lease) return "idle";
+    if (lease.runtimeIdentity !== this.instanceId) {
+      throw new NativeBokOutboundPollerError("native_outbound_runtime_identity", false);
+    }
+    if (lease.storeIdentity !== this.storeIdentity) {
+      throw new NativeBokOutboundPollerError("native_outbound_store_identity", false);
+    }
+    if (lease.processStartedAt !== this.processStartedAt) {
+      throw new NativeBokOutboundPollerError("native_outbound_runtime_process_stale", false);
+    }
 
+    const processingController = new AbortController();
     const activeHeartbeatController = new AbortController();
     const activeHeartbeatSignal = AbortSignal.any([signal, activeHeartbeatController.signal]);
-    const activeHeartbeat = this.runActiveHeartbeat(activeHeartbeatSignal);
+    let activeHeartbeatFailure: unknown;
+    const activeHeartbeat = this.runActiveHeartbeat(activeHeartbeatSignal, lease).catch((error) => {
+      activeHeartbeatFailure = error;
+      processingController.abort();
+    });
     try {
       const leaseExpiresAt = Date.parse(lease.leaseExpiresAt);
       const processingDeadline = leaseExpiresAt - this.leaseSafetyMarginMs;
@@ -339,6 +408,7 @@ export class NativeBokOutboundPoller {
       } else {
         const processingSignal = AbortSignal.any([
           signal,
+          processingController.signal,
           AbortSignal.timeout(Math.max(1, processingDeadline - this.now())),
         ]);
         try {
@@ -347,12 +417,24 @@ export class NativeBokOutboundPoller {
             : await this.processDispatch(lease, processingSignal);
         } catch (error) {
           if (signal.aborted) throw new NativeBokOutboundShutdown();
+          if (activeHeartbeatFailure instanceof NativeBokOutboundLeaseLost) return "lease_lost";
+          if (activeHeartbeatFailure) throw activeHeartbeatFailure;
+          if (error instanceof NativeBokOutboundLeaseLost) return "lease_lost";
+          if (error instanceof NativeBokOutboundPollerError && !error.retryable) throw error;
           outcome = classifyProcessingFailure(error, processingSignal.aborted);
         }
       }
 
+      if (activeHeartbeatFailure instanceof NativeBokOutboundLeaseLost) return "lease_lost";
+      if (activeHeartbeatFailure) throw activeHeartbeatFailure;
+
       const result = {
         schemaVersion: NATIVE_BOK_OUTBOUND_SCHEMA_VERSION,
+        poller: {
+          instanceId: this.instanceId,
+          processStartedAt: this.processStartedAt,
+        },
+        storeIdentity: this.storeIdentity,
         jobId: lease.jobId,
         leaseToken: lease.leaseToken,
         requestHash: lease.requestHash,
@@ -383,6 +465,10 @@ export class NativeBokOutboundPoller {
         }
       } catch (error) {
         if (signal.aborted || error instanceof NativeBokOutboundShutdown) break;
+        if (error instanceof NativeBokOutboundPollerError && !error.retryable) {
+          this.log(error.code);
+          throw error;
+        }
         consecutiveFailures += 1;
         const code = error instanceof NativeBokOutboundPollerError
           ? error.code
@@ -401,6 +487,16 @@ export class NativeBokOutboundPoller {
     signal: AbortSignal,
   ): Promise<Extract<NativeBokOutboundResult["outcome"], { status: "completed" }>> {
     const result = await this.inference.decide(lease.request, signal);
+    if (
+      result.storeIdentity !== this.storeIdentity
+      || result.provenance.storeIdentity !== this.storeIdentity
+      || (
+        result.guidanceReceipt !== undefined
+        && result.guidanceReceipt.storeIdentity !== this.storeIdentity
+      )
+    ) {
+      throw new NativeBokOutboundPollerError("native_outbound_store_identity", false);
+    }
     return { status: "completed", result };
   }
 
@@ -409,6 +505,9 @@ export class NativeBokOutboundPoller {
     signal: AbortSignal,
   ): Promise<Extract<NativeBokOutboundResult["outcome"], { status: "completed" }>> {
     while (!signal.aborted) {
+      // Dispatch może wywołać nieodwracalny efekt na Discordzie. Bezpośrednio przed nim
+      // potwierdzamy po stronie ML dokładny lease, proces, Store i snapshot gotowości.
+      await this.postHeartbeat(signal, lease);
       const result = await this.dispatcher.dispatch(lease.request);
       if (result.status === "sent") return { status: "completed", result };
       await this.sleep(this.dispatchRetryMs, signal);
@@ -416,7 +515,10 @@ export class NativeBokOutboundPoller {
     throw new Error("dispatch_deadline");
   }
 
-  private async runActiveHeartbeat(signal: AbortSignal): Promise<void> {
+  private async runActiveHeartbeat(
+    signal: AbortSignal,
+    lease: NativeBokOutboundLease,
+  ): Promise<void> {
     while (!signal.aborted) {
       try {
         await this.heartbeatSleep(this.activeHeartbeatIntervalMs, signal);
@@ -426,9 +528,15 @@ export class NativeBokOutboundPoller {
       }
       if (signal.aborted) return;
       try {
-        await this.postHeartbeat(signal);
+        await this.postHeartbeat(signal, lease);
       } catch (error) {
         if (signal.aborted || error instanceof NativeBokOutboundShutdown) return;
+        if (
+          error instanceof NativeBokOutboundLeaseLost
+          || (error instanceof NativeBokOutboundPollerError && !error.retryable)
+        ) {
+          throw error;
+        }
         const code = error instanceof NativeBokOutboundPollerError
           ? error.code
           : "native_outbound_malformed";
@@ -437,7 +545,10 @@ export class NativeBokOutboundPoller {
     }
   }
 
-  private async postHeartbeat(signal: AbortSignal): Promise<void> {
+  private async postHeartbeat(
+    signal: AbortSignal,
+    lease?: NativeBokOutboundLease,
+  ): Promise<void> {
     const runtime = this.runtimeStatus();
     const response = await this.postJson(
       this.heartbeatUrl,
@@ -448,18 +559,38 @@ export class NativeBokOutboundPoller {
           processStartedAt: this.processStartedAt,
         },
         runtime,
+        ...(lease
+          ? {
+              lease: {
+                jobId: lease.jobId,
+                leaseToken: lease.leaseToken,
+                kind: lease.kind,
+                requestHash: lease.requestHash,
+              },
+            }
+          : {}),
       }),
       signal,
       MAX_NATIVE_BOK_CONTROL_RESPONSE_BYTES,
     );
     const parsed = nativeOutboundHeartbeatResponseSchema.safeParse(response);
-    if (
-      !parsed.success
-      || parsed.data.runtimeIdentity !== this.instanceId
-      || parsed.data.storeIdentity !== runtime.store.identity
-      || parsed.data.statusHash !== nativeBridgeHash(runtime)
-    ) {
+    if (!parsed.success) {
       throw new NativeBokOutboundPollerError("native_outbound_malformed", true);
+    }
+    if (parsed.data.runtimeIdentity !== this.instanceId) {
+      throw new NativeBokOutboundPollerError("native_outbound_runtime_identity", false);
+    }
+    if (parsed.data.storeIdentity !== this.storeIdentity) {
+      throw new NativeBokOutboundPollerError("native_outbound_store_identity", false);
+    }
+    if (parsed.data.statusHash !== nativeBridgeHash(runtime)) {
+      throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
+    }
+    if (lease && parsed.data.leaseValid !== true) {
+      throw new NativeBokOutboundLeaseLost();
+    }
+    if (!lease && parsed.data.leaseValid !== undefined) {
+      throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
     }
   }
 
@@ -531,21 +662,40 @@ export class NativeBokOutboundPoller {
         true,
       );
     }
-    if (response.status === 409 && parseResultConflict) {
+    if (response.status === 409 || response.status === 503) {
       let body: unknown;
       try {
         body = await readBoundedJson(response, maximumResponseBytes);
       } catch {
-        // Każdy 409 poza dokładnym, ograniczonym kontraktem jest naruszeniem spójności,
-        // nie chwilowym błędem transportu, który wolno zamaskować jako utratę lease.
+        if (response.status === 409) {
+          // Każdy 409 poza dokładnym, ograniczonym kontraktem jest naruszeniem spójności,
+          // nie chwilowym błędem transportu, który wolno zamaskować jako utratę lease.
+          throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
+        }
+        throw new NativeBokOutboundPollerError("native_outbound_rejected", true);
+      }
+      const identityError = nativeOutboundIdentityErrorResponseSchema.safeParse(body);
+      if (identityError.success) {
+        const expectedStatus = identityError.data.error === "runtime_identity_not_configured"
+          ? 503
+          : 409;
+        if (response.status !== expectedStatus) {
+          throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
+        }
+        throw outboundIdentityError(identityError.data.error);
+      }
+      if (response.status === 409 && parseResultConflict) {
+        const parsed = nativeOutboundResultConflictResponseSchema.safeParse(body);
+        if (!parsed.success) {
+          throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
+        }
+        if (parsed.data.error === "lease_lost") return LEASE_LOST;
+        throw new NativeBokOutboundPollerError("native_outbound_result_conflict", false);
+      }
+      if (response.status === 409) {
         throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
       }
-      const parsed = nativeOutboundResultConflictResponseSchema.safeParse(body);
-      if (!parsed.success) {
-        throw new NativeBokOutboundPollerError("native_outbound_malformed", false);
-      }
-      if (parsed.data.error === "lease_lost") return LEASE_LOST;
-      throw new NativeBokOutboundPollerError("native_outbound_result_conflict", false);
+      throw new NativeBokOutboundPollerError("native_outbound_rejected", true);
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -557,6 +707,22 @@ export class NativeBokOutboundPoller {
 }
 
 const LEASE_LOST = Symbol("lease_lost");
+
+function outboundIdentityError(
+  error:
+    | "runtime_identity_mismatch"
+    | "store_identity_mismatch"
+    | "runtime_process_stale"
+    | "runtime_identity_not_configured",
+): NativeBokOutboundPollerError {
+  const code = {
+    runtime_identity_mismatch: "native_outbound_runtime_identity",
+    store_identity_mismatch: "native_outbound_store_identity",
+    runtime_process_stale: "native_outbound_runtime_process_stale",
+    runtime_identity_not_configured: "native_outbound_runtime_identity_not_configured",
+  }[error] as NativeBokOutboundPollerError["code"];
+  return new NativeBokOutboundPollerError(code, false);
+}
 
 export function nativeBridgeHash(value: unknown): string {
   return createHash("sha256").update(canonical(value), "utf8").digest("hex");
@@ -602,6 +768,9 @@ function classifyProcessingFailure(
   }
   if (error instanceof NativeBokCorrectionBindingError) {
     return { status: "failed", errorCode: error.code, retryable: false };
+  }
+  if (error instanceof NativeBokOutboundPollerError) {
+    return { status: "failed", errorCode: error.code, retryable: error.retryable };
   }
   if (error instanceof NativeBokDaktelaDecisionEngineError) {
     return { status: "failed", errorCode: error.code, retryable: error.retryable };

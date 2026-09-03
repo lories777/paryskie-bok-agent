@@ -144,12 +144,13 @@ function createNativeOutboundPoller(
   decisionEngine: NativeBokDaktelaDecisionEngine,
   operationalDispatcher: NativeOperationalActionDispatcher,
 ): NativeBokOutboundPoller {
-  if (!config.nativeOutboundUrl || !config.nativeOutboundToken) {
+  if (!config.nativeRuntimeIdentity || !config.nativeOutboundUrl || !config.nativeOutboundToken) {
     throw new Error("Brak konfiguracji outbound bridge MasterLink.");
   }
   return new NativeBokOutboundPoller(decisionEngine, operationalDispatcher, {
     endpointUrl: config.nativeOutboundUrl,
     token: config.nativeOutboundToken,
+    instanceId: config.nativeRuntimeIdentity,
     requestTimeoutMs: config.masterlinkReportTimeoutMs,
     pollIntervalMs: config.nativeOutboundPollIntervalMs,
   });
