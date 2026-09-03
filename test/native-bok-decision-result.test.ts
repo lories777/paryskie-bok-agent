@@ -12,8 +12,8 @@ import {
   NATIVE_BOK_DECISION_PIPELINE_HASH,
 } from "../src/native-bok-decision-capability.js";
 import {
-  buildNativeBokDecisionResultV2,
-  nativeBokDecisionResultV2Schema,
+  buildNativeBokDecisionResultV3,
+  nativeBokDecisionResultV3Schema,
 } from "../src/native-bok-decision-result.js";
 import type { AgentTurnOutput } from "../src/types.js";
 
@@ -22,7 +22,7 @@ const MESSAGE_ID = "10310b54-06c2-4c1f-84a5-bc19f7c83b10";
 const ATTACHMENT_ID = `daktela-meta:${"a".repeat(64)}`;
 
 test("reviewed exact reply jest ready i nie przenosi runnable payloadów innych akcji", () => {
-  const result = buildNativeBokDecisionResultV2({
+  const result = buildNativeBokDecisionResultV3({
     output: output(),
     source: source(),
     attachmentEvidence: evidence(),
@@ -31,7 +31,11 @@ test("reviewed exact reply jest ready i nie przenosi runnable payloadów innych 
     policyHash: "c".repeat(64),
     playbookRevision: "d".repeat(64),
     correctionsRevision: 7,
+    storeIdentity: "9".repeat(64),
   });
+  assert.equal(result.schemaVersion, 3);
+  assert.equal(result.storeIdentity, "9".repeat(64));
+  assert.equal(result.provenance.storeIdentity, result.storeIdentity);
   assert.equal(result.state, "ready");
   assert.equal(result.customerReply?.body, "Dzień dobry,\n\nPaczka jest w drodze.\n\nPozdrawiamy");
   assert.deepEqual(result.reasonCodes, ["reviewed_reply_ready"]);
@@ -52,7 +56,7 @@ test("brak review, obcy ticket i stan human zawsze ukrywają customerReply", () 
     target: "Daktela ticket #999999",
     qualityReview: undefined,
   };
-  const result = buildNativeBokDecisionResultV2({
+  const result = buildNativeBokDecisionResultV3({
     output: raw,
     source: source(),
     attachmentEvidence: evidence(),
@@ -61,6 +65,7 @@ test("brak review, obcy ticket i stan human zawsze ukrywają customerReply", () 
     policyHash: "c".repeat(64),
     playbookRevision: "d".repeat(64),
     correctionsRevision: 0,
+    storeIdentity: "9".repeat(64),
   });
   assert.equal(result.state, "blocked");
   assert.equal(result.customerReply, null);
@@ -72,7 +77,7 @@ test("brak review, obcy ticket i stan human zawsze ukrywają customerReply", () 
 });
 
 test("guidance receipt jest ticket-scoped, strict i nie może być free-form routingiem", () => {
-  const result = buildNativeBokDecisionResultV2({
+  const result = buildNativeBokDecisionResultV3({
     output: output(),
     source: source(),
     attachmentEvidence: evidence(),
@@ -81,23 +86,26 @@ test("guidance receipt jest ticket-scoped, strict i nie może być free-form rou
     policyHash: "c".repeat(64),
     playbookRevision: "d".repeat(64),
     correctionsRevision: 1,
+    storeIdentity: "9".repeat(64),
     guidanceReceipt: {
       guidanceId: "99cadcda-8862-4ab7-9a73-729e2c7701f7",
       guidanceHash: "e".repeat(64),
       scope: "ticket",
       externalTicketId: TICKET_ID,
       storeReceiptId: "f".repeat(64),
+      storeIdentity: "9".repeat(64),
     },
   });
   assert.equal(result.guidanceReceipt?.scope, "ticket");
-  assert.equal(nativeBokDecisionResultV2Schema.safeParse({
+  assert.equal(result.guidanceReceipt?.storeIdentity, result.provenance.storeIdentity);
+  assert.equal(nativeBokDecisionResultV3Schema.safeParse({
     ...result,
     guidanceReceipt: { ...result.guidanceReceipt, channelId: "free-form" },
   }).success, false);
 });
 
 test("tampering evidence/review hashes jest odrzucane", () => {
-  const result = buildNativeBokDecisionResultV2({
+  const result = buildNativeBokDecisionResultV3({
     output: output(),
     source: source(),
     attachmentEvidence: evidence(),
@@ -106,13 +114,37 @@ test("tampering evidence/review hashes jest odrzucane", () => {
     policyHash: "c".repeat(64),
     playbookRevision: "d".repeat(64),
     correctionsRevision: 1,
+    storeIdentity: "9".repeat(64),
   });
   for (const tampered of [
     { ...result, sourceSnapshotHash: "0".repeat(64) },
+    { ...result, storeIdentity: "0".repeat(64) },
     { ...result, provenance: { ...result.provenance, reviewHash: "0".repeat(64) } },
   ]) {
-    assert.equal(nativeBokDecisionResultV2Schema.safeParse(tampered).success, false);
+    assert.equal(nativeBokDecisionResultV3Schema.safeParse(tampered).success, false);
   }
+});
+
+test("guidance receipt nie może pochodzić z innego wspólnego Store", () => {
+  assert.throws(() => buildNativeBokDecisionResultV3({
+    output: output(),
+    source: source(),
+    attachmentEvidence: evidence(),
+    toolEvidenceHash: "a".repeat(64),
+    toolNames: [],
+    policyHash: "c".repeat(64),
+    playbookRevision: "d".repeat(64),
+    correctionsRevision: 1,
+    storeIdentity: "9".repeat(64),
+    guidanceReceipt: {
+      guidanceId: "99cadcda-8862-4ab7-9a73-729e2c7701f7",
+      guidanceHash: "e".repeat(64),
+      scope: "ticket",
+      externalTicketId: TICKET_ID,
+      storeReceiptId: "f".repeat(64),
+      storeIdentity: "8".repeat(64),
+    },
+  }), /guidance_store_identity_mismatch/);
 });
 
 function output(): AgentTurnOutput {

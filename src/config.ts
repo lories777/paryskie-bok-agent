@@ -33,6 +33,11 @@ const optionalSecretFromEnv = z.preprocess(
   z.string().min(32).max(4096).optional(),
 );
 
+const optionalUuidFromEnv = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().uuid().optional(),
+);
+
 const optionalSnowflakeFromEnv = z.preprocess(
   (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
   z.string().regex(/^[1-9][0-9]{16,21}$/).optional(),
@@ -79,6 +84,7 @@ const envSchema = z.object({
   BOK_NATIVE_API_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
   BOK_NATIVE_API_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(120_000).default(110_000),
   BOK_NATIVE_OUTBOUND_ENABLED: booleanFromEnv,
+  BOK_NATIVE_RUNTIME_IDENTITY: optionalUuidFromEnv,
   BOK_NATIVE_OUTBOUND_URL: optionalUrlFromEnv,
   BOK_NATIVE_OUTBOUND_TOKEN: optionalSecretFromEnv,
   BOK_NATIVE_OUTBOUND_POLL_INTERVAL_MS: z.coerce
@@ -141,6 +147,7 @@ export interface AppConfig {
   nativeApiMaxConcurrency: number;
   nativeApiTimeoutMs: number;
   nativeOutboundEnabled: boolean;
+  nativeRuntimeIdentity?: string;
   nativeOutboundUrl?: string;
   nativeOutboundToken?: string;
   nativeOutboundPollIntervalMs: number;
@@ -227,6 +234,9 @@ export function loadConfig(
     nativeApiMaxConcurrency: parsed.BOK_NATIVE_API_MAX_CONCURRENCY,
     nativeApiTimeoutMs: parsed.BOK_NATIVE_API_TIMEOUT_MS,
     nativeOutboundEnabled: parsed.BOK_NATIVE_OUTBOUND_ENABLED,
+    ...(parsed.BOK_NATIVE_RUNTIME_IDENTITY
+      ? { nativeRuntimeIdentity: parsed.BOK_NATIVE_RUNTIME_IDENTITY }
+      : {}),
     ...(parsed.BOK_NATIVE_OUTBOUND_URL
       ? { nativeOutboundUrl: parsed.BOK_NATIVE_OUTBOUND_URL }
       : {}),
@@ -306,6 +316,7 @@ export function assertLiveConfig(config: AppConfig): asserts config is AppConfig
     errors.push(...nativeOperationalDispatchConfigurationErrors(config));
   }
   if (config.nativeOutboundEnabled) {
+    if (!config.nativeRuntimeIdentity) errors.push("BOK_NATIVE_RUNTIME_IDENTITY");
     if (!config.nativeOutboundUrl) errors.push("BOK_NATIVE_OUTBOUND_URL");
     if (!config.nativeOutboundToken) errors.push("BOK_NATIVE_OUTBOUND_TOKEN");
   }

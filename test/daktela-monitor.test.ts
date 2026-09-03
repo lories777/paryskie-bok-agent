@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,7 +12,48 @@ import {
   isAutomaticAcknowledgementActivity,
   isObviousNoReplyTicket,
 } from "../src/daktela-monitor.js";
+import {
+  DaktelaReadSession,
+  type DaktelaAuthenticatedReadPort,
+  type DaktelaQueueRow,
+} from "../src/daktela-read-session.js";
 import { AgentStore, type DaktelaTicketObservation } from "../src/store.js";
+
+class FakeMonitorDaktelaPort implements DaktelaAuthenticatedReadPort {
+  rows: DaktelaQueueRow[] = [this.row("2026-09-03T08:00:00.000Z")];
+  activityReads = 0;
+
+  row(edited: string): DaktelaQueueRow {
+    return {
+      ticketId: "700",
+      title: "Pytanie o zamówienie",
+      deadline: "",
+      category: "Pytanie",
+      contact: "",
+      assignedUser: "",
+      status: "Nowe",
+      stage: "Open",
+      edited,
+      editedBy: "System",
+      href: "/tickets/update/700",
+    };
+  }
+
+  async verify() {
+    return { userType: "agent", profileType: "admin", profileTitle: "Admin" };
+  }
+  async readQueue() {
+    return { rows: this.rows, capabilities: await this.verify() };
+  }
+  async readTicketActivities() {
+    this.activityReads += 1;
+    return [{ direction: "incoming" as const, text: "Gdzie jest paczka?", attachments: [] }];
+  }
+  async openExactTicket(): Promise<never> { throw new Error("unused"); }
+  async readExactActivity(): Promise<never> { throw new Error("unused"); }
+  async downloadExactAttachment(): Promise<never> { throw new Error("unused"); }
+  async close() {}
+}
 
 test("zadanie Dakteli przekazuje historię jako nieufne dane i zachowuje numer zamówienia", () => {
   const ticket: DaktelaTicketObservation = {
@@ -80,6 +122,46 @@ test("estoński autoresponder jest rozpoznawany po treści mimo kierunku incomin
     isAutomaticAcknowledgementActivity("Direction: Incoming Soovin tagastada ebasobivad tooted."),
     false,
   );
+});
+
+test("monitor nie dubluje exact źródła obsłużonego natywnie, lecz kolejkuje nowszą aktywność", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-native-monitor-e2e-"));
+  const store = new AgentStore(dir);
+  const port = new FakeMonitorDaktelaPort();
+  const config = loadConfig({
+    DAKTELA_VIEW_URL: "https://daktela.example/tickets",
+    DAKTELA_ESCALATION_CHANNEL_ID: "bok-agent-test",
+  }, process.cwd());
+  const monitor = new DaktelaMonitor(config, store, new DaktelaReadSession(config, port));
+  try {
+    const content = "Zweryfikowany kontekst Daktela #700.";
+    store.reconcileNativeDaktelaContext({
+      masterlinkOperationId: "9c711ebc-8be7-4d23-bdbc-936807d565f8",
+      externalTicketId: "700",
+      sourceRevision: 7,
+      masterlinkTicketId: "50ecb64a-3484-4b10-a869-a49445775117",
+      masterlinkTriggerMessageId: "1a797e4b-a9d5-48b0-a83c-d2982d20dbe8",
+      sourceSnapshotHash: createHash("sha256").update("source-r1").digest("hex"),
+      sourceExternalRevision: "2026-09-03T08:00:00.000Z",
+      sourceTriggerEventId: "activity_700_1",
+      contextHash: createHash("sha256").update(content).digest("hex"),
+      content,
+    });
+
+    assert.equal(await monitor.scanOnce(), 0);
+    assert.equal(port.activityReads, 0, "reconciled source is skipped before expensive detail read");
+    assert.equal(store.hasQueuedDaktelaJob("700"), false);
+
+    port.rows = [port.row("2026-09-03T08:05:00.000Z")];
+    assert.equal(await monitor.scanOnce(), 1);
+    assert.equal(port.activityReads, 1);
+    assert.match(store.claimNextJob()?.externalMessageId ?? "", /^daktela:v6:700:/);
+    assert.equal(store.claimNextJob(), null);
+  } finally {
+    await monitor.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("status runtime pokazuje trwale niedostarczony alert bez danych klienta", () => {

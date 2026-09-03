@@ -47,6 +47,7 @@ interface TicketScopedGuidanceRow {
 }
 
 interface NativeDaktelaContextBindingRow {
+  masterlink_operation_id: string;
   external_ticket_id: string;
   source_revision: number;
   masterlink_ticket_id: string;
@@ -139,6 +140,7 @@ export interface TicketScopedGuidanceReceipt {
   readonly scope: "ticket";
   readonly externalTicketId: string;
   readonly storeReceiptId: string;
+  readonly storeIdentity: string;
 }
 
 export interface TicketScopedGuidanceRecord {
@@ -148,6 +150,7 @@ export interface TicketScopedGuidanceRecord {
 }
 
 export interface NativeDaktelaContextReconciliationInput {
+  readonly masterlinkOperationId: string;
   readonly externalTicketId: string;
   readonly sourceRevision: number;
   readonly masterlinkTicketId: string;
@@ -165,6 +168,21 @@ export interface NativeDaktelaContextReconciliationRecord {
   readonly messageId: number;
 }
 
+export type EnqueueDaktelaMonitorCandidateResult =
+  | {
+      readonly status: "queued";
+      readonly conversationId: number;
+      readonly messageId: number;
+      readonly jobId: number;
+    }
+  | {
+      readonly status: "duplicate";
+      readonly conversationId: number;
+      readonly messageId: number;
+      readonly jobId: number;
+    }
+  | { readonly status: "native_reconciled" | "stale" };
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -174,6 +192,12 @@ function fingerprintsDiffer(previous: string, current: string): boolean {
   // tylko migruje istniejący zapis, żeby nie zakolejkować ponownie całej otwartej kolejki.
   if (/^v7:/.test(current) && !/^v\d+:/.test(previous)) return false;
   return previous !== current;
+}
+
+function canonicalDaktelaExternalRevision(value: string): string | null {
+  if (!value.trim()) return null;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? null : new Date(timestamp).toISOString();
 }
 
 function toOperationalActionDispatchRecord(
@@ -255,7 +279,10 @@ function ticketScopedGuidanceMatches(
     && row.source_created_at === input.createdAt;
 }
 
-function ticketScopedGuidanceRecord(row: TicketScopedGuidanceRow): TicketScopedGuidanceRecord {
+function ticketScopedGuidanceRecord(
+  row: TicketScopedGuidanceRow,
+  storeIdentity: string,
+): TicketScopedGuidanceRecord {
   return {
     receipt: {
       guidanceId: row.guidance_id,
@@ -263,6 +290,7 @@ function ticketScopedGuidanceRecord(row: TicketScopedGuidanceRow): TicketScopedG
       scope: "ticket",
       externalTicketId: row.external_ticket_id,
       storeReceiptId: row.store_receipt_id,
+      storeIdentity,
     },
     conversationId: row.conversation_id,
     messageId: row.source_message_id,
@@ -303,6 +331,9 @@ function assertNativeDaktelaContextReconciliationInput(
   if (
     !Number.isSafeInteger(input.sourceRevision)
     || input.sourceRevision < 1
+    || input.masterlinkOperationId.length < 1
+    || input.masterlinkOperationId.length > 100
+    || input.masterlinkOperationId.trim() !== input.masterlinkOperationId
     || input.masterlinkTicketId.length < 1
     || input.masterlinkTicketId.length > 100
     || input.masterlinkTicketId.trim() !== input.masterlinkTicketId
@@ -336,7 +367,8 @@ function nativeDaktelaContextBindingMatches(
   row: NativeDaktelaContextBindingRow,
   input: NativeDaktelaContextReconciliationInput,
 ): boolean {
-  return row.external_ticket_id === input.externalTicketId
+  return row.masterlink_operation_id === input.masterlinkOperationId
+    && row.external_ticket_id === input.externalTicketId
     && row.source_revision === input.sourceRevision
     && row.masterlink_ticket_id === input.masterlinkTicketId
     && row.masterlink_trigger_message_id === input.masterlinkTriggerMessageId
@@ -429,12 +461,16 @@ export class AgentStore {
         ticket_id TEXT PRIMARY KEY,
         fingerprint TEXT NOT NULL,
         latest_seen_fingerprint TEXT,
+        external_revision TEXT,
+        latest_seen_external_revision TEXT,
         stage TEXT NOT NULL,
         assigned_user TEXT NOT NULL,
         first_seen_at TEXT NOT NULL,
         last_seen_at TEXT NOT NULL,
         last_queued_at TEXT,
         last_job_id INTEGER REFERENCES jobs(id),
+        last_queued_fingerprint TEXT,
+        last_queued_external_revision TEXT,
         discord_thread_id TEXT
       );
 
@@ -552,6 +588,7 @@ export class AgentStore {
       );
 
       CREATE TABLE IF NOT EXISTS native_daktela_context_bindings (
+        masterlink_operation_id TEXT PRIMARY KEY,
         external_ticket_id TEXT NOT NULL,
         source_revision INTEGER NOT NULL CHECK(source_revision >= 1),
         masterlink_ticket_id TEXT NOT NULL,
@@ -562,9 +599,7 @@ export class AgentStore {
         context_hash TEXT NOT NULL,
         conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE RESTRICT,
         source_message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id) ON DELETE RESTRICT,
-        stored_at TEXT NOT NULL,
-        PRIMARY KEY(external_ticket_id, source_revision),
-        UNIQUE(masterlink_ticket_id, source_revision)
+        stored_at TEXT NOT NULL
       );
 
       CREATE INDEX IF NOT EXISTS jobs_status_id_idx ON jobs(status, id);
@@ -583,7 +618,10 @@ export class AgentStore {
         ON ticket_scoped_guidance(external_ticket_id, source_revision);
       CREATE INDEX IF NOT EXISTS native_daktela_context_masterlink_idx
         ON native_daktela_context_bindings(masterlink_ticket_id, source_revision);
+      CREATE INDEX IF NOT EXISTS native_daktela_context_source_idx
+        ON native_daktela_context_bindings(external_ticket_id, source_external_revision);
     `);
+    this.migrateNativeDaktelaContextBindings();
     this.db.prepare(`
       INSERT OR IGNORE INTO runtime_metadata(key, value)
       VALUES ('store_id', ?)
@@ -594,6 +632,10 @@ export class AgentStore {
     this.ensureColumn("actions", "quality_review", "TEXT");
     this.ensureColumn("daktela_observations", "discord_thread_id", "TEXT");
     this.ensureColumn("daktela_observations", "latest_seen_fingerprint", "TEXT");
+    this.ensureColumn("daktela_observations", "external_revision", "TEXT");
+    this.ensureColumn("daktela_observations", "latest_seen_external_revision", "TEXT");
+    this.ensureColumn("daktela_observations", "last_queued_fingerprint", "TEXT");
+    this.ensureColumn("daktela_observations", "last_queued_external_revision", "TEXT");
     this.ensureColumn("deliveries", "next_attempt_at", "TEXT");
     this.db
       .prepare(`
@@ -640,6 +682,95 @@ export class AgentStore {
     `);
   }
 
+  /**
+   * An intermediate build keyed native bindings by ticket revision. Rebuild that unpublished
+   * shape transactionally so a newer ML operation may refresh verified facts without inventing a
+   * ticket revision. Legacy rows retain their source marker under a deterministic opaque key.
+   */
+  private migrateNativeDaktelaContextBindings(): void {
+    const columns = this.db
+      .prepare("PRAGMA table_info(native_daktela_context_bindings)")
+      .all() as Array<{ name: string }>;
+    if (columns.some((column) => column.name === "masterlink_operation_id")) return;
+    const legacyRows = this.db
+      .prepare(`
+        SELECT external_ticket_id, source_revision, masterlink_ticket_id,
+               masterlink_trigger_message_id, source_snapshot_hash,
+               source_external_revision, source_trigger_event_id, context_hash,
+               conversation_id, source_message_id, stored_at
+        FROM native_daktela_context_bindings
+        ORDER BY external_ticket_id, source_revision
+      `)
+      .all() as Array<Omit<NativeDaktelaContextBindingRow, "masterlink_operation_id">>;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`
+        DROP INDEX IF EXISTS native_daktela_context_masterlink_idx;
+        DROP INDEX IF EXISTS native_daktela_context_source_idx;
+        ALTER TABLE native_daktela_context_bindings
+          RENAME TO native_daktela_context_bindings_legacy_v1;
+        CREATE TABLE native_daktela_context_bindings (
+          masterlink_operation_id TEXT PRIMARY KEY,
+          external_ticket_id TEXT NOT NULL,
+          source_revision INTEGER NOT NULL CHECK(source_revision >= 1),
+          masterlink_ticket_id TEXT NOT NULL,
+          masterlink_trigger_message_id TEXT NOT NULL,
+          source_snapshot_hash TEXT NOT NULL,
+          source_external_revision TEXT NOT NULL,
+          source_trigger_event_id TEXT NOT NULL,
+          context_hash TEXT NOT NULL,
+          conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE RESTRICT,
+          source_message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id) ON DELETE RESTRICT,
+          stored_at TEXT NOT NULL
+        );
+      `);
+      const insert = this.db.prepare(`
+        INSERT INTO native_daktela_context_bindings(
+          masterlink_operation_id, external_ticket_id, source_revision, masterlink_ticket_id,
+          masterlink_trigger_message_id, source_snapshot_hash, source_external_revision,
+          source_trigger_event_id, context_hash, conversation_id, source_message_id, stored_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of legacyRows) {
+        const legacyKey = `legacy-v1:${createHash("sha256")
+          .update(JSON.stringify([
+            row.external_ticket_id,
+            row.source_revision,
+            row.masterlink_ticket_id,
+            row.masterlink_trigger_message_id,
+            row.source_snapshot_hash,
+            row.context_hash,
+          ]), "utf8")
+          .digest("hex")}`;
+        insert.run(
+          legacyKey,
+          row.external_ticket_id,
+          row.source_revision,
+          row.masterlink_ticket_id,
+          row.masterlink_trigger_message_id,
+          row.source_snapshot_hash,
+          row.source_external_revision,
+          row.source_trigger_event_id,
+          row.context_hash,
+          row.conversation_id,
+          row.source_message_id,
+          row.stored_at,
+        );
+      }
+      this.db.exec(`
+        DROP TABLE native_daktela_context_bindings_legacy_v1;
+        CREATE INDEX native_daktela_context_masterlink_idx
+          ON native_daktela_context_bindings(masterlink_ticket_id, source_revision);
+        CREATE INDEX native_daktela_context_source_idx
+          ON native_daktela_context_bindings(external_ticket_id, source_external_revision);
+        COMMIT;
+      `);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   runtimeIdentity(): string {
     const row = this.db
       .prepare("SELECT value FROM runtime_metadata WHERE key = 'store_id'")
@@ -650,37 +781,30 @@ export class AgentStore {
     return row.value;
   }
 
+  runtimeStoreIdentity(): string {
+    return createHash("sha256").update(this.runtimeIdentity(), "utf8").digest("hex");
+  }
+
   /**
    * Reconciles the exact ML snapshot into the same conversation used by the Discord pipeline.
    * The caller may invoke this only after independently verifying the canonical Daktela source.
-   * A revision is immutable: retrying identical input is a no-op, while changed context/source
-   * fails closed before guidance or inference can observe it.
+   * One ML operation is immutable: retrying it is a no-op, while a fresh operation may lawfully
+   * refresh facts or guidance at the same ticket revision. Older ticket revisions and remaps fail
+   * closed before guidance or inference can observe them.
    */
   reconcileNativeDaktelaContext(
     input: NativeDaktelaContextReconciliationInput,
   ): NativeDaktelaContextReconciliationRecord {
     assertNativeDaktelaContextReconciliationInput(input);
     const conversationExternalId = `daktela-ticket:${input.externalTicketId}`;
-    const externalMessageId = `masterlink-native:v1:${input.externalTicketId}:${input.sourceRevision}`;
+    const operationKey = createHash("sha256")
+      .update(input.masterlinkOperationId, "utf8")
+      .digest("hex")
+      .slice(0, 24);
+    const externalMessageId = `masterlink-native:v2:${input.externalTicketId}:${operationKey}`;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const exact = this.nativeDaktelaContextBinding(
-        input.externalTicketId,
-        input.sourceRevision,
-      );
-      const byMasterlink = this.db
-        .prepare(`
-          SELECT external_ticket_id, source_revision, masterlink_ticket_id,
-                 masterlink_trigger_message_id, source_snapshot_hash,
-                 source_external_revision, source_trigger_event_id, context_hash,
-                 conversation_id, source_message_id, stored_at
-          FROM native_daktela_context_bindings
-          WHERE masterlink_ticket_id = ? AND source_revision = ?
-        `)
-        .get(input.masterlinkTicketId, input.sourceRevision) as
-          | NativeDaktelaContextBindingRow
-          | undefined;
-      const existing = exact ?? byMasterlink;
+      const existing = this.nativeDaktelaContextBinding(input.masterlinkOperationId);
       const newest = this.db
         .prepare(`
           SELECT MAX(source_revision) AS source_revision
@@ -726,6 +850,65 @@ export class AgentStore {
           messageId: existing.source_message_id,
         };
       }
+
+      const exactSourceRows = this.db
+        .prepare(`
+          SELECT source_snapshot_hash, source_trigger_event_id
+          FROM native_daktela_context_bindings
+          WHERE external_ticket_id = ? AND source_external_revision = ?
+        `)
+        .all(input.externalTicketId, input.sourceExternalRevision) as Array<{
+          source_snapshot_hash: string;
+          source_trigger_event_id: string;
+        }>;
+      if (exactSourceRows.some((row) =>
+        row.source_snapshot_hash !== input.sourceSnapshotHash
+        || row.source_trigger_event_id !== input.sourceTriggerEventId
+      )) {
+        throw new Error("native_daktela_context_conflict");
+      }
+
+      // A real standalone-monitor job owns this exact Daktela revision. Starting a second,
+      // synchronous native inference would produce two potentially different answers from the
+      // same agent. `last_job_id` remains reserved for actual jobs; native runs use their immutable
+      // source binding below as the separate marker.
+      const monitorOwner = this.db
+        .prepare(`
+          SELECT jobs.id AS last_job_id
+          FROM jobs
+          JOIN messages
+            ON messages.id = jobs.trigger_message_id
+           AND messages.conversation_id = jobs.conversation_id
+          JOIN conversations ON conversations.id = jobs.conversation_id
+          LEFT JOIN daktela_observations AS observations
+            ON observations.ticket_id = ?
+          WHERE conversations.platform = 'discord'
+            AND conversations.external_id = ?
+            AND messages.author_id = 'daktela-monitor'
+            AND messages.role = 'context'
+            AND jobs.external_message_id LIKE 'daktela:%'
+            AND (
+              jobs.status IN ('pending', 'running')
+              OR (
+                observations.last_job_id = jobs.id
+                AND observations.last_queued_external_revision = ?
+              )
+              OR (
+                observations.external_revision = ?
+                AND substr(jobs.external_message_id, -16) = substr(observations.fingerprint, 1, 16)
+              )
+            )
+          LIMIT 1
+        `)
+        .get(
+          input.externalTicketId,
+          conversationExternalId,
+          input.sourceExternalRevision,
+          input.sourceExternalRevision,
+        ) as
+          | { last_job_id: number }
+          | undefined;
+      if (monitorOwner) throw new Error("native_daktela_context_monitor_owned");
 
       const incompatibleMapping = this.db
         .prepare(`
@@ -788,13 +971,14 @@ export class AgentStore {
       this.db
         .prepare(`
           INSERT INTO native_daktela_context_bindings(
-            external_ticket_id, source_revision, masterlink_ticket_id,
+            masterlink_operation_id, external_ticket_id, source_revision, masterlink_ticket_id,
             masterlink_trigger_message_id, source_snapshot_hash,
             source_external_revision, source_trigger_event_id, context_hash,
             conversation_id, source_message_id, stored_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
+          input.masterlinkOperationId,
           input.externalTicketId,
           input.sourceRevision,
           input.masterlinkTicketId,
@@ -816,19 +1000,18 @@ export class AgentStore {
   }
 
   private nativeDaktelaContextBinding(
-    externalTicketId: string,
-    sourceRevision: number,
+    masterlinkOperationId: string,
   ): NativeDaktelaContextBindingRow | null {
     const row = this.db
       .prepare(`
-        SELECT external_ticket_id, source_revision, masterlink_ticket_id,
+        SELECT masterlink_operation_id, external_ticket_id, source_revision, masterlink_ticket_id,
                masterlink_trigger_message_id, source_snapshot_hash,
                source_external_revision, source_trigger_event_id, context_hash,
                conversation_id, source_message_id, stored_at
         FROM native_daktela_context_bindings
-        WHERE external_ticket_id = ? AND source_revision = ?
+        WHERE masterlink_operation_id = ?
       `)
-      .get(externalTicketId, sourceRevision) as NativeDaktelaContextBindingRow | undefined;
+      .get(masterlinkOperationId) as NativeDaktelaContextBindingRow | undefined;
     return row ?? null;
   }
 
@@ -843,7 +1026,7 @@ export class AgentStore {
           throw new Error("ticket_guidance_conflict");
         }
         this.db.exec("COMMIT");
-        return ticketScopedGuidanceRecord(existing);
+        return ticketScopedGuidanceRecord(existing, this.runtimeStoreIdentity());
       }
       const conversation = this.db
         .prepare(`
@@ -894,7 +1077,7 @@ export class AgentStore {
       const inserted = this.ticketScopedGuidanceRow(input.guidanceId);
       if (!inserted) throw new Error("ticket_guidance_insert_missing");
       this.db.exec("COMMIT");
-      return ticketScopedGuidanceRecord(inserted);
+      return ticketScopedGuidanceRecord(inserted, this.runtimeStoreIdentity());
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -903,7 +1086,7 @@ export class AgentStore {
 
   ticketScopedGuidance(guidanceId: string): TicketScopedGuidanceRecord | null {
     const row = this.ticketScopedGuidanceRow(guidanceId);
-    return row ? ticketScopedGuidanceRecord(row) : null;
+    return row ? ticketScopedGuidanceRecord(row, this.runtimeStoreIdentity()) : null;
   }
 
   syntheticDaktelaDecisionJob(input: {
@@ -1359,58 +1542,99 @@ export class AgentStore {
     maxCandidates: number,
   ): DaktelaTicketObservation[] {
     if (tickets.length === 0) return [];
-    const timestamp = now();
-    const knownCount = this.db
-      .prepare("SELECT COUNT(*) AS count FROM daktela_observations")
-      .get() as { count: SqlValue };
-    const bootstrap = Number(knownCount.count) === 0;
-    const existingByTicket = new Map<string, string>();
-    for (const ticket of tickets) {
-      const existing = this.db
-        .prepare("SELECT fingerprint FROM daktela_observations WHERE ticket_id = ?")
-        .get(ticket.ticketId) as { fingerprint: string } | undefined;
-      if (existing) existingByTicket.set(ticket.ticketId, existing.fingerprint);
-    }
-    const candidates = (bootstrap
-      ? tickets.filter(
-          (ticket) =>
-            ticket.stage.toLowerCase() === "open" &&
-            (!ticket.assignedUser || ticket.assignedUser.toLowerCase() === "system"),
-        )
-      : tickets.filter((ticket) => {
-          const previousFingerprint = existingByTicket.get(ticket.ticketId);
-          return (
-            ticket.stage.toLowerCase() === "open" &&
-            (!previousFingerprint || fingerprintsDiffer(previousFingerprint, ticket.fingerprint))
-          );
-        }))
-      .sort((left, right) => Number(Boolean(left.assignedUser)) - Number(Boolean(right.assignedUser)))
-      .slice(0, maxCandidates);
-    const selectedTicketIds = new Set(candidates.map((ticket) => ticket.ticketId));
-
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const timestamp = now();
+      const knownCount = this.db
+        .prepare("SELECT COUNT(*) AS count FROM daktela_observations")
+        .get() as { count: SqlValue };
+      const bootstrap = Number(knownCount.count) === 0;
+      const existingByTicket = new Map<string, {
+        fingerprint: string;
+        externalRevision: string | null;
+      }>();
       for (const ticket of tickets) {
-        const previousFingerprint = existingByTicket.get(ticket.ticketId);
+        const existing = this.db
+          .prepare(`
+            SELECT fingerprint, external_revision
+            FROM daktela_observations
+            WHERE ticket_id = ?
+          `)
+          .get(ticket.ticketId) as
+            | { fingerprint: string; external_revision: string | null }
+            | undefined;
+        if (existing) {
+          existingByTicket.set(ticket.ticketId, {
+            fingerprint: existing.fingerprint,
+            externalRevision: existing.external_revision,
+          });
+        }
+      }
+      const nativeReconciledTicketIds = new Set<string>();
+      for (const ticket of tickets) {
+        const externalRevision = canonicalDaktelaExternalRevision(ticket.edited);
+        if (!externalRevision) continue;
+        if (this.db
+          .prepare(`
+            SELECT 1
+            FROM native_daktela_context_bindings
+            WHERE external_ticket_id = ? AND source_external_revision = ?
+            LIMIT 1
+          `)
+          .get(ticket.ticketId, externalRevision)) {
+          nativeReconciledTicketIds.add(ticket.ticketId);
+        }
+      }
+      const candidates = (bootstrap
+        ? tickets.filter(
+            (ticket) =>
+              ticket.stage.toLowerCase() === "open"
+              && (!ticket.assignedUser || ticket.assignedUser.toLowerCase() === "system")
+              && !nativeReconciledTicketIds.has(ticket.ticketId),
+          )
+        : tickets.filter((ticket) => {
+            const previous = existingByTicket.get(ticket.ticketId);
+            return (
+              ticket.stage.toLowerCase() === "open"
+              && (!previous || fingerprintsDiffer(previous.fingerprint, ticket.fingerprint))
+              && !nativeReconciledTicketIds.has(ticket.ticketId)
+            );
+          }))
+        .sort((left, right) =>
+          Number(Boolean(left.assignedUser)) - Number(Boolean(right.assignedUser)))
+        .slice(0, maxCandidates);
+      const selectedTicketIds = new Set(candidates.map((ticket) => ticket.ticketId));
+
+      for (const ticket of tickets) {
+        const previous = existingByTicket.get(ticket.ticketId);
+        const previousFingerprint = previous?.fingerprint;
+        const externalRevision = canonicalDaktelaExternalRevision(ticket.edited);
         const isChanged =
           !previousFingerprint || fingerprintsDiffer(previousFingerprint, ticket.fingerprint);
         const preserveForNextScan =
           !bootstrap &&
           isChanged &&
           ticket.stage.toLowerCase() === "open" &&
-          !selectedTicketIds.has(ticket.ticketId);
+          !selectedTicketIds.has(ticket.ticketId)
+          && !nativeReconciledTicketIds.has(ticket.ticketId);
         if (!previousFingerprint && preserveForNextScan) continue;
         const storedFingerprint =
           preserveForNextScan && previousFingerprint ? previousFingerprint : ticket.fingerprint;
+        const storedExternalRevision = preserveForNextScan
+          ? previous?.externalRevision ?? null
+          : externalRevision;
         this.db
           .prepare(`
             INSERT INTO daktela_observations(
-              ticket_id, fingerprint, latest_seen_fingerprint, stage, assigned_user,
-              first_seen_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+              ticket_id, fingerprint, latest_seen_fingerprint,
+              external_revision, latest_seen_external_revision,
+              stage, assigned_user, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ticket_id) DO UPDATE SET
               fingerprint = excluded.fingerprint,
               latest_seen_fingerprint = excluded.latest_seen_fingerprint,
+              external_revision = excluded.external_revision,
+              latest_seen_external_revision = excluded.latest_seen_external_revision,
               stage = excluded.stage,
               assigned_user = excluded.assigned_user,
               last_seen_at = excluded.last_seen_at
@@ -1419,6 +1643,8 @@ export class AgentStore {
             ticket.ticketId,
             storedFingerprint,
             ticket.fingerprint,
+            storedExternalRevision,
+            externalRevision,
             ticket.stage,
             ticket.assignedUser,
             timestamp,
@@ -1426,22 +1652,165 @@ export class AgentStore {
           );
       }
       this.db.exec("COMMIT");
+      return candidates;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
 
-    return candidates;
+  /**
+   * Atomically turns a selected queue row into a real monitor job, unless the exact Daktela
+   * revision was reconciled by ML in the meantime. This closes the scan→detail→ingest race.
+   */
+  enqueueDaktelaMonitorCandidate(
+    ticket: DaktelaTicketObservation,
+    message: IncomingMessage,
+  ): EnqueueDaktelaMonitorCandidateResult {
+    const externalRevision = canonicalDaktelaExternalRevision(ticket.edited);
+    if (
+      message.conversationExternalId !== `daktela-ticket:${ticket.ticketId}`
+      || message.authorId !== "daktela-monitor"
+      || message.role !== "context"
+      || !message.shouldRespond
+    ) {
+      throw new Error("daktela_monitor_candidate_invalid");
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const observation = this.db
+        .prepare(`
+          SELECT fingerprint, external_revision
+          FROM daktela_observations
+          WHERE ticket_id = ?
+        `)
+        .get(ticket.ticketId) as
+          | { fingerprint: string; external_revision: string | null }
+          | undefined;
+      if (
+        !observation
+        || observation.fingerprint !== ticket.fingerprint
+        || observation.external_revision !== externalRevision
+      ) {
+        this.db.exec("COMMIT");
+        return { status: "stale" };
+      }
+      const nativeMarker = externalRevision
+        ? this.db
+            .prepare(`
+              SELECT 1
+              FROM native_daktela_context_bindings
+              WHERE external_ticket_id = ? AND source_external_revision = ?
+              LIMIT 1
+            `)
+            .get(ticket.ticketId, externalRevision)
+        : undefined;
+      if (nativeMarker) {
+        this.db.exec("COMMIT");
+        return { status: "native_reconciled" };
+      }
+
+      const result = this.ingest(message);
+      const storedMessage = this.db
+        .prepare(`
+          SELECT role, author_id, author_name, content
+          FROM messages
+          WHERE id = ? AND conversation_id = ? AND external_message_id = ?
+        `)
+        .get(result.messageId, result.conversationId, message.externalMessageId) as
+          | { role: string; author_id: string; author_name: string; content: string }
+          | undefined;
+      if (
+        !storedMessage
+        || storedMessage.role !== message.role
+        || storedMessage.author_id !== message.authorId
+        || storedMessage.author_name !== message.authorName
+        || storedMessage.content !== message.content
+      ) {
+        throw new Error("daktela_monitor_candidate_conflict");
+      }
+      let jobId = result.jobId;
+      let queued = result.inserted && jobId !== undefined;
+      if (!jobId) {
+        const existingJobs = this.db
+          .prepare(`
+            SELECT id
+            FROM jobs
+            WHERE conversation_id = ? AND trigger_message_id = ?
+              AND platform = 'discord' AND external_message_id = ?
+            ORDER BY id
+            LIMIT 2
+          `)
+          .all(result.conversationId, result.messageId, message.externalMessageId) as Array<{
+            id: number;
+          }>;
+        if (existingJobs.length > 1) throw new Error("daktela_monitor_candidate_job_conflict");
+        jobId = existingJobs[0]?.id;
+        // Recover a legacy crash between message insert and job insert. This is a real worker job,
+        // created inside the same transaction as its observation link—not a synthetic marker.
+        if (!jobId) {
+          const timestamp = now();
+          const insertedJob = this.db
+            .prepare(`
+              INSERT INTO jobs(
+                conversation_id, trigger_message_id, platform, channel_id, external_message_id,
+                status, created_at
+              ) VALUES (?, ?, 'discord', ?, ?, 'pending', ?)
+            `)
+            .run(
+              result.conversationId,
+              result.messageId,
+              message.channelId,
+              message.externalMessageId,
+              timestamp,
+            );
+          jobId = Number(insertedJob.lastInsertRowid);
+          this.db
+            .prepare("UPDATE jobs SET public_id = ? WHERE id = ?")
+            .run(this.publicId("BOK", jobId), jobId);
+          queued = true;
+        }
+      }
+      if (!jobId) throw new Error("daktela_monitor_candidate_job_missing");
+      const linked = this.db
+        .prepare(`
+          UPDATE daktela_observations
+          SET last_queued_at = ?, last_job_id = ?, last_queued_fingerprint = ?,
+              last_queued_external_revision = ?
+          WHERE ticket_id = ? AND fingerprint = ? AND external_revision IS ?
+        `)
+        .run(
+          now(),
+          jobId,
+          ticket.fingerprint,
+          externalRevision,
+          ticket.ticketId,
+          ticket.fingerprint,
+          externalRevision,
+        );
+      if (linked.changes !== 1) throw new Error("daktela_monitor_candidate_stale");
+      this.db.exec("COMMIT");
+      return {
+        status: queued ? "queued" : "duplicate",
+        conversationId: result.conversationId,
+        messageId: result.messageId,
+        jobId,
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   linkDaktelaJob(ticketId: string, fingerprint: string, jobId: number): void {
     this.db
       .prepare(`
         UPDATE daktela_observations
-        SET last_queued_at = ?, last_job_id = ?
+        SET last_queued_at = ?, last_job_id = ?, last_queued_fingerprint = ?,
+            last_queued_external_revision = external_revision
         WHERE ticket_id = ? AND fingerprint = ?
       `)
-      .run(now(), jobId, ticketId, fingerprint);
+      .run(now(), jobId, fingerprint, ticketId, fingerprint);
   }
 
   hasQueuedDaktelaJob(ticketId: string): boolean {

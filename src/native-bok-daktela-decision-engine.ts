@@ -11,8 +11,8 @@ import {
   type NativeBokDecisionCapabilityStatus,
 } from "./native-bok-decision-capability.js";
 import {
-  buildNativeBokDecisionResultV2,
-  type NativeBokDecisionResultV2,
+  buildNativeBokDecisionResultV3,
+  type NativeBokDecisionResultV3,
 } from "./native-bok-decision-result.js";
 import {
   nativeBokGenerateRequestSchema,
@@ -128,7 +128,7 @@ export class NativeBokDaktelaDecisionEngine {
   async decide(
     rawRequest: unknown,
     signal: AbortSignal,
-  ): Promise<NativeBokDecisionResultV2> {
+  ): Promise<NativeBokDecisionResultV3> {
     const request = nativeBokDaktelaDecisionRequestV2Schema.parse(rawRequest);
     if (!this.decisionCapabilityStatus().ready) {
       throw new NativeBokDaktelaDecisionEngineError("decision_capability_unavailable", true);
@@ -149,6 +149,7 @@ export class NativeBokDaktelaDecisionEngine {
         const content = renderNativeDaktelaContext(request.context, verified.source.externalTicketId);
         try {
           this.agent.core.store.reconcileNativeDaktelaContext({
+            masterlinkOperationId: request.context.operationId,
             externalTicketId: verified.source.externalTicketId,
             sourceRevision: request.context.ticket.revision,
             masterlinkTicketId: request.context.ticket.id,
@@ -206,7 +207,7 @@ export class NativeBokDaktelaDecisionEngine {
     );
     if (!attachmentEvidence) throw new Error("decision_attachment_evidence_missing");
     // Cleanup happened only after both primary and independent reviewer consumed the files.
-    return buildNativeBokDecisionResultV2({
+    return buildNativeBokDecisionResultV3({
       output: reviewed.output,
       source: request.source,
       attachmentEvidence,
@@ -215,6 +216,7 @@ export class NativeBokDaktelaDecisionEngine {
       policyHash: reviewed.provenance.policyHash,
       playbookRevision: reviewed.provenance.playbookRevision,
       correctionsRevision: reviewed.provenance.correctionsRevision,
+      storeIdentity: this.agent.core.store.runtimeStoreIdentity(),
       ...(storedGuidance ? { guidanceReceipt: storedGuidance.receipt } : {}),
     });
   }

@@ -291,6 +291,9 @@ test("guidance ML dostaje immutable receipt, wchodzi tylko do ticketu i nie twor
     }, new AbortController().signal);
     assert.equal(result.guidanceReceipt?.scope, "ticket");
     assert.equal(result.guidanceReceipt?.externalTicketId, "100328");
+    assert.equal(result.guidanceReceipt?.storeIdentity, store.runtimeStoreIdentity());
+    assert.equal(result.storeIdentity, store.runtimeStoreIdentity());
+    assert.equal(result.provenance.storeIdentity, store.runtimeStoreIdentity());
     assert.equal(store.activeLearnedRules().length, 0);
     assert.equal(store.activeVerifiedHumanCorrections(100).total, 0);
     const job = store.syntheticDaktelaDecisionJob({
@@ -371,6 +374,26 @@ test("świeży ticket ML rekoncyliuje wspólną rozmowę przed pollingiem i retr
       error instanceof Error && error.message === "decision_context_binding_invalid");
     assert.equal(primary.inputs.length, 2, "conflict must stop before the model");
 
+    const refreshedFacts = decisionContext(source);
+    refreshedFacts.operationId = "4e8330a6-8b43-473f-8478-bd9c27ff68e3";
+    refreshedFacts.verifiedFacts["shipment.status"] = "out_for_delivery";
+    const refreshed = await engine.decide({
+      ...request,
+      context: refreshedFacts,
+    }, new AbortController().signal);
+    assert.equal(refreshed.state, "ready");
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS count FROM native_daktela_context_bindings").get() as { count: number }).count),
+      2,
+      "a new operation may refresh facts without an artificial ticket revision bump",
+    );
+    assert.equal(
+      store.recentMessages(job.conversationId, 20)
+        .filter((message) => message.authorId === "masterlink-native-context").length,
+      2,
+    );
+    assert.equal(primary.inputs.length, 3);
+
     port.ticketExternalRevision = "2026-09-02T20:05:00.000Z";
     const changedSource = decisionSource({
       externalRevision: port.ticketExternalRevision,
@@ -381,7 +404,7 @@ test("świeży ticket ML rekoncyliuje wspólną rozmowę przed pollingiem i retr
       context: decisionContext(changedSource),
     }, new AbortController().signal), (error: unknown) =>
       error instanceof Error && error.message === "decision_context_binding_invalid");
-    assert.equal(primary.inputs.length, 2);
+    assert.equal(primary.inputs.length, 3);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -421,6 +444,7 @@ test("stara rewizja i próba przepięcia ML↔Daktela kończą się fail-closed"
     }, new AbortController().signal);
     const revisionEight = decisionContext(source);
     revisionEight.ticket.revision = 8;
+    revisionEight.operationId = "4e8330a6-8b43-473f-8478-bd9c27ff68e3";
     await engine.decide({
       context: revisionEight,
       knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
@@ -436,6 +460,7 @@ test("stara rewizja i próba przepięcia ML↔Daktela kończą się fail-closed"
 
     const stale = decisionContext(source);
     stale.ticket.revision = 6;
+    stale.operationId = "d06dc72e-5d3b-4d36-a240-314a47534dcf";
     await assert.rejects(engine.decide({
       context: stale,
       knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
@@ -445,6 +470,7 @@ test("stara rewizja i próba przepięcia ML↔Daktela kończą się fail-closed"
 
     const remapped = decisionContext(source);
     remapped.ticket.revision = 9;
+    remapped.operationId = "bb913f60-f393-43a7-bacc-ab0f155bb99b";
     remapped.ticket.id = "29767dd1-a7df-41a1-b6bd-ec9e819675e5";
     await assert.rejects(engine.decide({
       context: remapped,

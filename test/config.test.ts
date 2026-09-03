@@ -190,18 +190,21 @@ test("outbound bridge wymaga dedykowanego URL i tokenu, nie credentiali raportu"
   }, "/tmp/project");
   assert.throws(
     () => assertLiveConfig(reportOnly),
-    /BOK_NATIVE_OUTBOUND_URL.*BOK_NATIVE_OUTBOUND_TOKEN/,
+    /BOK_NATIVE_RUNTIME_IDENTITY.*BOK_NATIVE_OUTBOUND_URL.*BOK_NATIVE_OUTBOUND_TOKEN/,
   );
 
   const ready = loadConfig({
     ...common,
+    BOK_NATIVE_RUNTIME_IDENTITY: "f44eb32c-857e-4d0c-86d2-0ec47e1094ae",
     BOK_NATIVE_OUTBOUND_URL: "https://ml.example",
     BOK_NATIVE_OUTBOUND_TOKEN: "dedicated-outbound-token-at-least-32",
     BOK_NATIVE_OUTBOUND_POLL_INTERVAL_MS: "5000",
   }, "/tmp/project");
   assert.doesNotThrow(() => assertLiveConfig(ready));
   assert.equal(ready.nativeOutboundUrl, "https://ml.example");
+  assert.equal(ready.nativeRuntimeIdentity, "f44eb32c-857e-4d0c-86d2-0ec47e1094ae");
   assert.equal(ready.nativeOutboundToken, "dedicated-outbound-token-at-least-32");
   assert.equal(ready.nativeOutboundPollIntervalMs, 5_000);
   assert.throws(() => loadConfig({ BOK_NATIVE_OUTBOUND_TOKEN: "short" }, "/tmp/project"));
+  assert.throws(() => loadConfig({ BOK_NATIVE_RUNTIME_IDENTITY: "changes-on-restart" }, "/tmp/project"));
 });
