@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
 export const NATIVE_BOK_DECISION_CAPABILITY_SCHEMA_VERSION = 2 as const;
-export const NATIVE_BOK_DECISION_PIPELINE = "daktela-discord-parity-v1" as const;
-export const NATIVE_BOK_ATTACHMENT_POLICY_VERSION = "daktela-cdp-evidence-v1" as const;
+export const NATIVE_BOK_DECISION_PIPELINE = "shared-ml-case-v2" as const;
+export const NATIVE_BOK_ATTACHMENT_POLICY_VERSION = "authenticated-source-evidence-v2" as const;
 
 /**
  * Kanoniczna tożsamość pipeline'u. Pola operacyjne (ready) nie wchodzą do hasha;
@@ -12,7 +12,7 @@ export const NATIVE_BOK_DECISION_PIPELINE_CONTRACT = Object.freeze({
   schemaVersion: NATIVE_BOK_DECISION_CAPABILITY_SCHEMA_VERSION,
   pipeline: NATIVE_BOK_DECISION_PIPELINE,
   attachmentPolicyVersion: NATIVE_BOK_ATTACHMENT_POLICY_VERSION,
-  sourceSystem: "daktela" as const,
+  sourceSystems: ["daktela", "masterlink"] as const,
   acceptedContentTypes: ["application/pdf", "image/jpeg", "image/png"] as const,
   maxAttachments: 10,
   maxAttachmentBytes: 25 * 1024 * 1024,
@@ -20,7 +20,7 @@ export const NATIVE_BOK_DECISION_PIPELINE_CONTRACT = Object.freeze({
   maxPdfPages: 10,
   pdfRenderDpi: 144,
   evidence: Object.freeze({
-    source: "authenticated-chrome-cdp" as const,
+    source: "authenticated-source-read" as const,
     exactTicket: true,
     exactTriggerEvent: true,
     exactAttachmentEvent: true,
@@ -45,6 +45,7 @@ export interface NativeBokDecisionCapabilityStatus {
   readonly components: {
     readonly sharedEngine: boolean;
     readonly daktelaRead: boolean;
+    readonly mailRead?: boolean;
     readonly masterlinkRead: boolean;
     readonly attachmentEvidence: boolean;
     readonly independentJudge: boolean;
@@ -55,7 +56,7 @@ export function nativeBokDecisionCapabilityStatus(
   components: NativeBokDecisionCapabilityStatus["components"],
 ): NativeBokDecisionCapabilityStatus {
   const ready = components.sharedEngine
-    && components.daktelaRead
+    && (components.daktelaRead || components.mailRead === true)
     && components.masterlinkRead
     && components.attachmentEvidence
     && components.independentJudge;

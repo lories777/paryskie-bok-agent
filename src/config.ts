@@ -48,6 +48,7 @@ const loopbackHost = z
   .default("127.0.0.1");
 
 const envSchema = z.object({
+  BOK_DISCORD_SHARED_ENABLED: booleanFromEnv,
   DISCORD_BOT_TOKEN: z.string().optional(),
   BOK_AGENT_COMMAND_CHANNEL_IDS: csvFromEnv,
   BOK_AGENT_OBSERVE_CHANNEL_IDS: csvFromEnv,
@@ -113,6 +114,7 @@ const envSchema = z.object({
 });
 
 export interface AppConfig {
+  discordSharedEnabled?: boolean;
   discordToken?: string;
   commandChannelIds: Set<string>;
   observeChannelIds: Set<string>;
@@ -186,6 +188,7 @@ export function loadConfig(
   }
   return {
     ...(parsed.DISCORD_BOT_TOKEN ? { discordToken: parsed.DISCORD_BOT_TOKEN } : {}),
+    discordSharedEnabled: parsed.BOK_DISCORD_SHARED_ENABLED,
     commandChannelIds: parsed.BOK_AGENT_COMMAND_CHANNEL_IDS,
     observeChannelIds: parsed.BOK_AGENT_OBSERVE_CHANNEL_IDS,
     allowedUserIds: parsed.BOK_AGENT_ALLOWED_USER_IDS,

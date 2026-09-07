@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import "dotenv/config";
+import { MasterlinkReadSession } from "./masterlink-read-session.js";
 import { BokAgentCore } from "./bok-agent-core.js";
 import { BokCodexAgent } from "./codex-agent.js";
 import { assertLiveConfig, assertNativeBokApiConfig, loadConfig } from "./config.js";
@@ -71,7 +72,7 @@ async function main(): Promise<void> {
       const core = new BokAgentCore(config, store);
       const agent = new BokCodexAgent(core, masterlink);
       const daktelaReadSession = new DaktelaReadSession(config);
-      const decisionEngine = new NativeBokDaktelaDecisionEngine(agent, daktelaReadSession);
+      const decisionEngine = new NativeBokDaktelaDecisionEngine(agent, daktelaReadSession, undefined, new MasterlinkReadSession(config));
       const operationalDispatcher = new NativeOperationalActionDispatcher(
         config,
         store,
@@ -92,7 +93,7 @@ async function main(): Promise<void> {
           [
             "BOK Agent: ONLINE",
             "Daktela monitor: OFF",
-            "Tryb pracy: analiza i drafty na wspólnym kanale",
+            config.discordSharedEnabled ? "Wspólne sprawy i odpowiedzi: baza ML · Gmail + Discord" : "Tryb pracy: analiza i drafty na wspólnym kanale",
           ].join("\n"),
         );
       }
@@ -112,7 +113,7 @@ async function main(): Promise<void> {
           : undefined;
         await daktela?.start();
         await Promise.all([
-          worker.runForever(controller.signal),
+          ...(discord.masterlinkShared ? [discord.masterlinkShared.runForever(controller.signal)] : [worker.runForever(controller.signal)]),
           decisionEngine.runReadinessForever(controller.signal),
           ...(nativeOutbound ? [nativeOutbound.runForever(controller.signal)] : []),
         ]);
