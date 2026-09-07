@@ -14,6 +14,7 @@ import {
   catalogSelectionIntegrityIssues,
   catalogRecommendationResolutionIssues,
   draftReviewIntegrityIssues,
+  customerDraftStateIssues,
   extractExplicitOrderNumbers,
   extractSafeOperatorTranslationSummary,
   assertDaktelaTicketIntegrity,
@@ -726,4 +727,12 @@ test("puste potwierdzenie nie jest publikowane przed niewykonanym krokiem operac
     ...draft,
     payload: "Dzień dobry, zwrot został zlecony. Pozdrawiamy",
   }, withPendingAction), []);
+});
+
+
+test("gotowy draft nie może zniknąć przez sprzeczny stan oczekiwania na BOK", () => {
+  assert.equal(customerDraftStateIssues({...output,caseState:"waiting_for_human"}).length,1);
+  assert.equal(customerDraftStateIssues({...output,caseState:"needs_data"}).length,1);
+  assert.deepEqual(customerDraftStateIssues({...output,caseState:"action_proposed"}),[]);
+  assert.deepEqual(customerDraftStateIssues({...output,caseState:"waiting_for_human",proposedActions:[]}),[]);
 });

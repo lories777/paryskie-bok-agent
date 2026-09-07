@@ -273,3 +273,18 @@ function evidence(): NativeBokAttachmentEvidence {
   };
   return { ...base, evidenceHash: nativeBokAttachmentEvidenceHash(base) };
 }
+
+test("V4 wycisza tylko zakończoną sprawę bez odpowiedzi i dalszych działań", () => {
+  for (const caseState of ["answered", "waiting_for_human", "action_proposed"] as const) {
+    const raw = output();
+    raw.caseState = caseState;
+    raw.proposedActions = [];
+    const result = buildNativeBokDecisionResultV4({
+      output: raw, operationalAction: null, source: source(), attachmentEvidence: evidence(),
+      toolEvidenceHash: "a".repeat(64), toolNames: [], policyHash: "c".repeat(64),
+      playbookRevision: "d".repeat(64), correctionsRevision: 0, storeIdentity: "9".repeat(64),
+    });
+    assert.equal(result.noActionNeeded, caseState === "answered");
+    assert.equal(result.customerReply, null);
+  }
+});

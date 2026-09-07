@@ -44,3 +44,20 @@ test('mail read uses the runtime path for both origin and full configured URLs',
     assert.deepEqual(urls, ['https://ml.paryskie.pl/api/bok-runtime/v1/mail-source/ready', 'https://ml.paryskie.pl/api/bok-runtime/v1/mail-source/ready']);
   } finally { globalThis.fetch = previous; }
 });
+
+test('silent no-reply result removes its old card without publishing another message', async()=>{
+  const {MasterlinkDiscord}=await import('../src/masterlink-discord.js');
+  const {loadConfig}=await import('../src/config.js');
+  const previous=globalThis.fetch;let deleted=0;let posted=0;let receipts=0;
+  const old={id:'333333333333333333',delete:async()=>{deleted++;}};
+  const channel={isTextBased:()=>true,isDMBased:()=>false,messages:{fetch:async()=>old},send:async()=>{posted++;}};
+  const client={isReady:()=>true,channels:{fetch:async()=>channel}};
+  globalThis.fetch=async(url)=>{
+    if(String(url).endsWith('/receipt')){receipts++;return new Response(JSON.stringify({ok:true}));}
+    return new Response(JSON.stringify({cards:[{...card,body:null,botMessageId:old.id,silent:true,version:'silent'}]}));
+  };
+  try{
+    await new MasterlinkDiscord({...loadConfig({}),nativeOutboundUrl:'https://ml.paryskie.pl',nativeOutboundToken:'a'.repeat(32)},client as unknown as import('discord.js').Client).sync();
+    assert.equal(deleted,1);assert.equal(posted,0);assert.equal(receipts,1);
+  }finally{globalThis.fetch=previous;}
+});

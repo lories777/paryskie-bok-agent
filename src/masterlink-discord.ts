@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder, type ButtonInteraction, type Client, type Message } from 'discord.js';
 import { z } from 'zod';
 import type { AppConfig } from './config.js';
-const cardSchema = z.object({ version: z.string().optional(), expired: z.boolean().optional(), bindingId: z.string(), channelId: z.string(), rootMessageId: z.string(), ticketId: z.string().uuid(),
+const cardSchema = z.object({ version: z.string().optional(), expired: z.boolean().optional(), silent: z.boolean().optional(), bindingId: z.string(), channelId: z.string(), rootMessageId: z.string(), ticketId: z.string().uuid(),
   ticketNumber: z.number(), revision: z.number(), status: z.string(), channel: z.string(), suggestionId: z.string().uuid().nullable(),
   body: z.string().nullable(), suggestionStatus: z.string().nullable(), contentHash: z.string().nullable(),
   actionOnly: z.boolean(), outcome: z.string().nullable(), operatorPrompt: z.string().nullable(),
@@ -88,6 +88,13 @@ export class MasterlinkDiscord {
         if (!existing) {
           const recent = await channel.messages.fetch({ limit: 100 });
           existing = recent.find((m) => m.author.id === this.client.user!.id && m.content.startsWith(`[ML #${card.ticketNumber}](https://ml.paryskie.pl/tickets?ticket=${card.ticketId})`)) ?? null;
+        }
+        if (card.silent) {
+          if (existing) await existing.delete();
+          await this.request('/receipt', { bindingId: card.bindingId, channelId: card.channelId,
+            botMessageId: existing?.id ?? card.botMessageId ?? card.rootMessageId, renderHash: hash,
+            ...(card.version ? { version: card.version } : {}) });
+          continue;
         }
         const full = canonicalCardText(card);
         const options = { content: full.length <= 2000 ? full : `${full.slice(0,1600)}\n\nPełna odpowiedź w załączonym pliku i w ML.`,

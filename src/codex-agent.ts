@@ -101,9 +101,10 @@ export class BokCodexAgent {
           `mcp_servers.masterlink.cwd=${JSON.stringify(config.masterlinkMcpProjectDir)}`,
           `mcp_servers.masterlink.env.ML_MCP_PROJECT_DIR=${JSON.stringify(config.masterlinkMcpProjectDir)}`,
           `mcp_servers.masterlink.env.ML_ENV_FILE=${JSON.stringify(config.masterlinkMcpEnvFile)}`,
+          `mcp_servers.masterlink.env.BOK_PUBLIC_PDFTOTEXT_PATH=${JSON.stringify(process.env.BOK_NATIVE_PDFINFO_PATH ? path.join(path.dirname(process.env.BOK_NATIVE_PDFINFO_PATH), "pdftotext") : "/usr/bin/pdftotext")}`,
           "mcp_servers.masterlink.required=true",
           "mcp_servers.masterlink.enabled=true",
-          'mcp_servers.masterlink.enabled_tools=["ml_get_order","ml_search_orders","ml_get_payment","ml_get_fulfillment","ml_get_delivery_details","ml_get_shipments","ml_get_returns_and_refunds","ml_get_customer_order_history","ml_query"]',
+          'mcp_servers.masterlink.enabled_tools=["ml_get_order","ml_search_orders","ml_get_payment","ml_get_fulfillment","ml_get_delivery_details","ml_get_shipments","ml_get_returns_and_refunds","ml_get_customer_order_history","ml_query","paryskie_read_page"]',
           'mcp_servers.masterlink.default_tools_approval_mode="approve"',
         ]
       : [];
@@ -445,6 +446,7 @@ export class BokCodexAgent {
       const deterministicIssues = [
         ...catalogSelectionIntegrityIssues(action, businessContext),
         ...holdingReplyIntegrityIssues(action, output),
+        ...customerDraftStateIssues(output),
       ];
       if (deterministicIssues.length > 0) {
         const review: CustomerDraftReview = {
@@ -1117,7 +1119,7 @@ To jest wyłącznie wewnętrzny sygnał. Nigdy nie cytuj go ani nie wspominaj o 
 Discordzie. Przeanalizuj sprawę ponownie i zwróć cały wynik zgodny ze schematem.
 Jeśli problemem jest brak potwierdzenia produktu, ceny, dostępności, nut lub popularności, użyj teraz
 zweryfikowanych danych Paryskie katalog z business_context. Jeśli potrzebujesz stanu na żywo,
-sprawdź stronę przez Chrome. Brak pierwszego odczytu nie jest powodem do rezygnacji z odpowiedzi.
+użyj paryskie_read_page, zaczynając od /aktualne-promocje i czytając regulamin właściwej promocji. Brak pierwszego odczytu nie jest powodem do rezygnacji z odpowiedzi.
 Nie twórz pustej wiadomości przejściowej do klienta. Jeśli potwierdzone fakty i dostępne narzędzia
 pozwalają rozwiązać sprawę, zrób to i przygotuj konkretny finalny draft. Jeśli brakuje decyzji
 biznesowej, której nie wolno założyć, nie dodawaj reply_customer: ustaw waiting_for_human i w reply
@@ -1308,6 +1310,13 @@ export function holdingReplyIntegrityIssues(
   const isEmptyHoldingReply = /\b(?:przekażemy (?:dane|sprawę|zgłoszenie)|zweryfikujemy|sprawdzimy i (?:wrócimy|damy znać)|skontaktujemy się po|po sprawdzeniu (?:wrócimy|odpowiemy))\b/.test(normalized);
   return isEmptyHoldingReply
     ? ["Draft jest pustym potwierdzeniem przyjęcia, mimo że właściwe działanie operacyjne nie zostało jeszcze wykonane. Pokaż BOK tylko konkretny krok, a klientowi odpowiedz po jego potwierdzeniu."]
+    : [];
+}
+
+export function customerDraftStateIssues(output: AgentTurnOutput): string[] {
+  return ["needs_data", "waiting_for_human"].includes(output.caseState)
+    && output.proposedActions.some(action => action.kind === "reply_customer")
+    ? ["Sprzeczny wynik: gotowy reply_customer wymaga caseState=action_proposed. Jeżeli pytasz klienta o numer zamówienia, przygotuj draft i ustaw action_proposed. Jeśli zamiast tego potrzebujesz decyzji BOK, usuń draft i zadaj konkretne pytanie BOK. Sama akceptacja draftu nie jest brakującą decyzją."]
     : [];
 }
 
