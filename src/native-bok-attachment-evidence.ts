@@ -7,7 +7,7 @@ import {
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_DAKTELA_ID = /^[A-Za-z0-9_]{1,100}$/;
-const SAFE_ATTACHMENT_ID = /^daktela-meta:[a-f0-9]{64}$/;
+const SAFE_ATTACHMENT_ID = /^(?:daktela-meta:[a-f0-9]{64}|gmail-file:[a-f0-9]{1,32}:\d{1,2}:[a-f0-9]{64})$/;
 const MAX_FILE_NAME = 500;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS = 10;
@@ -38,7 +38,9 @@ export const nativeBokDaktelaDecisionSourceSchema = z
   .object({
     schemaVersion: z.literal(1),
     pipelineHash: z.literal(NATIVE_BOK_DECISION_PIPELINE_HASH),
-    system: z.literal("daktela"),
+    system: z.enum(["daktela", "masterlink"]),
+    masterlinkTicketId: z.string().uuid().optional(),
+    masterlinkRevision: z.number().int().positive().optional(),
     externalTicketId: z.string().regex(SAFE_DAKTELA_ID),
     externalRevision: z.string().datetime({ offset: true }),
     triggerExternalEventId: z.string().regex(SAFE_DAKTELA_ID),
@@ -136,6 +138,7 @@ export function nativeBokDaktelaSourceSnapshotHash(
     schemaVersion: source.schemaVersion,
     pipelineHash: source.pipelineHash,
     system: source.system,
+    ...(source.masterlinkTicketId ? { masterlinkTicketId: source.masterlinkTicketId, masterlinkRevision: source.masterlinkRevision } : {}),
     externalTicketId: source.externalTicketId,
     externalRevision: source.externalRevision,
     triggerExternalEventId: source.triggerExternalEventId,

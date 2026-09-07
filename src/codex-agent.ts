@@ -186,16 +186,18 @@ export class BokCodexAgent {
     visualEvidence?: NativeBokRenderedAttachmentEvidence,
   ): Promise<BokAgentReviewedRun> {
     const conversation = this.store.getConversation(job.conversationId);
-    const messages = this.store.recentMessages(
+    const canonicalMl = job.externalMessageId.startsWith("masterlink:");
+    const cachedMessages = this.store.recentMessages(
       conversation.id,
       this.config.maxContextMessages,
       job.triggerMessageId,
     );
+    const messages = canonicalMl ? cachedMessages.filter((message) => message.id === job.triggerMessageId) : cachedMessages;
     const sharedContext = filterSharedContextForJob(job, messages, this.store.recentSharedContext(
       conversation.id,
       this.config.maxSharedContextMessages,
     ));
-    const relatedTicketContext = this.store.recentRelatedDaktelaContext(
+    const relatedTicketContext = canonicalMl ? [] : this.store.recentRelatedDaktelaContext(
       conversation.id,
       extractExplicitOrderNumbers(messages),
     );
@@ -206,7 +208,7 @@ export class BokCodexAgent {
       await this.masterlink?.snapshot(),
       buildParyskieRecommendationContext(this.config.workspacePath, messages),
     );
-    const thread = conversation.codexThreadId
+    const thread = !canonicalMl && conversation.codexThreadId
       ? this.codex.resumeThread(conversation.codexThreadId, options)
       : this.codex.startThread(options);
     const runPrimary = async (prompt: string): Promise<RunResult> => {
@@ -700,6 +702,7 @@ export function filterSharedContextForJob(
   messages: ReturnType<AgentStore["recentMessages"]>,
   sharedContext: ReturnType<AgentStore["recentSharedContext"]>,
 ): ReturnType<AgentStore["recentSharedContext"]> {
+  if (job.externalMessageId.startsWith("masterlink:")) return [];
   if (!expectedDaktelaTicketId(job)) return sharedContext;
   const orderNumbers = extractOrderNumbers(messages);
   if (orderNumbers.length === 0) return [];

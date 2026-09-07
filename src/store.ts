@@ -796,7 +796,7 @@ export class AgentStore {
     input: NativeDaktelaContextReconciliationInput,
   ): NativeDaktelaContextReconciliationRecord {
     assertNativeDaktelaContextReconciliationInput(input);
-    const conversationExternalId = `daktela-ticket:${input.externalTicketId}`;
+    const conversationExternalId = (input.externalTicketId.startsWith("ml_") ? `masterlink-ticket:${input.externalTicketId.slice(3)}` : `daktela-ticket:${input.externalTicketId}`);
     const operationKey = createHash("sha256")
       .update(input.masterlinkOperationId, "utf8")
       .digest("hex")
@@ -1017,7 +1017,7 @@ export class AgentStore {
 
   recordTicketScopedGuidance(input: TicketScopedGuidanceInput): TicketScopedGuidanceRecord {
     assertTicketScopedGuidanceInput(input);
-    const conversationExternalId = `daktela-ticket:${input.externalTicketId}`;
+    const conversationExternalId = (input.externalTicketId.startsWith("ml_") ? `masterlink-ticket:${input.externalTicketId.slice(3)}` : `daktela-ticket:${input.externalTicketId}`);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const existing = this.ticketScopedGuidanceRow(input.guidanceId);
@@ -1093,6 +1093,7 @@ export class AgentStore {
     externalTicketId: string;
     sourceSnapshotHash: string;
     guidanceMessageId?: number;
+    contextMessageId?: number;
     channelId: string;
   }): ClaimedJob {
     if (
@@ -1108,9 +1109,11 @@ export class AgentStore {
         FROM conversations
         WHERE platform = 'discord' AND external_id = ?
       `)
-      .get(`daktela-ticket:${input.externalTicketId}`) as { id: number } | undefined;
+      .get((input.externalTicketId.startsWith("ml_") ? `masterlink-ticket:${input.externalTicketId.slice(3)}` : `daktela-ticket:${input.externalTicketId}`)) as { id: number } | undefined;
     if (!conversation) throw new Error("native_daktela_conversation_missing");
-    const trigger = input.guidanceMessageId === undefined
+    const trigger = input.contextMessageId !== undefined
+      ? this.db.prepare("SELECT id FROM messages WHERE id = ? AND conversation_id = ? AND author_id = 'masterlink-native-context' AND role = 'context'").get(input.contextMessageId, conversation.id) as { id: number } | undefined
+      : input.guidanceMessageId === undefined
       ? this.db
           .prepare(`
             SELECT id
@@ -1136,7 +1139,9 @@ export class AgentStore {
       triggerMessageId: trigger.id,
       platform: "discord",
       channelId: input.channelId,
-      externalMessageId: `daktela:v7:${input.externalTicketId}:${input.sourceSnapshotHash.slice(0, 16)}`,
+      externalMessageId: input.externalTicketId.startsWith("ml_")
+        ? `masterlink:v1:${input.externalTicketId.slice(3)}:${input.sourceSnapshotHash.slice(0, 16)}`
+        : `daktela:v7:${input.externalTicketId}:${input.sourceSnapshotHash.slice(0, 16)}`,
       attempts: 1,
     };
   }

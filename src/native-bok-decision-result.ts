@@ -477,6 +477,10 @@ function decisionReasonCodes(
 }
 
 function targetMatchesExactDaktelaTicket(target: string, externalTicketId: string): boolean {
+  if (externalTicketId.startsWith("ml_")) {
+    const refs = [...target.matchAll(/ML(?:\s+ticket)?\s*#(\d+)/gi)].map((match) => match[1]);
+    return refs.length > 0 && refs.every((id) => `ml_${id}` === externalTicketId);
+  }
   const references = [...target.matchAll(/(?:DAKTELA(?:\s+ticket)?|ticket)\s*#(\d+)/gi)]
     .map((match) => match[1]);
   return references.length > 0 && references.every((value) => value === externalTicketId);

@@ -8,11 +8,11 @@ import {
 } from "../src/native-bok-decision-capability.js";
 
 test("decision capability ma przypiętą tożsamość pipeline'u v2", () => {
-  assert.equal(NATIVE_BOK_DECISION_PIPELINE, "daktela-discord-parity-v1");
-  assert.equal(NATIVE_BOK_ATTACHMENT_POLICY_VERSION, "daktela-cdp-evidence-v1");
+  assert.equal(NATIVE_BOK_DECISION_PIPELINE, "shared-ml-case-v2");
+  assert.equal(NATIVE_BOK_ATTACHMENT_POLICY_VERSION, "authenticated-source-evidence-v2");
   assert.equal(
     NATIVE_BOK_DECISION_PIPELINE_HASH,
-    "7c0c38e7e421ae28918dee136e14d58b02cf9174355233606b4f72e1df43241c",
+    "b04ac3893fdc9b3b0e0638cd8b0b99a257285d2627199fab32b86182ba15ef2b",
   );
 });
 

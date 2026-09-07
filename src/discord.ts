@@ -1,3 +1,4 @@
+import { MasterlinkDiscord } from "./masterlink-discord.js";
 import { createHash } from "node:crypto";
 import {
   ActionRowBuilder,
@@ -114,6 +115,7 @@ type StatusProvider = () => Promise<string> | string;
 
 export class DiscordGateway implements ReplySink, NativeOperationalDiscordPort {
   readonly client: Client;
+  readonly masterlinkShared?: MasterlinkDiscord;
   private approvedActionExecutor?: ApprovedActionExecutor;
   private statusProvider?: StatusProvider;
   private operationalIdentityVerified = false;
@@ -130,6 +132,7 @@ export class DiscordGateway implements ReplySink, NativeOperationalDiscordPort {
       ],
       partials: [Partials.Channel],
     });
+    if (config.discordSharedEnabled) this.masterlinkShared = new MasterlinkDiscord(config, this.client);
   }
 
   async start(): Promise<void> {
@@ -495,6 +498,12 @@ export class DiscordGateway implements ReplySink, NativeOperationalDiscordPort {
     const content = normalizeDiscordContent(message, this.client.user.id);
     if (!content) return;
 
+    if (this.masterlinkShared) {
+      // Historia jest tylko odczytem; restart nie ponawia dawnych poleceń.
+      if (shouldRespond && !historical) await this.masterlinkShared.command(message, content, replyContext.botMessageId);
+      return;
+    }
+
     const incoming: IncomingMessage = {
       platform: "discord",
       conversationExternalId:
@@ -570,6 +579,7 @@ export class DiscordGateway implements ReplySink, NativeOperationalDiscordPort {
 
   private async onInteraction(interaction: Interaction): Promise<void> {
     if (!interaction.isButton() || !interaction.inGuild()) return;
+    if (this.masterlinkShared && interaction.customId.startsWith("ml:")) { await this.masterlinkShared.decision(interaction); return; }
     const match = interaction.customId.match(DRAFT_BUTTON_PATTERN);
     if (!match) return;
     if (!canDecideDraft(interaction.user.id, this.config.approverUserIds)) {
