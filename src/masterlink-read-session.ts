@@ -1,3 +1,4 @@
+import { nativeBokOutboundUrl } from "./native-bok-outbound.js";
 /** Uwierzytelniony odczyt tej samej kanonicznej sprawy co w panelu ML. */
 import { createHash } from 'node:crypto';
 import type { AppConfig } from './config.js';
@@ -13,7 +14,7 @@ export class MasterlinkReadSession {
   identityVerified() { return this.verified; }
   private async request(path: string, body?: unknown, signal?: AbortSignal) {
     if (!this.configurationReady()) throw new MasterlinkReadError('mail_source_not_configured');
-    const response = await fetch(`${this.config.nativeOutboundUrl!.replace(/\/$/, '')}${path}`, {
+    const response = await fetch(nativeBokOutboundUrl(this.config.nativeOutboundUrl!, `/api/bok-runtime${path}`), {
       method: body === undefined ? 'GET' : 'POST',
       headers: { authorization: `Bearer ${this.config.nativeOutboundToken}`, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
