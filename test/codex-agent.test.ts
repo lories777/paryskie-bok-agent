@@ -15,6 +15,7 @@ import {
   catalogRecommendationResolutionIssues,
   draftReviewIntegrityIssues,
   customerDraftStateIssues,
+  humanCorrectsPreviousDraft,
   extractExplicitOrderNumbers,
   extractSafeOperatorTranslationSummary,
   assertDaktelaTicketIntegrity,
@@ -735,4 +736,12 @@ test("gotowy draft nie może zniknąć przez sprzeczny stan oczekiwania na BOK",
   assert.equal(customerDraftStateIssues({...output,caseState:"needs_data"}).length,1);
   assert.deepEqual(customerDraftStateIssues({...output,caseState:"action_proposed"}),[]);
   assert.deepEqual(customerDraftStateIssues({...output,caseState:"waiting_for_human",proposedActions:[]}),[]);
+});
+
+
+test("korekta z kanonicznego snapshotu ML uczy tak samo jak wiadomość human", () => {
+  const content='<operator_guidance trusted="true">\nJeśli nie można ustalić zamówienia, poproś klienta o numer.\n</operator_guidance>';
+  assert.equal(humanCorrectsPreviousDraft([{...message,authorId:'masterlink-native-context',content}]),true);
+  assert.equal(humanCorrectsPreviousDraft([{...message,authorId:'customer',content}]),false);
+  assert.equal(humanCorrectsPreviousDraft([{...message,authorId:'masterlink-native-context',content:'<operator_guidance trusted="true">\nbrak dodatkowej decyzji\n</operator_guidance>'}]),false);
 });
