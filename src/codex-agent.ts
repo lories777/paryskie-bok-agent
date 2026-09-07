@@ -202,7 +202,7 @@ export class BokCodexAgent {
       extractExplicitOrderNumbers(messages),
     );
     const sharedPolicy = this.core.policySnapshot(messages);
-    const learnedRules = this.store.activeLearnedRules();
+    const learnedRules = canonicalMl ? [] : this.store.activeLearnedRules();
     const options = this.threadOptions();
     const businessContext = joinBusinessContext(
       await this.masterlink?.snapshot(),
