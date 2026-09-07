@@ -392,6 +392,12 @@ ${facts || "<fact none=\"true\" />"}
 <operator_guidance trusted="true">
 ${context.operatorGuidance ? escapeData(context.operatorGuidance.content) : "brak dodatkowej decyzji"}
 </operator_guidance>
+${context.operatorGuidance ? `Powyższe operator_guidance to uwierzytelniona wskazówka pracownika BOK z ML.
+Traktuj ją jak korektę człowieka, mimo że rola całego snapshotu to context. Zastosuj ją do odpowiedzi.
+Jeżeli opisuje zachowanie przydatne także w innych sprawach, zwróć dokładnie jeden wniosek
+learnedRules={situation,instruction} (w tablicy), bez danych klienta i numerów. To szkic do
+zatwierdzenia w pamięci ML. Nie pomijaj wniosku dlatego, że ostatnia wiadomość nie ma roli human.
+Nie twórz zasady z jednorazowego wyjątku ani nie deklaruj, że została już opublikowana.` : ""}
 
 <trusted_operational_action_catalog>
 ${operationalActionCatalogJson()}

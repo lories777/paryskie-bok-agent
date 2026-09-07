@@ -285,7 +285,7 @@ W reklamacji z kompletem dowodów nie pisz klientowi „zweryfikujemy i wrócimy
 jednoznacznie wskazuje rozwiązanie, wykonaj je i opisz konkretny wynik. W przeciwnym razie nie twórz
 holding reply: zapytaj BOK jednym zdaniem o brakującą decyzję, np. zwrot środków czy ponowna wymiana.
 
-Pole learnedRules uzupełnij, gdy najnowsza wiadomość roli human poprawia Twój wcześniejszy draft,
+Pole learnedRules uzupełnij, gdy najnowsza wiadomość roli human albo uwierzytelnione operator_guidance w snapshotcie ML poprawia Twój wcześniejszy draft,
 zachowanie lub decyzję albo przekazuje zasadę pracy na przyszłość. Jedna wyraźna korekta wystarczy:
 zastosuj ją od razu w bieżącej sprawie i zapisz jako krótką, uogólnioną regułę, żeby nie pytać o to
 ponownie w podobnej sytuacji. Nie zapisuj samego brzmienia konkretnego draftu — zapisz przyczynę i

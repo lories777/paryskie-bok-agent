@@ -807,16 +807,20 @@ export function correctionRequiresCustomerDraft(
 ): boolean {
   if (output.proposedActions.some((action) => action.kind === "reply_customer")) return false;
   const latest = messages.at(-1);
+  if (latest?.role === "context" && latest.authorId === "masterlink-native-context"
+    && /<operator_guidance trusted="true">\n(?!brak dodatkowej decyzji\n)[\s\S]+?\n<\/operator_guidance>/.test(latest.content)) return true;
   if (latest?.role !== "human") return false;
   if (!humanCorrectsPreviousDraft(messages)) return false;
   const explicitNoReply = /\b(?:nie\s+(?:odpisuj|odpowiadaj|wysyłaj)|bez\s+odpowiedzi|nie\s+wymaga\s+odpowiedzi|zamknij\s+(?:ticket|sprawę)|to\s+(?:spam|automat))\b/i;
   return !explicitNoReply.test(latest.content);
 }
 
-function humanCorrectsPreviousDraft(
+export function humanCorrectsPreviousDraft(
   messages: ReturnType<AgentStore["recentMessages"]>,
 ): boolean {
   const latest = messages.at(-1);
+  if (latest?.role === "context" && latest.authorId === "masterlink-native-context"
+    && /<operator_guidance trusted="true">\n(?!brak dodatkowej decyzji\n)[\s\S]+?\n<\/operator_guidance>/.test(latest.content)) return true;
   if (latest?.role !== "human") return false;
   return messages.slice(0, -1).some(
     (message) => message.role === "agent" && /(?:odpowiedź gotowa|gotowe|(?:###|\*\*)\s*(?:Do klienta|Treść odpowiedzi))/i.test(message.content),
