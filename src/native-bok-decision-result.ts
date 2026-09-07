@@ -208,6 +208,8 @@ export const nativeBokDecisionResultV4Schema = z.object({
   readyKind: z.enum(["customer_reply", "operational_action"]).nullable(),
   customerReply: customerReplySchema.nullable(),
   operationalAction: reviewedOperationalActionSchema.nullable(),
+  noActionNeeded: z.boolean().optional(),
+  learningProposal: z.object({ situation: z.string().min(1).max(500), instruction: z.string().min(1).max(1000) }).strict().optional(),
   internalNote: z.string().max(MAX_INTERNAL_NOTE),
   reasonCodes: z.array(z.enum(NATIVE_BOK_DECISION_V4_REASON_CODES)).min(1).max(10),
   attachmentEvidence: nativeBokAttachmentEvidenceSchema,
@@ -413,6 +415,11 @@ export function buildNativeBokDecisionResultV4(
     readyKind,
     customerReply,
     operationalAction: input.operationalAction,
+    noActionNeeded: input.output.caseState === 'answered' && input.output.proposedActions.length === 0
+      && !input.output.operationalActionProposal,
+    // A candidate for ML knowledge review, never a published policy or an executable action.
+    ...(input.guidanceReceipt && input.output.learnedRules?.[0]
+      ? { learningProposal: input.output.learnedRules[0] } : {}),
     internalNote: input.output.reply,
     reasonCodes: canonicalReasons,
     attachmentEvidence: input.attachmentEvidence,

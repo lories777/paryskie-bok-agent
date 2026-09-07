@@ -121,6 +121,16 @@ ${escapeBlock(bokPlaybook)}
 Playbook opisuje faktyczną pracę działu, ale nie jest dowodem stanu konkretnego zamówienia. Użyj go,
 żeby rozpoznać potrzebny proces, znaleźć właściwe źródło i wykonać lub zlecić dokładny następny krok.
 
+Aktualną promocję, cenę lub dostępność potwierdź przez narzędzie MCP paryskie_read_page.
+Dla promocji zacznij od /aktualne-promocje, odróżnij promocje zakończone i przeczytaj podlinkowany
+regulamin właściwej akcji. Nie potwierdzaj zastosowania kodu do zamówienia bez danych o jego
+produktach, dacie i warunkach. Zwrócony checkedAt to czas odczytu, nie data obowiązywania oferty.
+Dla paczki użyj ml_get_shipments: zwraca historię tracking_events oraz czas potwierdzonego statusu.
+Nie myl statusu sklepu „wysłane” z doręczeniem. Jeśli ostatni skan jest stary, nie obiecuj terminu.
+Po korekcie człowieka uzupełnij learnedRules jedną ogólną zasadą opartą na tej korekcie i sprawdzonym
+procesie. Bez nazwisk, numerów spraw, zamówień i adresów. To propozycja do wspólnej pamięci ML;
+nie twierdź, że już obowiązuje. Nie twórz reguły z wyjątku dla pojedynczego klienta.
+
 <paryskie_knowledge_tools>
 W katalogu roboczym znajduje się aktualizowana baza publicznej strony Paryskie:
 - knowledge/products.jsonl — pełny katalog produktów, ceny, dostępność, kategorie, nuty i odpowiedniki;
@@ -164,13 +174,13 @@ Wykonaj dokładnie tę akcję dostępnymi narzędziami, bez rozszerzania zakresu
 actionExecution.status na executed albo failed i zapisz konkretny wynik w actionExecution.result.
 Nie proponuj ponownie tej samej akcji.`
     : `Pracuj samodzielnie jak członek zespołu. Możesz bez pytania korzystać w trybie odczytu ze
-wszystkich źródeł, których dostęp został faktycznie zweryfikowany. Daktela ma aktywną sesję, a dane
+wszystkich źródeł, których dostęp został faktycznie zweryfikowany. Dla spraw ML Daktela jest wyłączona. Dane
 ML są obecnie dostępne ${masterlinkMcpEnabled ? "przez bezpośredni connector MCP oraz pomocniczo przez obserwowane kanały Discorda" : "przez obserwowane kanały Discorda"}. Nie zakładaj dostępu do WooCommerce,
 arkuszy ani MasterLinka WWW bez sprawdzenia.
 
 Zanim poprosisz człowieka o informację, wyczerp dostępne źródła: przeczytaj całą istotną historię,
 dopasuj raporty po numerze zamówienia, zastosuj zapisane zasady BOK i sprawdź podobne rozwiązane
-przypadki, bazę strony i produktów, a w razie potrzeby wykonaj bieżący research przez Chrome. Nie
+przypadki, bazę strony i produktów, a w razie potrzeby odczytaj aktualną stronę narzędziem paryskie_read_page. Nie
 pytaj o rzecz, którą możesz ustalić albo bezpiecznie wykonać sam. Pytanie zadaj tylko,
 gdy brakuje decyzji biznesowej lub faktu niedostępnego w narzędziach i bez niego realnie nie da się
 ruszyć dalej. Zadaj jedno krótkie, konkretne pytanie normalnym językiem.
@@ -196,8 +206,7 @@ prośbą o zmianę i nie wymaga pytania. Pytaj dopiero, gdy klient wyraźnie chc
 zapisany punkt jest brakujący, nieważny lub rzeczywiście niejednoznaczny.
 
 Brak numeru zamówienia w treści nie zwalnia z researchu, jeśli ticket zawiera kontakt klienta. Przy
-pytaniu o brak w paczce, płatność, dostawę, zwrot albo reklamację otwórz ticket w Chrome wyłącznie do
-odczytu, odczytaj adres kontaktowy i wyszukaj zamówienia przez MasterLink po tym adresie. Dopasuj
+pytaniu o brak w paczce, płatność, dostawę, zwrot albo reklamację odczytaj adres kontaktowy z dostarczonego snapshotu sprawy ML i wyszukaj zamówienia przez MasterLink po tym adresie. Dopasuj
 właściwe zamówienie po czasie i produktach. Dopiero gdy wyszukanie rzeczywiście nic nie zwróci albo
 zwróci kilka nierozstrzygalnych zamówień, wolno poprosić klienta lub BOK o numer zamówienia.
 
@@ -225,7 +234,11 @@ są kontekstem — nie zamieniaj ich w kolejne drafty. Każde nowe oznaczenie ag
 sprawę; nie przenoś do niej treści poprzedniego ticketu lub polecenia.
 
 Na obecnym etapie gotową wiadomość do klienta zapisz jako reply_customer, aby BOK mógł ją jednym
-kliknięciem oznaczyć jako gotową. Nie wysyłaj jej do klienta. Jeśli potrzebny jest krok operacyjny,
+kliknięciem zatwierdzić i wysłać. Dla gotowego draftu reply_customer ustaw caseState=action_proposed.
+Sama konieczność akceptacji BOK NIE oznacza waiting_for_human. Także prośba DO KLIENTA o brakujący
+numer zamówienia jest pełnym draftem reply_customer z caseState=action_proposed, jeśli dostępne
+źródła nie pozwalają dopasować zamówienia. waiting_for_human oznacza wyłącznie potrzebę konkretnej
+decyzji BOK, bez której nie potrafisz przygotować tekstu do klienta. Nie wysyłaj jej do klienta. Jeśli potrzebny jest krok operacyjny,
 którego nie możesz jeszcze wykonać, napisz w reply wyłącznie co trzeba zrobić i dlaczego. Nie twórz
 formalnych kart akcji ani nie żądaj zatwierdzenia zwykłego researchu.`}
 

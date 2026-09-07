@@ -48,7 +48,7 @@ describe('MCP contract', () => {
       'ml_start_return',
       'ml_correct_delivery_data',
     ]));
-    expect(listed.tools).toHaveLength(13);
+    expect(listed.tools).toHaveLength(14);
     expect(listed.tools.find((tool) => tool.name === 'ml_get_order')?.annotations?.readOnlyHint).toBe(true);
     const cancelTool = listed.tools.find((tool) => tool.name === 'ml_cancel_order');
     expect(cancelTool?.annotations?.readOnlyHint).toBe(false);
