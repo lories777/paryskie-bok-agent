@@ -14,3 +14,13 @@ test('Discord displays the exact ML answer and ignores delivery receipts in rend
 test('blocked agent question is read from ML instead of generating another local answer', () => {
   assert.ok(canonicalCardText({ ...card, body: null, outcome: 'ticket_ai_blocked', operatorPrompt: 'Czy potwierdzamy zwrot?' }).endsWith('Czy potwierdzamy zwrot?'));
 });
+
+test('published ML knowledge reaches the same agent prompt and rejects changed content', async () => {
+  const { renderCanonicalMasterlinkKnowledge } = await import('../src/native-bok-daktela-decision-engine.js');
+  const { NATIVE_BOK_KNOWLEDGE } = await import('./native-bok-fixtures.js');
+  const text = renderCanonicalMasterlinkKnowledge(NATIVE_BOK_KNOWLEDGE, 'PL');
+  assert.ok(text.includes(NATIVE_BOK_KNOWLEDGE.snapshotHash));
+  assert.ok(text.includes(NATIVE_BOK_KNOWLEDGE.documents[0]!.content));
+  const altered = structuredClone(NATIVE_BOK_KNOWLEDGE); altered.documents[0]!.content = 'Nieopublikowana zmiana';
+  assert.throws(() => renderCanonicalMasterlinkKnowledge(altered, 'PL'));
+});
