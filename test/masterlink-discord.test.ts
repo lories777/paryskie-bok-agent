@@ -24,3 +24,23 @@ test('published ML knowledge reaches the same agent prompt and rejects changed c
   const altered = structuredClone(NATIVE_BOK_KNOWLEDGE); altered.documents[0]!.content = 'Nieopublikowana zmiana';
   assert.throws(() => renderCanonicalMasterlinkKnowledge(altered, 'PL'));
 });
+
+
+test('expired case clears its Discord body and does not reveal the old answer', () => {
+  const text = canonicalCardText({ ...card, expired: true });
+  assert.ok(text.includes('usunięta')); assert.ok(!text.includes(card.body!));
+});
+
+test('mail read uses the runtime path for both origin and full configured URLs', async () => {
+  const { MasterlinkReadSession } = await import('../src/masterlink-read-session.js');
+  const { loadConfig } = await import('../src/config.js');
+  const previous = globalThis.fetch; const urls: string[] = [];
+  globalThis.fetch = async (url) => { urls.push(String(url)); return new Response(JSON.stringify({ ready: true })); };
+  try {
+    for (const base of ['https://ml.paryskie.pl', 'https://ml.paryskie.pl/api/bok-runtime']) {
+      const session = new MasterlinkReadSession({ ...loadConfig({}), nativeOutboundUrl: base, nativeOutboundToken: 'a'.repeat(32) });
+      await session.verify(); assert.equal(session.identityVerified(), true);
+    }
+    assert.deepEqual(urls, ['https://ml.paryskie.pl/api/bok-runtime/v1/mail-source/ready', 'https://ml.paryskie.pl/api/bok-runtime/v1/mail-source/ready']);
+  } finally { globalThis.fetch = previous; }
+});

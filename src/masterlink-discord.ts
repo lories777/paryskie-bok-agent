@@ -1,10 +1,11 @@
+import { nativeBokOutboundUrl } from "./native-bok-outbound.js";
 /** Jeden zapis odpowiedzi: Discord wyświetla ticket_messages z ML. */
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder, type ButtonInteraction, type Client, type Message } from 'discord.js';
 import { z } from 'zod';
 import type { AppConfig } from './config.js';
-const cardSchema = z.object({ bindingId: z.string(), channelId: z.string(), rootMessageId: z.string(), ticketId: z.string().uuid(),
+const cardSchema = z.object({ version: z.string().optional(), expired: z.boolean().optional(), bindingId: z.string(), channelId: z.string(), rootMessageId: z.string(), ticketId: z.string().uuid(),
   ticketNumber: z.number(), revision: z.number(), status: z.string(), channel: z.string(), suggestionId: z.string().uuid().nullable(),
   body: z.string().nullable(), suggestionStatus: z.string().nullable(), contentHash: z.string().nullable(),
   actionOnly: z.boolean(), outcome: z.string().nullable(), operatorPrompt: z.string().nullable(),
@@ -16,6 +17,7 @@ export function cardRenderHash(card: MasterlinkCard): string {
 }
 export function canonicalCardText(card: MasterlinkCard): string {
   const header = `[ML #${card.ticketNumber}](https://ml.paryskie.pl/tickets?ticket=${card.ticketId})`;
+  if (card.expired) return `${header}\nTreść sprawy usunięta zgodnie z retencją.`;
   if (!card.body && card.operatorPrompt) return `${header}\n\n${card.operatorPrompt}`;
   if (!card.body && card.outcome === 'ticket_ai_run_failed') return `${header}\nAnaliza nie zakończyła się poprawnie. Stan i możliwość ponowienia są w ML.`;
   if (!card.body && card.outcome === 'ticket_ai_blocked') return `${header}\nSprawa wymaga decyzji BOK. Szczegóły są zapisane w ML; odpowiedz tutaj z ustaleniem.`;
@@ -30,7 +32,7 @@ export class MasterlinkDiscord {
   private syncing = false;
   constructor(private readonly config: AppConfig, private readonly client: Client) {}
   private async request(path: string, body?: unknown): Promise<unknown> {
-    const response = await fetch(`${this.config.nativeOutboundUrl!.replace(/\/$/, '')}/v1/discord${path}`, {
+    const response = await fetch(nativeBokOutboundUrl(this.config.nativeOutboundUrl!, `/api/bok-runtime/v1/discord${path}`), {
       method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${this.config.nativeOutboundToken}`, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: 'error', signal: AbortSignal.timeout(240_000),
     });
@@ -90,13 +92,13 @@ export class MasterlinkDiscord {
         const full = canonicalCardText(card);
         const options = { content: full.length <= 2000 ? full : `${full.slice(0,1600)}\n\nPełna odpowiedź w załączonym pliku i w ML.`,
           files: full.length <= 2000 ? [] : [new AttachmentBuilder(Buffer.from(card.body!, 'utf8'), { name: `ML-${card.ticketNumber}-odpowiedz.txt` })],
-          allowedMentions: { parse: [] as [], repliedUser: false }, components: card.suggestionStatus === 'suggested' && card.suggestionId
+          allowedMentions: { parse: [] as [], repliedUser: false }, components: !card.expired && card.suggestionStatus === 'suggested' && card.suggestionId
             ? [new ActionRowBuilder<ButtonBuilder>().addComponents(
               ...(card.channel === 'email' && !card.actionOnly ? [new ButtonBuilder().setCustomId(`ml:send:${card.bindingId}:${card.suggestionId}:${card.revision}`).setLabel('Wyślij przez Gmail').setStyle(ButtonStyle.Success)] : []),
               new ButtonBuilder().setCustomId(`ml:reject:${card.bindingId}:${card.suggestionId}:${card.revision}`).setLabel('Niepełna — do poprawy').setStyle(ButtonStyle.Secondary))] : [], attachments: [] };
         const sent = existing ? await existing.edit(options) : await channel.send({ ...options,
           nonce: createHash('sha256').update(`ml-card:${card.bindingId}`).digest('hex').slice(0,24), enforceNonce: true });
-        await this.request('/receipt', { bindingId: card.bindingId, channelId: card.channelId, botMessageId: sent.id, renderHash: hash });
+        await this.request('/receipt', { bindingId: card.bindingId, channelId: card.channelId, botMessageId: sent.id, renderHash: hash, ...(card.version ? { version: card.version } : {}) });
       }
     } finally { this.syncing = false; }
   }
