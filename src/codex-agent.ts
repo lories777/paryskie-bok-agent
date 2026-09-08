@@ -806,6 +806,9 @@ export function correctionRequiresCustomerDraft(
   output: AgentTurnOutput,
 ): boolean {
   if (output.proposedActions.some((action) => action.kind === "reply_customer")) return false;
+  // A typed next step is reviewed independently against verified ML facts.
+  // Do not replace a warehouse action with an invented clarification question.
+  if (output.operationalActionProposal) return false;
   const latest = messages.at(-1);
   if (latest?.role === "context" && latest.authorId === "masterlink-native-context"
     && /<operator_guidance trusted="true">\n(?!brak dodatkowej decyzji\n)[\s\S]+?\n<\/operator_guidance>/.test(latest.content)) return true;
@@ -1057,24 +1060,17 @@ export function requiredMasterlinkResearch(
   };
 }
 
-function buildCorrectionEscalationFallback(
+export function buildCorrectionEscalationFallback(
   job: ClaimedJob,
-  messages: ReturnType<AgentStore["recentMessages"]>,
+  _messages: ReturnType<AgentStore["recentMessages"]>,
   output: AgentTurnOutput,
   conversationExternalId?: string,
 ): AgentTurnOutput {
-  const latestCorrection = messages.at(-1)?.content ?? "";
-  const orderNumber = extractExplicitOrderNumbers(messages).at(0);
-  const question = /(?:199|kwot|wartość|wartosci|wartości)/i.test(latestCorrection)
-    ? `Jaka jest potwierdzona wartość${orderNumber ? ` zamówienia ${orderNumber}` : " zamówienia w tej sprawie"}?`
-    : /(?:język|jezyk|formularz|wersj)/i.test(latestCorrection)
-      ? "Dla którego rynku lub języka mamy zastosować właściwą wersję formularza?"
-      : /(?:produkt|perfum|flakon|numer\s+n)/i.test(latestCorrection)
-        ? "Którego dokładnie produktu dotyczy brakująca decyzja w tej sprawie?"
-        : "Który konkretny wariant mamy zastosować w tej sprawie?";
+  // Context keywords do not prove that an order fact is missing. Never invent
+  // an amount/product/variant question from the full canonical snapshot.
   return attachMissingDaktelaIdentity(job, {
     ...output,
-    reply: question,
+    reply: "Nie udało się przygotować poprawionej odpowiedzi. Wskazówka BOK jest zapisana; sprawa wymaga ponownej analizy.",
     caseState: "waiting_for_human",
     proposedActions: output.proposedActions.filter((action) => action.kind !== "reply_customer"),
   }, conversationExternalId);

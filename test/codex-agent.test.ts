@@ -20,6 +20,7 @@ import {
   extractSafeOperatorTranslationSummary,
   assertDaktelaTicketIntegrity,
   correctionEscalationIsActionable,
+  buildCorrectionEscalationFallback,
   correctionRequiresCustomerDraft,
   customerIntentText,
   daktelaTicketIntegrityIssues,
@@ -744,4 +745,14 @@ test("korekta z kanonicznego snapshotu ML uczy tak samo jak wiadomość human", 
   assert.equal(humanCorrectsPreviousDraft([{...message,authorId:'masterlink-native-context',content}]),true);
   assert.equal(humanCorrectsPreviousDraft([{...message,authorId:'customer',content}]),false);
   assert.equal(humanCorrectsPreviousDraft([{...message,authorId:'masterlink-native-context',content:'<operator_guidance trusted="true">\nbrak dodatkowej decyzji\n</operator_guidance>'}]),false);
+});
+
+
+test("korekta BOK zachowuje typowane działanie zamiast wymuszać draft lub pytanie", () => {
+  const messages=[{...message,authorId:'masterlink-native-context',content:'Wartość zamówienia: 199 PLN\n<operator_guidance trusted="true">\nWysyłka do 19 dotyczy kuriera InPost\n</operator_guidance>'}];
+  assert.equal(correctionRequiresCustomerDraft(messages,{...output,proposedActions:[],operationalActionProposal:{schemaVersion:1,intent:'delivery_status',request:{schemaVersion:2,actionType:'fulfillment.locate',factKeys:['order.number']}}}),false);
+  assert.equal(correctionRequiresCustomerDraft(messages,{...output,proposedActions:[]}),true);
+  const fallback=buildCorrectionEscalationFallback({externalMessageId:'native:ml:35335'} as ClaimedJob,messages,{...output,proposedActions:[]});
+  assert.doesNotMatch(fallback.reply,/wartość|produkt|wariant|\?/);
+  assert.match(fallback.reply,/Wskazówka BOK jest zapisana/);
 });
