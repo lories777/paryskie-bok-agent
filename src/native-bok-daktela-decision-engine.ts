@@ -278,6 +278,17 @@ function assertContextAttachmentManifest(
       if (attachment.status === "read" || contentType === "text/plain") continue;
       const key = `${message.id}\u0000${attachment.id}`;
       const sourceAttachment = expected.get(key);
+      // The context describes the original mail attachment; the source describes
+      // its individually readable children. ML re-reads the authenticated parent
+      // and checks that every child is included before returning any bytes.
+      const archivePrefix = attachment.id.startsWith("gmail-file:")
+        ? `gmail-zip:${attachment.id.slice("gmail-file:".length)}:` : null;
+      const children = source.system === "masterlink" && archivePrefix
+        ? source.attachments.filter((item) => item.messageId === message.id && item.attachmentId.startsWith(archivePrefix)) : [];
+      if (!sourceAttachment && children.length > 0) {
+        for (const child of children) covered.add(`${child.messageId}\u0000${child.attachmentId}`);
+        continue;
+      }
       if (
         !sourceAttachment
         || sourceAttachment.fileName !== attachment.fileName
