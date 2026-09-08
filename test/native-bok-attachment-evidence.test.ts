@@ -104,3 +104,21 @@ test("prompt injection nie może zmienić source DTO ani dodać routingu", () =>
     attachments: [{ ...ATTACHMENT, fileName: "../save.js" }],
   }).success, false);
 });
+
+test("Gmail ZIP children require separate read receipts bound to the original archive", () => {
+  const children = [0, 1].map((index) => ({ ...ATTACHMENT,
+    attachmentId: `gmail-zip:abc123:1:${"a".repeat(64)}:${index}:${ATTACHMENT.sourceHash}`,
+  }));
+  const base = { ...source(), system: "masterlink" as const,
+    masterlinkTicketId: "a3414b32-0ac7-4b7c-a9b0-499e15a6d5d9", masterlinkRevision: 1,
+    attachments: children };
+  const manifest = nativeBokDaktelaDecisionSourceSchema.parse({ ...base, snapshotHash: nativeBokDaktelaSourceSnapshotHash(base) });
+  const receipts = children.map((child) => ({ ...evidence().receipts[0]!, attachmentId: child.attachmentId }));
+  const proofBase = { ...evidence(), snapshotHash: manifest.snapshotHash, receipts };
+  const proof = nativeBokAttachmentEvidenceSchema.parse({ ...proofBase, evidenceHash: nativeBokAttachmentEvidenceHash(proofBase) });
+  assert.doesNotThrow(() => assertNativeBokAttachmentEvidenceBound(manifest, proof));
+  assert.throws(() => assertNativeBokAttachmentEvidenceBound(manifest, { ...proof, receipts: proof.receipts.slice(0, 1) }), /partial/);
+  assert.throws(() => assertNativeBokAttachmentEvidenceBound(manifest, {
+    ...proof, receipts: proof.receipts.map((r) => ({ ...r, attachmentId: r.attachmentId.replace("abc123", "abc124") })),
+  }), /mismatch/);
+});

@@ -7,7 +7,7 @@ import {
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_DAKTELA_ID = /^[A-Za-z0-9_]{1,100}$/;
-const SAFE_ATTACHMENT_ID = /^(?:daktela-meta:[a-f0-9]{64}|gmail-file:[a-f0-9]{1,32}:\d{1,2}:[a-f0-9]{64})$/;
+const SAFE_ATTACHMENT_ID = /^(?:daktela-meta:[a-f0-9]{64}|gmail-file:[a-f0-9]{1,32}:\d{1,2}:[a-f0-9]{64}|gmail-zip:[a-f0-9]{1,32}:\d{1,2}:[a-f0-9]{64}:\d{1,3}:[a-f0-9]{64})$/;
 const MAX_FILE_NAME = 500;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS = 10;
