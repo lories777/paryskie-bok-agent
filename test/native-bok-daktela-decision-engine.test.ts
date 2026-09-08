@@ -21,7 +21,7 @@ import {
   type NativeBokPdfPort,
 } from "../src/native-bok-attachment-renderer.js";
 import { NATIVE_BOK_DECISION_PIPELINE_HASH } from "../src/native-bok-decision-capability.js";
-import { NativeBokDaktelaDecisionEngine } from "../src/native-bok-daktela-decision-engine.js";
+import { NativeBokDaktelaDecisionEngine, nativeBokDaktelaDecisionRequestV2Schema } from "../src/native-bok-daktela-decision-engine.js";
 import { AgentStore } from "../src/store.js";
 import { NATIVE_BOK_CONTEXT, NATIVE_BOK_KNOWLEDGE } from "./native-bok-fixtures.js";
 
@@ -717,3 +717,27 @@ function firstText(input: Input | undefined): string {
   const first = input?.[0];
   return first?.type === "text" ? first.text : "";
 }
+
+test("Gmail ZIP source binds each child to the original context attachment", () => {
+  const parentId = `gmail-file:abc123:1:${"a".repeat(64)}`;
+  const initial = decisionSource();
+  const source = decisionSource({ system: "masterlink", masterlinkTicketId: NATIVE_BOK_CONTEXT.ticket.id,
+    masterlinkRevision: NATIVE_BOK_CONTEXT.ticket.revision,
+    attachments: [0, 1].map((index) => ({ ...initial.attachments[0]!,
+      attachmentId: `gmail-zip:abc123:1:${"a".repeat(64)}:${index}:${sha256(PNG)}`,
+    })) });
+  const baseContext = decisionContext(initial);
+  const context = { ...baseContext, conversation: baseContext.conversation.map((message) => ({ ...message,
+    attachments: message.attachments.map((attachment) => ({ ...attachment, id: parentId, fileName: "photos.zip", contentType: "application/zip", sizeBytes: 1000 })),
+  })) };
+  const request = { source, context, knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE) };
+  assert.doesNotThrow(() => nativeBokDaktelaDecisionRequestV2Schema.parse(request));
+  const otherArchive = decisionSource({ ...source, attachments: source.attachments.map((a) => ({ ...a,
+    attachmentId: a.attachmentId.replace("abc123", "abc124"),
+  })) });
+  assert.throws(() => nativeBokDaktelaDecisionRequestV2Schema.parse({ ...request, source: otherArchive }), /context_attachment_source_mismatch/);
+  const otherMessage = decisionSource({ ...source, attachments: source.attachments.map((a) => ({ ...a,
+    messageId: "50ecb64a-3484-4b10-a869-a49445775117",
+  })) });
+  assert.throws(() => nativeBokDaktelaDecisionRequestV2Schema.parse({ ...request, source: otherMessage }), /context_attachment_source_mismatch/);
+});
