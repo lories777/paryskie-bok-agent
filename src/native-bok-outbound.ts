@@ -23,6 +23,7 @@ import type {
   NativeBokDecisionCapabilityStatus,
 } from "./native-bok-decision-capability.js";
 import type { NativeBokDecisionResult } from "./native-bok-decision-result.js";
+import { MasterlinkReadError } from "./masterlink-read-session.js";
 import { DaktelaReadSessionError } from "./daktela-read-session.js";
 import { NativeBokAttachmentRenderError } from "./native-bok-attachment-renderer.js";
 
@@ -422,6 +423,8 @@ export class NativeBokOutboundPoller {
           if (error instanceof NativeBokOutboundLeaseLost) return "lease_lost";
           if (error instanceof NativeBokOutboundPollerError && !error.retryable) throw error;
           outcome = classifyProcessingFailure(error, processingSignal.aborted);
+          // Deliberately log only a classified code, never model/mail exception text.
+          this.log(outcome.errorCode);
         }
       }
 
@@ -774,6 +777,9 @@ function classifyProcessingFailure(
   }
   if (error instanceof NativeBokDaktelaDecisionEngineError) {
     return { status: "failed", errorCode: error.code, retryable: error.retryable };
+  }
+  if (error instanceof MasterlinkReadError) {
+    return { status: "failed", errorCode: error.code, retryable: error.code === "mail_source_unavailable" };
   }
   if (error instanceof DaktelaReadSessionError) {
     return {
