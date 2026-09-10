@@ -469,6 +469,7 @@ export class BokCodexAgent {
           businessContext,
           verifiedToolEvidence,
           verifiedCorrections,
+          output.reply,
         ), visualEvidence), {
           outputSchema: CUSTOMER_DRAFT_REVIEW_JSON_SCHEMA,
           ...(signal ? { signal } : {}),
