@@ -14,7 +14,7 @@ export const NATIVE_BOK_DECISION_PIPELINE_CONTRACT = Object.freeze({
   attachmentPolicyVersion: NATIVE_BOK_ATTACHMENT_POLICY_VERSION,
   sourceSystems: ["daktela", "masterlink"] as const,
   acceptedContentTypes: ["application/pdf", "image/jpeg", "image/png"] as const,
-  maxAttachments: 10,
+  maxAttachments: 20,
   maxAttachmentBytes: 25 * 1024 * 1024,
   maxTotalSourceBytes: 50 * 1024 * 1024,
   maxPdfPages: 10,

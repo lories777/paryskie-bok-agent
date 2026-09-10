@@ -29,3 +29,17 @@ z logów ML nie jest wystarczającym dowodem adresu SSH ani konta usługi.
 
 Historia: aktualizacja 10.09 usuwa nieaktualne założenia o aktywnym monitorze Dakteli,
 braku wysyłki z ML i blokadzie pilota wynikającej ze snapshotu legacy bridge'a z 1.09.
+
+## Wdrożenie limitu 20 plików (przygotowane, jeszcze niewdrożone)
+
+Nowy pipelineHash: `42cc1247ebf440a60d03a236d378ee195035802a5b513d96eda94cd56d9c86ab`.
+1. Potwierdź dostęp do aktualnego hosta i wersję usługi. Przygotuj oba artefakty.
+2. Wstrzymaj pobieranie nowych zadań native, odczekaj zakończenie aktywnych lease.
+3. Wdróż runtime i odpowiadający mu pin oraz producenta źródła w ML w jednym oknie.
+4. Potwierdź identyczny hash obu stron i świeży heartbeat, następnie wznów kolejkę.
+5. W trybie approval zweryfikuj aktualne źródło sprawy z 13 plikami, pełne pokrycie
+   dowodów i wynik zapisany w ML. Nie wysyłaj wiadomości testowych do klienta.
+6. W razie wycofania przywróć obie strony do wspólnego poprzedniego hasha.
+
+Walidacja przygotowania: pełne npm run verify, 286 testów PASS. Nadal obowiązują
+limity 25 MiB na plik, 50 MiB łącznie i 10 stron PDF na plik.
