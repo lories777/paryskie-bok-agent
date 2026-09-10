@@ -741,3 +741,38 @@ test("Gmail ZIP source binds each child to the original context attachment", () 
   })) });
   assert.throws(() => nativeBokDaktelaDecisionRequestV2Schema.parse({ ...request, source: otherMessage }), /context_attachment_source_mismatch/);
 });
+
+test("historical operator attachments do not require inbound source evidence", () => {
+  const source = decisionSource();
+  const context = decisionContext(source);
+  context.conversation.push({ ...context.conversation[0]!,
+    id: "50ecb64a-3484-4b10-a869-a49445775117", direction: "outbound",
+    attachments: [{ ...context.conversation[0]!.attachments[0]!, id: `daktela-meta:${"b".repeat(64)}` }],
+  });
+  context.attachmentCoverage.totalCount += 1;
+  context.attachmentCoverage.operatorRequiredCount += 1;
+  const request = { source, context, knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE) };
+  assert.doesNotThrow(() => nativeBokDaktelaDecisionRequestV2Schema.parse(request));
+  context.conversation[1]!.direction = "inbound";
+  assert.throws(() => nativeBokDaktelaDecisionRequestV2Schema.parse(request), /context_attachment_source_mismatch/);
+});
+
+test("source filenames bind to the exact ML privacy transformation", () => {
+  for (const [original, redacted] of [
+    ["customer@example.com.png", "[EMAIL].png"],
+    ["PL00123456789012345678901234.png", "[IBAN].png"],
+    ["+48123456789.png", "[PHONE].png"],
+  ]) {
+    const initial = decisionSource();
+    const source = decisionSource({ attachments: [{ ...initial.attachments[0]!, fileName: original! }] });
+    const context = decisionContext(source);
+    context.conversation[0]!.attachments[0]!.fileName = redacted!;
+    const request = { source, context, knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE) };
+    assert.doesNotThrow(() => nativeBokDaktelaDecisionRequestV2Schema.parse(request));
+    context.conversation[0]!.attachments[0]!.fileName = "unrelated.png";
+    assert.throws(() => nativeBokDaktelaDecisionRequestV2Schema.parse(request), /context_attachment_source_mismatch/);
+    context.conversation[0]!.attachments[0]!.fileName = redacted!;
+    context.conversation[0]!.attachments[0]!.sizeBytes += 1;
+    assert.throws(() => nativeBokDaktelaDecisionRequestV2Schema.parse(request), /context_attachment_source_mismatch/);
+  }
+});
