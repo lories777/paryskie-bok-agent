@@ -1,4 +1,5 @@
 import { MasterlinkReadSession } from "./masterlink-read-session.js";
+import { masterlinkPromptFileName } from "./masterlink-prompt-file-name.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { BokCodexAgent } from "./codex-agent.js";
@@ -272,6 +273,9 @@ function assertContextAttachmentManifest(
   ]));
   const covered = new Set<string>();
   for (const message of context.conversation) {
+    // The authenticated evidence source contains customer mail only. Historical
+    // operator attachments remain conversation context, not customer evidence.
+    if (message.direction !== "inbound") continue;
     if (!("attachments" in message)) continue;
     for (const attachment of message.attachments) {
       const contentType = attachment.contentType?.split(";", 1)[0]?.trim().toLowerCase() ?? null;
@@ -291,7 +295,8 @@ function assertContextAttachmentManifest(
       }
       if (
         !sourceAttachment
-        || sourceAttachment.fileName !== attachment.fileName
+        || (sourceAttachment.fileName !== attachment.fileName
+          && masterlinkPromptFileName(sourceAttachment.fileName) !== attachment.fileName)
         || sourceAttachment.sizeBytes !== attachment.sizeBytes
         || (contentType !== null && sourceAttachment.contentType !== contentType)
       ) {
