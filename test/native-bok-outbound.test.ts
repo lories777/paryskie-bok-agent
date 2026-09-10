@@ -1,3 +1,4 @@
+import { MasterlinkReadError } from "../src/masterlink-read-session.js";
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import test from "node:test";
@@ -978,4 +979,17 @@ test("canonical hash jest przypięty do kontraktu PR615", () => {
     nativeBridgeHash({ z: 1, a: [true, { y: "x", b: null }] }),
     "c0ed89110d52a04c41691ff9ba4c6d2bb229f9b6b910db000ec90f2b42d1eb49",
   );
+});
+
+
+test("błędy kanonicznej skrzynki zachowują przyczynę i nie ponawiają starego źródła", async () => {
+  for (const [code, retryable] of [["mail_source_unavailable", true], ["mail_source_stale", false], ["mail_source_binding_invalid", false], ["mail_source_unauthorized", false]] as const) {
+    const inference = new FakeInference();
+    inference.decide = async () => { throw new MasterlinkReadError(code); };
+    const logs: string[] = [];
+    const transport = capture([json(leaseAck(decisionLease())), json({ ok: true, schemaVersion: 1, deduplicated: false })]);
+    assert.equal(await poller(transport.fetcher, inference, new FakeDispatcher(), { log: code => logs.push(code) }).runOnce(new AbortController().signal), "failed");
+    assert.deepEqual(JSON.parse(transport.requests[1]!.body).outcome, { status: "failed", errorCode: code, retryable });
+    assert.deepEqual(logs, [code]);
+  }
 });

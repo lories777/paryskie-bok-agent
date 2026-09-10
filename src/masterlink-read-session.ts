@@ -5,7 +5,7 @@ import type { AppConfig } from './config.js';
 import type { DaktelaVerifiedSourceRead } from './daktela-read-session.js';
 import { nativeBokDaktelaDecisionSourceSchema, type NativeBokDaktelaDecisionSource } from './native-bok-attachment-evidence.js';
 export class MasterlinkReadError extends Error {
-  constructor(readonly code: string) { super(code); this.name = 'MasterlinkReadError'; }
+  constructor(readonly code: 'mail_source_not_configured' | 'mail_source_unavailable' | 'mail_source_unauthorized' | 'mail_source_stale' | 'mail_source_too_large' | 'mail_source_binding_invalid') { super(code); this.name = 'MasterlinkReadError'; }
 }
 export class MasterlinkReadSession {
   private verified = false;
@@ -21,6 +21,8 @@ export class MasterlinkReadSession {
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(15_000),
       redirect: 'error',
     });
+    if (response.status === 401 || response.status === 403) throw new MasterlinkReadError('mail_source_unauthorized');
+    if (response.status === 409) throw new MasterlinkReadError('mail_source_stale');
     if (!response.ok || !response.body) throw new MasterlinkReadError('mail_source_unavailable');
     const chunks: Uint8Array[] = []; let size = 0;
     for await (const chunk of response.body) {
@@ -28,7 +30,8 @@ export class MasterlinkReadSession {
       if (size > 72 * 1024 * 1024) throw new MasterlinkReadError('mail_source_too_large');
       chunks.push(chunk);
     }
-    return JSON.parse(Buffer.concat(chunks).toString()) as unknown;
+    try { return JSON.parse(Buffer.concat(chunks).toString()) as unknown; }
+    catch { throw new MasterlinkReadError('mail_source_binding_invalid'); }
   }
   async verify() {
     this.verified = false;
@@ -45,7 +48,9 @@ export class MasterlinkReadSession {
     if (!response || typeof response !== 'object' || !('source' in response) || !('attachments' in response)) {
       throw new MasterlinkReadError('mail_source_binding_invalid');
     }
-    const verifiedSource = nativeBokDaktelaDecisionSourceSchema.parse(response.source);
+    const parsedSource = nativeBokDaktelaDecisionSourceSchema.safeParse(response.source);
+    if (!parsedSource.success) throw new MasterlinkReadError('mail_source_binding_invalid');
+    const verifiedSource = parsedSource.data;
     if (verifiedSource.snapshotHash !== source.snapshotHash || !Array.isArray(response.attachments)
       || response.attachments.length !== source.attachments.length) throw new MasterlinkReadError('mail_source_binding_invalid');
     const incomingAttachments = response.attachments;

@@ -7,40 +7,30 @@ zalogowanej subskrypcji ChatGPT — projekt nie przyjmuje klucza API OpenAI.
 To nie jest autoresponder ostatniej wiadomości. Runtime utrzymuje kontekst sprawy, odróżnia
 obserwowane kanały od kanału poleceń i zapisuje proponowane działania do osobnej kolejki.
 
-## Stan v0.1
+## Stan operacyjny — 10 września 2026
 
-- agent działa 24/7 jako zwykły uczestnik jednego kanału Discorda;
-- można pisać do niego normalnym językiem, bez numerów akcji i komend operacyjnych;
-- monitor Dakteli co dwie minuty wykrywa nowe lub zmienione otwarte sprawy i przekazuje je agentowi;
-- agent najpierw sam czyta historię, dopasowuje raporty i szuka dostępnych informacji; pyta zespół
-  dopiero wtedy, gdy brakuje decyzji, której nie da się uczciwie wywnioskować;
-- analiza, pytanie lub gotowy draft pojawiają się bezpośrednio na wspólnym kanale;
-- draft jest pokazany w całości w czytelnej karcie i ma proste przyciski `Akceptuj draft`
-  oraz `Do poprawy`; decyzję może zapisać wyłącznie użytkownik wpisany jawnie w
-  `BOK_AGENT_APPROVER_USER_IDS`; akceptacja managerska jest zapisywana jako feedback, ale nie zmienia
-  akcji w zatwierdzone wykonanie i nie tworzy zadania wysyłki, dopóki bezpieczny sender nie jest
-  faktycznie dostępny;
-- każdy draft przechodzi osobny, read-only przebieg kontroli jakości; niepotwierdzony fakt blokuje
-  draft, a błąd czysto redakcyjny może zostać poprawiony automatycznie;
-- poprawki przekazuje się zwykłym zdaniem, np. „napisz to krócej” albo „zmień ton na cieplejszy”;
-  trwałą, zweryfikowaną zasadą może zostać wyłącznie odpowiedź do wiadomości BOK Agenta albo jawne
-  oznaczenie go w kanale poleceń, wysłane przez użytkownika lub rolę z allowlisty;
-- raporty publikowane przez inne boty na obserwowanych kanałach są częścią wspólnego kontekstu;
-- SQLite zachowuje rozmowę, stan i pamięć po restartach;
-- bezpośredni connector MasterLink znajduje się w `connectors/masterlink`; główny runtime udostępnia
-  wyłącznie dziewięć narzędzi odczytu. Kod connectora zawiera cztery wąskie operacje zapisu, ale nie są
-  one obecnie wystawione agentowi, a `ML_MUTATIONS_ENABLED` pozostaje wyłączone. PostgreSQL jest
-  bezwarunkowo read-only;
-- lokalna baza wiedzy jest budowana z aktualnej strony i WooCommerce (`npm run knowledge:refresh`):
-  agent może wyszukiwać produkty, odpowiedniki, nuty, ceny, dostępność, regulamin i procedury;
-- Chrome DevTools może być aktywowane niezależną flagą `BOK_AGENT_BROWSER_RESEARCH` wyłącznie
-  do inspekcji już otwartych stron i zalogowanych Arkuszy Google. Runtime wystawia tylko listowanie,
-  wybór, snapshot, screenshot i oczekiwanie; blokuje nawigację, kliknięcia, formularze, dowolny JS,
-  sieć i konsolę. Ogólny dostęp sieciowy Codexa pozostaje wyłączony;
-- przyszłe uruchomienie operacji zapisu MasterLink wymaga osobnego kontrolowanego preflightu,
-  dry-runu, idempotencji i weryfikacji ponownym odczytem; nie jest częścią bieżącego runtime;
-- obecny etap obejmuje analizę i drafty. Wysyłka z Dakteli czeka na idempotentny connector,
-  potwierdzony readback oraz osobny kontrolowany test konta Contact Centre z licencją Email.
+- Gmail jest źródłem poczty w ML; Daktela jest historycznym źródłem, a jej monitor nie
+  stanowi aktywnego wejścia produkcyjnej kolejki.
+- MasterLink/PostgreSQL przechowuje kanoniczne sprawy, historię, rewizje, drafty,
+  wiedzę i outbox. Runtime korzysta ze wspólnego pipeline'u `shared-ml-case-v2`;
+  SQLite przechowuje lokalną historię, wskazówki i trwałe potwierdzenia runtime.
+- Agent przygotowuje odpowiedź, pytanie do BOK, propozycję operacji albo wynik bez
+  potrzeby działania. Generator i niezależny reviewer korzystają z tych samych dowodów.
+- Produkcja ML działa w `approval`, z `LIVE_SEND=false`. Po akceptacji pracownika
+  odpowiedź może zostać wysłana przez outbox ML/Gmail. `queued` nie oznacza `sent`.
+  Wysyłka z panelu i historyczny przycisk feedbacku na Discordzie to różne ścieżki;
+  znaczenie decyzji należy potwierdzić w kanonicznym tickecie ML.
+- Typowane operacje i eskalacje mają osobne bramki oraz potwierdzenia wykonania.
+  Audyt 10.09 wykazał wyłączone workery operacji ML i dispatcher runtime. Gotowy draft
+  działania nie oznacza wykonanej zmiany zamówienia ani wysłanego zadania do magazynu.
+- Wskazówka dotycząca sprawy pozostaje jej kontekstem. Ogólna wiedza ML ma szkice
+  i publikację po sprawdzeniu przez człowieka. Ręczna edycja odpowiedzi w panelu
+  zachowuje źródłowy szkic jako materiał do oceny; sama nie publikuje nowej reguły.
+
+Lokalizacja obecnego procesu i dostęp do jego logów wymagają aktualizacji inwentarza.
+Dawny katalog `/home/oliwer/workspace/paryskie-bok-agent` nie był obecny na starym VPS
+podczas audytu 10.09. Nie traktuj dawnego adresu serwera ani commitu repo jako dowodu
+wersji działającego procesu. Procedura: [runbook](docs/RUNTIME-RUNBOOK.md).
 
 ## Uruchomienie lokalne
 
@@ -95,37 +85,13 @@ subskrypcji, nie wywołania rozliczane kluczem OpenAI API.
 
 ## Granice
 
-Odczyt MasterLink jest aktywny, natomiast narzędzia zapisu pozostają wyłączone. Odpowiedzi Daktela
-nadal są draftami. `BOK_AGENT_EXTERNAL_ACTIONS` ma pozostać `false`. Przycisk `Akceptuj draft`
-zapisuje wtedy wyłącznie ocenę managera do dalszego uczenia i ręcznego użycia: nie ustawia statusu
-wykonania i nie tworzy joba wysyłki. Niezależna flaga `BOK_AGENT_BROWSER_RESEARCH=true` może w tym
-samym czasie pozostawić agentowi autonomiczne odczyty Chrome.
-
-Ten runtime i jego flaga nie sterują starszym bridge'em BOK działającym obok. Audyt z
-2026-09-01 potwierdził, że legacy bridge raportował jednocześnie `agentEnabled=true` oraz
-`writebackEnabled=true`, mimo że outbox/live-send głównego MasterLinka były wyłączone. Traktuj go
-jako osobną ścieżkę zapisu: nie wdrażaj tej gałęzi, nie zmieniaj jego flag i nie uruchamiaj pilota,
-dopóki operator nie wyłączy lub nie odizoluje legacy writebacku i nie potwierdzi tego ponownym
-odczytem statusu. Stan bezpieczny jednego komponentu nie jest dowodem stanu całego systemu.
-
-Samo ustawienie flagi na `true` nie odblokowuje wysyłki `reply_customer` ani `discord_notify`.
-Obecny sterownik Chrome
-nie ma stabilnego klucza idempotencji ani wiarygodnego readbacku wysłanej treści. Awaria po kliknięciu
-„Wyślij”, ale przed zapisem wyniku w SQLite, mogłaby po restarcie spowodować double-send. Dlatego
-executor Dakteli kończy taką akcję fail-closed bez otwierania strony wysyłki. Wysyłkę można odblokować
-dopiero po wdrożeniu idempotentnego connectora i weryfikacji wyniku ponownym odczytem.
-
-Wyniki pracy i alerty terminalne trafiają najpierw do trwałego outboxa SQLite. Chwilowy błąd
-Discorda zapisuje termin kolejnej próby i nie ma limitu, po którym alert zostaje porzucony. Runtime
-nie uruchamia ponownie analizy, nie usuwa receipt starej karty bez potwierdzonego delete/404 i wznawia
-dostawę po restarcie. Nie zastępuje to idempotencji wysyłki odpowiedzi do klienta.
-
-## Connector MasterLink
-
-Kod connectora oraz pełny zestaw testów znajduje się w `connectors/masterlink`. Produkcyjny odczyt
-działa przez chronione konto API oraz osobną rolę PostgreSQL z 41 tabelami tylko do odczytu. Lokalna
-usługa utrzymuje wymagany relay TLS do Railway. Raporty ML na Discordzie pozostają wyłącznie
-pomocniczym kontekstem; źródłem faktów o konkretnym zamówieniu jest connector.
+Odczyt faktów ML, przygotowanie draftu, akceptacja odpowiedzi i wykonanie operacji są
+oddzielnymi zdarzeniami. Wysyłkę potwierdza outbox ML/Gmail, a operację jej dowód
+wykonania. Flaga historycznych zewnętrznych akcji runtime nie zastępuje bramek ML.
+Przy diagnozie sprawdzaj bieżący heartbeat, konfigurację aktywnego providera i kanału,
+rewizję sprawy oraz potwierdzenia. Snapshot starego bridge'a z 1.09 nie opisuje stanu
+po przejściu na Gmail 7.09. Raporty Discorda są kontekstem pomocniczym; źródłem faktów
+o zamówieniu pozostaje ML.
 
 ## Załączniki w natywnym API BOK
 
@@ -143,6 +109,6 @@ przed producentem MasterLink wysyłającym `verified-text-v1`.
 Powyższy `verified-text-v1` dotyczy wyłącznie lokalnych, diagnostycznych endpointów
 `/v1/bok/generate` i `/v1/bok/judge`. Produkcyjny outbound decision przyjmuje bieżący carrier
 MasterLinka `verified-content-v2` i używa kontraktu `daktela-discord-parity-v1`: exact source z
-Dakteli, byte/render hash, lokalnych obrazów JPEG/PNG i stron PDF oraz tego samego `BokCodexAgent`
+ML/Gmail (lub historycznej Dakteli), byte/render hash, lokalnych obrazów JPEG/PNG i stron PDF oraz tego samego `BokCodexAgent`
 i reviewera co Discord. Szczegóły i readiness są w
 [`docs/NATIVE-BOK-API.md`](docs/NATIVE-BOK-API.md).
