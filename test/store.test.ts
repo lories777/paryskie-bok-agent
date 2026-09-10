@@ -406,6 +406,34 @@ test("native→monitor: exact źródło jest markerem bez fikcyjnego joba, a now
   }
 });
 
+test("nowy pipeline zachowuje poprzedni kontekst i wymaga dowodu zgodności źródła", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-context-upgrade-"));
+  const store = new AgentStore(dir);
+  try {
+    const old = reconciledDaktelaContext();
+    store.reconcileNativeDaktelaContext(old);
+    const next = reconciledDaktelaContext({ masterlinkOperationId: "new-contract-operation",
+      sourceSnapshotHash: sha256("same-source-new-pipeline"),
+      content: "Kontekst z nową opublikowaną wiedzą.",
+    });
+    assert.throws(() => store.reconcileNativeDaktelaContext(next), /native_daktela_context_conflict/);
+    const compatible = { ...next, previousPipelineSourceSnapshotHash: old.sourceSnapshotHash };
+    assert.equal(store.reconcileNativeDaktelaContext(compatible).inserted, true);
+    assert.equal(store.reconcileNativeDaktelaContext(compatible).inserted, false);
+    assert.equal(store.reconcileNativeDaktelaContext(old).inserted, false, "history remains immutable");
+    assert.throws(() => store.reconcileNativeDaktelaContext({ ...compatible,
+      masterlinkOperationId: "unrelated-source", sourceSnapshotHash: sha256("changed-bytes"),
+      previousPipelineSourceSnapshotHash: sha256("changed-bytes-old-pipeline"),
+    }), /native_daktela_context_conflict/);
+    assert.throws(() => store.reconcileNativeDaktelaContext({ ...compatible,
+      masterlinkOperationId: "other-trigger", sourceTriggerEventId: "activity_other",
+    }), /native_daktela_context_conflict/);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("migracja bindingu revision-keyed zachowuje marker i dopuszcza nową operację z nowymi faktami", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-agent-native-binding-migration-"));
   let openStore: AgentStore | undefined = new AgentStore(dir);

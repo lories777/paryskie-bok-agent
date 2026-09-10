@@ -7,6 +7,7 @@ import {
   nativeBokAttachmentEvidenceSchema,
   nativeBokDaktelaDecisionSourceSchema,
   nativeBokDaktelaSourceSnapshotHash,
+  previousPipelineSourceSnapshotHash,
 } from "../src/native-bok-attachment-evidence.js";
 import {
   NATIVE_BOK_ATTACHMENT_POLICY_VERSION,
@@ -76,6 +77,20 @@ test("source wymaga canonical manifestu i snapshot hash", () => {
     }),
     /trigger_not_latest_inbound/,
   );
+});
+
+test("previous pipeline identity changes only the contract, never mail or attachment bytes", () => {
+  const current = source();
+  const previous = previousPipelineSourceSnapshotHash(current);
+  assert.equal(previous, nativeBokDaktelaSourceSnapshotHash({ ...current,
+    pipelineHash: "b04ac3893fdc9b3b0e0638cd8b0b99a257285d2627199fab32b86182ba15ef2b",
+  }));
+  assert.notEqual(previous, current.snapshotHash);
+  assert.notEqual(previous, previousPipelineSourceSnapshotHash({ ...current,
+    attachments: [{ ...ATTACHMENT, sourceHash: "c".repeat(64) }],
+  }));
+  assert.notEqual(previous, previousPipelineSourceSnapshotHash({ ...current, externalTicketId: "100329" }));
+  assert.equal(previousPipelineSourceSnapshotHash({ ...current, attachments: Array(11).fill(ATTACHMENT) }), undefined);
 });
 
 test("evidence jest deterministyczne i musi pokryć exact manifest 1:1", () => {

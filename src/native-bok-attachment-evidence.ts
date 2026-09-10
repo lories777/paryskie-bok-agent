@@ -148,6 +148,16 @@ export function nativeBokDaktelaSourceSnapshotHash(
   }));
 }
 
+/** Exact predecessor of the 20-file contract. Reconstruct only its identity from
+ * the independently authenticated current source; changed mail/bytes do not match.
+ */
+export function previousPipelineSourceSnapshotHash(source: NativeBokDaktelaDecisionSource): string | undefined {
+  if (source.pipelineHash !== NATIVE_BOK_DECISION_PIPELINE_HASH || source.attachments.length > 10) return undefined;
+  return nativeBokDaktelaSourceSnapshotHash({ ...source,
+    pipelineHash: "b04ac3893fdc9b3b0e0638cd8b0b99a257285d2627199fab32b86182ba15ef2b",
+  });
+}
+
 export function nativeBokAttachmentContentHash(input: {
   readonly mediaKind: "image" | "pdf";
   readonly sourceHash: string;

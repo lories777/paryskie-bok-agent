@@ -156,6 +156,8 @@ export interface NativeDaktelaContextReconciliationInput {
   readonly masterlinkTicketId: string;
   readonly masterlinkTriggerMessageId: string;
   readonly sourceSnapshotHash: string;
+  /** Derived from an authenticated source with the known predecessor contract. */
+  readonly previousPipelineSourceSnapshotHash?: string;
   readonly sourceExternalRevision: string;
   readonly sourceTriggerEventId: string;
   readonly contextHash: string;
@@ -345,6 +347,8 @@ function assertNativeDaktelaContextReconciliationInput(
   }
   if (
     !/^[a-f0-9]{64}$/.test(input.sourceSnapshotHash)
+    || (input.previousPipelineSourceSnapshotHash !== undefined
+      && !/^[a-f0-9]{64}$/.test(input.previousPipelineSourceSnapshotHash))
     || !/^[a-f0-9]{64}$/.test(input.contextHash)
     || createHash("sha256").update(input.content, "utf8").digest("hex") !== input.contextHash
   ) {
@@ -862,7 +866,8 @@ export class AgentStore {
           source_trigger_event_id: string;
         }>;
       if (exactSourceRows.some((row) =>
-        row.source_snapshot_hash !== input.sourceSnapshotHash
+        (row.source_snapshot_hash !== input.sourceSnapshotHash
+          && row.source_snapshot_hash !== input.previousPipelineSourceSnapshotHash)
         || row.source_trigger_event_id !== input.sourceTriggerEventId
       )) {
         throw new Error("native_daktela_context_conflict");

@@ -6,6 +6,7 @@ import type { BokCodexAgent } from "./codex-agent.js";
 import {
   type NativeBokAttachmentEvidence,
   nativeBokDaktelaDecisionSourceSchema,
+  previousPipelineSourceSnapshotHash,
 } from "./native-bok-attachment-evidence.js";
 import { NativeBokAttachmentRenderer } from "./native-bok-attachment-renderer.js";
 import {
@@ -161,14 +162,22 @@ export class NativeBokDaktelaDecisionEngine {
         // standalone Daktela monitor, without introducing a second agent store or pipeline.
         const content = renderNativeDaktelaContext(request.context, verified.source.externalTicketId)
           + renderCanonicalMasterlinkKnowledge(request.knowledgeSnapshot, request.context.ticket.market);
+        const previousSnapshotHash = previousPipelineSourceSnapshotHash(verified.source);
         try {
           const contextReceipt = this.agent.core.store.reconcileNativeDaktelaContext({
-            masterlinkOperationId: request.context.operationId,
+            // A new contract/knowledge snapshot is a new immutable analysis. Keep
+            // the original operation ID in the rendered context and ML audit.
+            masterlinkOperationId: createHash("sha256").update(JSON.stringify({
+              operationId: request.context.operationId,
+              pipelineHash: verified.source.pipelineHash,
+              knowledgeSnapshotHash: request.knowledgeSnapshot.snapshotHash,
+            })).digest("hex"),
             externalTicketId: verified.source.externalTicketId,
             sourceRevision: request.context.ticket.revision,
             masterlinkTicketId: request.context.ticket.id,
             masterlinkTriggerMessageId: request.context.triggerMessageId,
             sourceSnapshotHash: verified.source.snapshotHash,
+            ...(previousSnapshotHash ? { previousPipelineSourceSnapshotHash: previousSnapshotHash } : {}),
             sourceExternalRevision: verified.source.externalRevision,
             sourceTriggerEventId: verified.source.triggerExternalEventId,
             contextHash: createHash("sha256").update(content, "utf8").digest("hex"),
