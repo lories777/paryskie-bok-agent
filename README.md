@@ -27,10 +27,11 @@ obserwowane kanały od kanału poleceń i zapisuje proponowane działania do oso
   i publikację po sprawdzeniu przez człowieka. Ręczna edycja odpowiedzi w panelu
   zachowuje źródłowy szkic jako materiał do oceny; sama nie publikuje nowej reguły.
 
-Lokalizacja obecnego procesu i dostęp do jego logów wymagają aktualizacji inwentarza.
-Dawny katalog `/home/oliwer/workspace/paryskie-bok-agent` nie był obecny na starym VPS
-podczas audytu 10.09. Nie traktuj dawnego adresu serwera ani commitu repo jako dowodu
-wersji działającego procesu. Procedura: [runbook](docs/RUNTIME-RUNBOOK.md).
+Aktualny runtime potwierdzony 10.09: `oliwer@212.127.78.15:22`, katalog
+`/home/oliwer/workspace/paryskie-bok-agent`, usługa użytkownika
+`paryskie-bok-agent.service`. Odczyt i restart przez `systemctl --user`, logi przez
+`journalctl --user -u paryskie-bok-agent.service`. Nie myl tego VPS ze starym hostem.
+Procedura wdrożenia: [runbook](docs/RUNTIME-RUNBOOK.md).
 
 ## Uruchomienie lokalne
 
