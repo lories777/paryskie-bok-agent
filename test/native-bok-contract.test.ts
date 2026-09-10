@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -12,6 +13,7 @@ import {
 } from "../src/native-bok-contract.js";
 import {
   MAX_NATIVE_BOK_KNOWLEDGE_DOCUMENT_CHARS,
+  MAX_NATIVE_BOK_KNOWLEDGE_DOCUMENTS,
   ticketAiKnowledgeSnapshotHash,
   ticketAiKnowledgeSnapshotSchema,
 } from "../src/native-bok-knowledge.js";
@@ -198,4 +200,19 @@ test("kontekst większy niż budżet bridge jest odrzucany przed modelem", () =>
     })),
   };
   assert.throws(() => ticketAiContextSchema.parse(oversized));
+});
+
+test("pamięć przyjmuje wiele krótkich wskazówek, zachowując limit bajtów i liczby", () => {
+  const base = NATIVE_BOK_KNOWLEDGE.documents[0]!;
+  const makeSnapshot = (count: number, content = base.content) => {
+    const documents = Array.from({length:count},(_,index)=>({...base,documentId:`learning:${index}`,
+      content,contentHash:createHash("sha256").update(content).digest("hex")}));
+    const input = {...NATIVE_BOK_KNOWLEDGE,documents};
+    const {snapshotHash:_,...hashInput}=input;
+    return {...hashInput,snapshotHash:ticketAiKnowledgeSnapshotHash(hashInput)};
+  };
+  assert.equal(ticketAiKnowledgeSnapshotSchema.parse(makeSnapshot(12)).documents.length,12);
+  assert.equal(ticketAiKnowledgeSnapshotSchema.parse(makeSnapshot(MAX_NATIVE_BOK_KNOWLEDGE_DOCUMENTS,"Ogólna wskazówka.")).documents.length,64);
+  assert.throws(()=>ticketAiKnowledgeSnapshotSchema.parse(makeSnapshot(MAX_NATIVE_BOK_KNOWLEDGE_DOCUMENTS+1,"Ogólna wskazówka.")));
+  assert.throws(()=>ticketAiKnowledgeSnapshotSchema.parse(makeSnapshot(4,"a".repeat(7000))),/knowledge_snapshot_size_limit/);
 });
