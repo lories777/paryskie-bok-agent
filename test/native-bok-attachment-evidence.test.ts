@@ -122,3 +122,16 @@ test("Gmail ZIP children require separate read receipts bound to the original ar
     ...proof, receipts: proof.receipts.map((r) => ({ ...r, attachmentId: r.attachmentId.replace("abc123", "abc124") })),
   }), /mismatch/);
 });
+
+
+test("manifest obejmuje 13 zdjęć bez obcięcia i odrzuca ponad 20 plików", () => {
+  const many = (count: number) => {
+    const base = { ...source(), attachments: Array.from({ length: count }, (_, i) => ({ ...ATTACHMENT,
+      attachmentId: `daktela-meta:${i.toString(16).padStart(64, "0")}`,
+    })) };
+    return { ...base, snapshotHash: nativeBokDaktelaSourceSnapshotHash(base) };
+  };
+  assert.equal(nativeBokDaktelaDecisionSourceSchema.parse(many(13)).attachments.length, 13);
+  assert.equal(nativeBokDaktelaDecisionSourceSchema.parse(many(20)).attachments.length, 20);
+  assert.equal(nativeBokDaktelaDecisionSourceSchema.safeParse(many(21)).success, false);
+});

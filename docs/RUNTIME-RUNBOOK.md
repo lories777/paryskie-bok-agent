@@ -1,8 +1,10 @@
 # Runtime BOK — odczyt stanu i naprawa incydentu
 
-Snapshot audytu: 10.09.2026. ML/Gmail działa, native heartbeat jest aktywny, lecz dostęp
-SSH do aktualnego procesu nie został potwierdzony. Adres wyjściowy połączeń runtime
-z logów ML nie jest wystarczającym dowodem adresu SSH ani konta usługi.
+Aktualizacja 10.09.2026: właściciel potwierdził VPS, a odczyt SSH zweryfikował usługę.
+Host `212.127.78.15`, port `22`, login `oliwer`; katalog
+`/home/oliwer/workspace/paryskie-bok-agent`, user unit `paryskie-bok-agent.service`.
+ENV pozostaje poza repo w `/home/oliwer/.config/paryskie-bok-agent/env`.
+Nie traktuj adresu wyjściowego znalezionego w innych logach jako aktualizacji inwentarza.
 
 1. Sprawdź `/api/health` ML i commit wdrożenia. Heartbeat native musi być świeży,
    z zgodnymi runtimeIdentity, storeIdentity i pipelineHash. Rewizje i czasy zadań
@@ -29,3 +31,17 @@ z logów ML nie jest wystarczającym dowodem adresu SSH ani konta usługi.
 
 Historia: aktualizacja 10.09 usuwa nieaktualne założenia o aktywnym monitorze Dakteli,
 braku wysyłki z ML i blokadzie pilota wynikającej ze snapshotu legacy bridge'a z 1.09.
+
+## Skoordynowane wdrożenie limitu 20 plików
+
+Nowy pipelineHash: `42cc1247ebf440a60d03a236d378ee195035802a5b513d96eda94cd56d9c86ab`.
+1. Potwierdź dostęp do aktualnego hosta i wersję usługi. Przygotuj oba artefakty.
+2. Wstrzymaj pobieranie nowych zadań native, odczekaj zakończenie aktywnych lease.
+3. Wdróż runtime i odpowiadający mu pin oraz producenta źródła w ML w jednym oknie.
+4. Potwierdź identyczny hash obu stron i świeży heartbeat, następnie wznów kolejkę.
+5. W trybie approval zweryfikuj aktualne źródło sprawy z 13 plikami, pełne pokrycie
+   dowodów i wynik zapisany w ML. Nie wysyłaj wiadomości testowych do klienta.
+6. W razie wycofania przywróć obie strony do wspólnego poprzedniego hasha.
+
+Walidacja przygotowania: pełne npm run verify, 286 testów PASS. Nadal obowiązują
+limity 25 MiB na plik, 50 MiB łącznie i 10 stron PDF na plik.
