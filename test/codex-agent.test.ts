@@ -868,3 +868,45 @@ test("reguła kompletności nie wymusza odpowiedzi na wewnętrzne zadanie i nie 
   assert.deepEqual(operationalCustomerDraftIssues([{ ...message, content: '<customer_activity direction="incoming" author_kind="customer">test</customer_activity>' }], planned), []);
   assert.deepEqual(requiredMasterlinkResearch([message], planned), { orderNumbers: ["480033739"], requiredTool: "ml_get_delivery_details" });
 });
+
+for (const recovered of [false, true]) {
+  test(`awaria odczytu jest odróżniona od pominięcia narzędzia; odzyskano=${recovered}`, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-read-outage-"));
+    const store = new AgentStore(dir);
+    try {
+      store.ingest({ platform: "discord", conversationExternalId: "daktela-ticket:99545",
+        externalMessageId: "daktela:v7:99545:outage", channelId: "local-test", authorId: "test",
+        authorName: "Klient", content: "Sprawdź zamówienie nr 88000846.", createdAt: new Date().toISOString(),
+        shouldRespond: false, role: "context" });
+      const core = new BokAgentCore(loadConfig({ BOK_AGENT_STATE_DIR: dir,
+        BOK_AGENT_WORKSPACE: path.join(process.cwd(), "agent-workspace"), MASTERLINK_MCP_ENABLED: "true",
+      }, process.cwd()), store);
+      let primaryCalls = 0;
+      const primaryThread = { id: "outage-primary", async run() {
+        primaryCalls += 1;
+        const failed: ThreadItem = { id: "failed", type: "mcp_tool_call", server: "masterlink",
+          tool: "ml_get_order", arguments: { order_number: "88000846" }, status: "failed",
+          error: { message: "TECHNICAL_ERROR" } };
+        const success: ThreadItem = { id: "recovered", type: "mcp_tool_call", server: "masterlink",
+          tool: "ml_get_order", arguments: { order_number: "88000846" }, status: "completed",
+          result: { content: [], structured_content: { found: true } } };
+        return { items: recovered ? [failed, success] : [failed], finalResponse: JSON.stringify(output), usage: null };
+      } };
+      const reviewerThread = { id: "outage-reviewer", async run() {
+        assert.ok(recovered, "awaria nie może udawać faktów gotowych do recenzji");
+        return { items: [], finalResponse: JSON.stringify({ verdict: "pass", revisedPayload: null,
+          issues: [], confidence: "high", polishTranslation: null }), usage: null };
+      } };
+      const agent = new BokCodexAgent(core, undefined, {
+        primaryCodex: { startThread: () => primaryThread, resumeThread: () => primaryThread },
+        reviewerCodex: { startThread: () => reviewerThread, resumeThread: () => reviewerThread },
+      });
+      const run = () => agent.runWithProvenance(store.syntheticDaktelaDecisionJob({
+        externalTicketId: "99545", sourceSnapshotHash: "f".repeat(64), channelId: "local-test",
+      }));
+      if (recovered) assert.ok((await run()).output.proposedActions[0]?.qualityReview);
+      else await assert.rejects(run(), /odczyt MasterLink zakończył się błędem/);
+      assert.equal(primaryCalls, 1, "nie uruchamia korekty modelu na znaną awarię źródła");
+    } finally { store.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+}

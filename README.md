@@ -14,6 +14,9 @@ Typowany plan dla uwierzytelnionej sprawy klienta wymaga jednego pełnego szkicu
 Jeśli model go pominie, sam dostaje korektę i uzupełnia wynik w tej samej pętli kontroli jakości.
 Szkic opisuje przyszłe działanie; stare reguły dla obietnic bez planu nie usuwają go.
 Odczyt ML jest wymagany także przy samym planie i ponownie sprawdzany po korekcie.
+Nieudana próba odczytu jest awarią źródła, a nie pominiętym researchem: runtime zgłasza
+brak dostępu i nie uruchamia dodatkowej korekty modelu, która powtarzałaby tę samą awarię.
+Udany odczyt po wcześniejszej nieudanej próbie nadal pozwala kontynuować analizę.
 Po wyczerpaniu korekt niepełna propozycja nie przechodzi do wykonania jako gotowy wynik.
 Nie wymusza to odpowiedzi na zadania wewnętrzne ani wiadomości niewymagające działania.
 
