@@ -57,3 +57,11 @@ Nowy pipelineHash: `42cc1247ebf440a60d03a236d378ee195035802a5b513d96eda94cd56d9c
 
 Walidacja przygotowania: pełne npm run verify, 286 testów PASS. Nadal obowiązują
 limity 25 MiB na plik, 50 MiB łącznie i 10 stron PDF na plik.
+
+### 2026-09-11 — odczyt ML przed pierwszą propozycją
+
+Wymóg odczytu zamówienia jest przekazywany primary już w pierwszej turze. Dotychczasowa
+bramka sprawdzająca faktyczne użycie narzędzia i niezależna kontrola jakości pozostają aktywne.
+Zmiana ogranicza zbędną turę „napisz → sprawdź zamówienie → napisz ponownie”, bez zmiany modelu,
+polityki załączników ani liczby wymaganych kontroli. Wiadomości bez potrzeby działania nie
+muszą wykonywać odczytu tylko dlatego, że zawierają numer.
