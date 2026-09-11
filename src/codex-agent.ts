@@ -306,6 +306,7 @@ export class BokCodexAgent {
         requiredResearch &&
         !hasRequiredMasterlinkRead(evidenceItems, requiredResearch.requiredTool)
       ) {
+        assertMasterlinkReadAvailable(evidenceItems, requiredResearch.requiredTool);
         result = await runPrimary(
           buildResearchCorrectionPrompt(requiredResearch.orderNumbers, requiredResearch.requiredTool),
         );
@@ -313,6 +314,7 @@ export class BokCodexAgent {
         candidate = retainCorrectionLearning(decodeAgentOutput(result));
         candidate = await correctTicketIdentity(candidate);
         if (!hasRequiredMasterlinkRead(evidenceItems, requiredResearch.requiredTool)) {
+          assertMasterlinkReadAvailable(evidenceItems, requiredResearch.requiredTool);
           throw new Error(
             `Agent nie wykonał wymaganego odczytu MasterLink (${requiredResearch.requiredTool}).`,
           );
@@ -1118,6 +1120,15 @@ export function hasRequiredMasterlinkRead(items: ThreadItem[], requiredTool: str
       ? MASTERLINK_READ_TOOLS.has(call.tool)
       : call.tool === requiredTool;
   });
+}
+
+/** Błąd źródła nie jest pominięciem researchu. Nie każ modelowi powtarzać tej samej awarii. */
+function assertMasterlinkReadAvailable(items: ThreadItem[], requiredTool: string): void {
+  const failed = items.some((item) => item.type === "mcp_tool_call"
+    && item.server === "masterlink"
+    && (requiredTool === "any_read" ? MASTERLINK_READ_TOOLS.has(item.tool) : item.tool === requiredTool)
+    && (item.status === "failed" || Boolean(item.error)));
+  if (failed) throw new Error("Nie można teraz sprawdzić danych zamówienia — odczyt MasterLink zakończył się błędem. Ponów analizę po przywróceniu dostępu.");
 }
 
 function buildInitialResearchPrompt(requirement: MasterlinkResearchRequirement): string {
