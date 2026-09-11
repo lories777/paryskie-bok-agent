@@ -198,6 +198,55 @@ test("V4 dopuszcza dokładnie jedną zatwierdzoną operację bez udawania odpowi
   }).success, false);
 });
 
+test("V4 zachowuje sprawdzony szkic obok działania, a hash chroni obie części", () => {
+  const raw = output();
+  raw.caseState = "action_proposed";
+
+  const result = buildNativeBokDecisionResultV4({
+    output: raw,
+    operationalAction: {
+      proposal: {
+        schemaVersion: 1,
+        intent: "delivery_status",
+        request: {
+          schemaVersion: 2,
+          actionType: "fulfillment.locate",
+          factKeys: ["order.status"],
+        },
+      },
+      review: {
+        schemaVersion: 1,
+        grounded: true,
+        policyCompliant: true,
+        decision: {
+          schemaVersion: 2,
+          actionType: "fulfillment.locate",
+          verdict: "approve",
+          reasonCodes: ["facts_verified", "intent_match"],
+        },
+      },
+    },
+    source: source(),
+    attachmentEvidence: evidence(),
+    toolEvidenceHash: "a".repeat(64),
+    toolNames: ["masterlink.ml_get_fulfillment"],
+    policyHash: "c".repeat(64),
+    playbookRevision: "d".repeat(64),
+    correctionsRevision: 2,
+    storeIdentity: "9".repeat(64),
+  });
+  assert.equal(result.schemaVersion, 4);
+  assert.equal(result.state, "ready");
+  assert.equal(result.readyKind, "operational_action");
+  assert.equal(result.customerReply?.body, output().proposedActions[0]!.payload);
+  assert.deepEqual(result.reasonCodes, ["reviewed_action_ready"]);
+  assert.equal(nativeBokDecisionResultV4Schema.parse(result).operationalAction?.review.decision.verdict, "approve");
+  assert.equal(nativeBokDecisionResultV4Schema.safeParse({
+    ...result,
+    customerReply: output().proposedActions[0],
+  }).success, false);
+});
+
 function output(): AgentTurnOutput {
   return {
     reply: "DAKTELA #100328 · gotowe",

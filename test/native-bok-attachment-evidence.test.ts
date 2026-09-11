@@ -83,14 +83,14 @@ test("previous pipeline identity changes only the contract, never mail or attach
   const current = source();
   const previous = previousPipelineSourceSnapshotHash(current);
   assert.equal(previous, nativeBokDaktelaSourceSnapshotHash({ ...current,
-    pipelineHash: "b04ac3893fdc9b3b0e0638cd8b0b99a257285d2627199fab32b86182ba15ef2b",
+    pipelineHash: "42cc1247ebf440a60d03a236d378ee195035802a5b513d96eda94cd56d9c86ab",
   }));
   assert.notEqual(previous, current.snapshotHash);
   assert.notEqual(previous, previousPipelineSourceSnapshotHash({ ...current,
     attachments: [{ ...ATTACHMENT, sourceHash: "c".repeat(64) }],
   }));
   assert.notEqual(previous, previousPipelineSourceSnapshotHash({ ...current, externalTicketId: "100329" }));
-  assert.equal(previousPipelineSourceSnapshotHash({ ...current, attachments: Array(11).fill(ATTACHMENT) }), undefined);
+  assert.equal(previousPipelineSourceSnapshotHash({ ...current, attachments: Array(21).fill(ATTACHMENT) }), undefined);
 });
 
 test("evidence jest deterministyczne i musi pokryć exact manifest 1:1", () => {

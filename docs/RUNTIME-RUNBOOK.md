@@ -32,6 +32,18 @@ Nie traktuj adresu wyjściowego znalezionego w innych logach jako aktualizacji i
 Historia: aktualizacja 10.09 usuwa nieaktualne założenia o aktywnym monitorze Dakteli,
 braku wysyłki z ML i blokadzie pilota wynikającej ze snapshotu legacy bridge'a z 1.09.
 
+## Wspólna propozycja działania i odpowiedź — 11.09.2026
+
+Bieżący pipelineHash: `2745af18b14d489bc660b767d49011dd39bee6ddbc508ec3830d6b1c99187822`.
+Wynik V4 może zawierać sprawdzony szkic obok zatwierdzonej propozycji operacji. `readyKind`
+pozostaje `operational_action`: szkic służy do podglądu, nie do wysyłki przed wykonaniem.
+ML zachowuje go w metadanych planu, blokuje akceptację planu jako maila i po wykonaniu
+uruchamia analizę nowych faktów. Niezależny kontroler operacji widzi ten sam komplet
+zdjęć i politykę sprawy; odrzucony plan wraca raz do generatora przed zakończeniem zadania.
+ML rozpoznaje faktyczny typ pliku po bajtach przed zbudowaniem kontekstu, więc JPEG nazwany
+PNG nie blokuje leasingu zadania. Hash, tożsamość i pełny manifest nadal są sprawdzane.
+Przy aktualizacji należy wdrożyć zgodny pin ML i runtime po opróżnieniu aktywnych lease.
+
 ## Skoordynowane wdrożenie limitu 20 plików
 
 Nowy pipelineHash: `42cc1247ebf440a60d03a236d378ee195035802a5b513d96eda94cd56d9c86ab`.
