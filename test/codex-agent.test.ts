@@ -500,6 +500,47 @@ test("agent nie obiecuje klientowi odblokowania realizacji przed wykonaniem oper
   assert.equal(guarded.caseState, "action_proposed");
 });
 
+test("obowiązkowy odczyt jest w pierwszej turze, a kontrola jakości pozostaje niezależna", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-upfront-research-"));
+  const store = new AgentStore(dir);
+  try {
+    store.ingest({ platform: "discord", conversationExternalId: "daktela-ticket:99545",
+      externalMessageId: "daktela:v7:99545:source", channelId: "local-test", authorId: "test",
+      authorName: "Klient", content: message.content, createdAt: new Date().toISOString(),
+      shouldRespond: false, role: "context" });
+    const core = new BokAgentCore(loadConfig({ BOK_AGENT_STATE_DIR: dir,
+      BOK_AGENT_WORKSPACE: path.join(process.cwd(), "agent-workspace"), MASTERLINK_MCP_ENABLED: "true",
+    }, process.cwd()), store);
+    let primaryCalls = 0;
+    let reviewCalls = 0;
+    const primaryThread = { id: "upfront-primary", async run(input: unknown) {
+      primaryCalls += 1;
+      assert.match(String(input), /Przed pierwszą propozycją odpowiedzi/);
+      assert.match(String(input), /ml_get_delivery_details dla zamówienia 480033739/);
+      const read: ThreadItem = { id: "read", type: "mcp_tool_call", server: "masterlink",
+        tool: "ml_get_delivery_details", arguments: { order_number: "480033739" }, status: "completed",
+        result: { content: [], structured_content: { found: true } } };
+      return { items: [read], finalResponse: JSON.stringify(output), usage: null };
+    } };
+    const reviewerThread = { id: "upfront-reviewer", async run() {
+      reviewCalls += 1;
+      return { items: [], finalResponse: JSON.stringify({ verdict: "pass", revisedPayload: null,
+        issues: [], confidence: "high", polishTranslation: null }), usage: null };
+    } };
+    const agent = new BokCodexAgent(core, undefined, {
+      primaryCodex: { startThread: () => primaryThread, resumeThread: () => primaryThread },
+      reviewerCodex: { startThread: () => reviewerThread, resumeThread: () => reviewerThread },
+    });
+    const result = await agent.runWithProvenance(store.syntheticDaktelaDecisionJob({
+      externalTicketId: "99545", sourceSnapshotHash: "f".repeat(64), channelId: "local-test",
+    }));
+    assert.equal(primaryCalls, 1);
+    assert.equal(reviewCalls, 1);
+    assert.equal(result.output.proposedActions[0]?.payload, output.proposedActions[0]?.payload);
+    assert.equal(hasRequiredMasterlinkRead([{ id: "missing", type: "agent_message", text: "sprawdzono" }], "ml_get_delivery_details"), false);
+  } finally { store.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("ticket z numerem i pytaniem o punkt wymaga dokładnego odczytu dostawy", () => {
   assert.deepEqual(extractOrderNumbers([message]), ["480033739"]);
   assert.deepEqual(requiredMasterlinkResearch([message], output), {

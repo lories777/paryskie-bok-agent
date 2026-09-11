@@ -224,6 +224,8 @@ export class BokCodexAgent {
       });
     };
 
+    const initialResearch = this.config.masterlinkMcpEnabled
+      ? requiredMasterlinkResearch(messages) : null;
     let result = await runPrimary(
       buildTurnPrompt(
         job,
@@ -236,7 +238,8 @@ export class BokCodexAgent {
         sharedPolicy.playbook,
         relatedTicketContext,
         sharedPolicy.verifiedCorrections,
-      ) + (correction ? `\n\nKorekta niezależnej kontroli operacji:\n${correction}` : ""),
+      ) + (initialResearch ? `\n\n${buildInitialResearchPrompt(initialResearch)}` : "")
+        + (correction ? `\n\nKorekta niezależnej kontroli operacji:\n${correction}` : ""),
     );
 
     if (!conversation.codexThreadId && thread.id) {
@@ -1046,13 +1049,13 @@ function extractDaktelaTicketReferences(value: string): string[] {
 
 export function requiredMasterlinkResearch(
   messages: ReturnType<AgentStore["recentMessages"]>,
-  output: AgentTurnOutput,
+  output?: AgentTurnOutput,
 ): MasterlinkResearchRequirement | null {
   const orderNumbers = [...new Set([
     ...extractExplicitOrderNumbers(messages),
     ...extractOrderNumbers(messages),
   ])];
-  const needsWork =
+  const needsWork = !output ||
     output.proposedActions.some((action) => action.kind === "reply_customer") ||
     output.caseState === "needs_data" ||
     output.caseState === "waiting_for_human";
@@ -1098,6 +1101,18 @@ export function hasRequiredMasterlinkRead(items: ThreadItem[], requiredTool: str
       ? MASTERLINK_READ_TOOLS.has(call.tool)
       : call.tool === requiredTool;
   });
+}
+
+function buildInitialResearchPrompt(requirement: MasterlinkResearchRequirement): string {
+  const instruction = requirement.requiredTool === "ml_get_delivery_details"
+    ? `Użyj ml_get_delivery_details dla zamówienia ${requirement.orderNumbers[0]}.`
+    : `Użyj właściwego narzędzia odczytu MasterLink dla zamówienia ${requirement.orderNumbers[0]}.`;
+  return `Przed pierwszą propozycją odpowiedzi sprawdź wymagane dane zamówienia w MasterLink.
+Jeżeli przygotowujesz odpowiedź dla klienta albo zamierzasz pytać o dane lub decyzję BOK,
+${instruction} Zrób ten odczyt w tej samej turze, przed napisaniem propozycji.
+Nie zastępuj wymaganego odczytu samym cytatem lub numerem w korespondencji.
+Dla wiadomości niewymagającej żadnej odpowiedzi ani działania nie wykonuj zbędnego odczytu.
+Po odczycie nadal przygotuj pełny wynik do niezależnej kontroli; niczego nie wysyłaj.`;
 }
 
 function buildResearchCorrectionPrompt(orderNumbers: string[], requiredTool: string): string {
