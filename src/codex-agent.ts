@@ -43,6 +43,7 @@ import {
   type ClaimedJob,
   type ProposedAction,
   type StoredAction,
+  type StoredMessage,
 } from "./types.js";
 
 export interface BokAgentRunProvenance {
@@ -298,25 +299,29 @@ export class BokCodexAgent {
       return decoded;
     };
     output = await correctTicketIdentity(output);
-    const requiredResearch = requiredMasterlinkResearch(messages, output);
-    if (
-      this.config.masterlinkMcpEnabled &&
-      requiredResearch &&
-      !hasRequiredMasterlinkRead(evidenceItems, requiredResearch.requiredTool)
-    ) {
-      result = await runPrimary(
-        buildResearchCorrectionPrompt(requiredResearch.orderNumbers, requiredResearch.requiredTool),
-      );
-      evidenceItems.push(...result.items);
-      output = retainCorrectionLearning(decodeAgentOutput(result));
-      output = await correctTicketIdentity(output);
-      if (!hasRequiredMasterlinkRead(evidenceItems, requiredResearch.requiredTool)) {
-        throw new Error(
-          `Agent nie wykonał wymaganego odczytu MasterLink (${requiredResearch.requiredTool}).`,
+    const ensureResearch = async (candidate: AgentTurnOutput): Promise<AgentTurnOutput> => {
+      const requiredResearch = requiredMasterlinkResearch(messages, candidate);
+      if (
+        this.config.masterlinkMcpEnabled &&
+        requiredResearch &&
+        !hasRequiredMasterlinkRead(evidenceItems, requiredResearch.requiredTool)
+      ) {
+        result = await runPrimary(
+          buildResearchCorrectionPrompt(requiredResearch.orderNumbers, requiredResearch.requiredTool),
         );
+        evidenceItems.push(...result.items);
+        candidate = retainCorrectionLearning(decodeAgentOutput(result));
+        candidate = await correctTicketIdentity(candidate);
+        if (!hasRequiredMasterlinkRead(evidenceItems, requiredResearch.requiredTool)) {
+          throw new Error(
+            `Agent nie wykonał wymaganego odczytu MasterLink (${requiredResearch.requiredTool}).`,
+          );
+        }
       }
-    }
+      return candidate;
+    };
     output = await correctHumanDraftFeedback(output);
+    output = await ensureResearch(output);
     output = requireFulfillmentResolutionBeforeCustomerPromise(job, output, conversation.externalId);
     output = requireStandardReshipmentForConfirmedMissingProduct(
       job,
@@ -367,6 +372,7 @@ export class BokCodexAgent {
         output = retainCorrectionLearning(decodeAgentOutput(result));
         output = await correctTicketIdentity(output);
         output = await correctHumanDraftFeedback(output);
+        output = await ensureResearch(output);
         output = requireFulfillmentResolutionBeforeCustomerPromise(job, output, conversation.externalId);
         output = requireStandardReshipmentForConfirmedMissingProduct(
           job,
@@ -400,6 +406,9 @@ export class BokCodexAgent {
           (action) => action.kind !== "reply_customer",
         );
         output.caseState = "waiting_for_human";
+        // Kontrola wyczerpała korekty: nie pokazuj wadliwego planu jako gotowej
+        // decyzji tylko dlatego, że późniejsza kontrola samej operacji go zatwierdzi.
+        if (hasNativeCustomerContext(messages)) output.operationalActionProposal = null;
         output.reply = sanitizeInternalQualityMessage(output.reply);
         output = requireFulfillmentResolutionBeforeCustomerPromise(job, output, conversation.externalId);
         output = requireStandardReshipmentForConfirmedMissingProduct(
@@ -447,7 +456,10 @@ export class BokCodexAgent {
     visualEvidence?: NativeBokRenderedAttachmentEvidence,
     signal?: AbortSignal,
   ): Promise<string[]> {
-    const blockedIssues = catalogRecommendationResolutionIssues(output, businessContext);
+    const blockedIssues = [
+      ...catalogRecommendationResolutionIssues(output, businessContext),
+      ...operationalCustomerDraftIssues(messages, output),
+    ];
     const drafts = output.proposedActions.filter((action) => action.kind === "reply_customer");
     for (const action of drafts) {
       const deterministicIssues = [
@@ -864,6 +876,9 @@ export function requireFulfillmentResolutionBeforeCustomerPromise(
   output: AgentTurnOutput,
   conversationExternalId?: string,
 ): AgentTurnOutput {
+  // Typowany plan i szkic mają osobne kontrole oraz akceptację ML. Nie kasuj
+  // przyszłej odpowiedzi regułą przeznaczoną dla swobodnej obietnicy bez planu.
+  if (output.operationalActionProposal) return output;
   const drafts = output.proposedActions.filter((action) => action.kind === "reply_customer");
   if (drafts.length === 0) return output;
   const pendingFulfillment = /(?:utknęł|nie przeszł[^.]{0,40}kompletac|trzeba[^.]{0,80}odblok|odblokować zamówieni|brak dokumentu magazynowego)/iu.test(output.reply);
@@ -890,6 +905,7 @@ export function requireStandardReshipmentForConfirmedMissingProduct(
   output: AgentTurnOutput,
   conversationExternalId?: string,
 ): AgentTurnOutput {
+  if (output.operationalActionProposal) return output;
   const isAutoresponderOnlyResult = /autoresponder[^.]{0,80}bez nowej treści klienta/iu.test(output.reply);
   if (!isAutoresponderOnlyResult &&
     output.caseState !== "needs_data" &&
@@ -1056,6 +1072,7 @@ export function requiredMasterlinkResearch(
     ...extractOrderNumbers(messages),
   ])];
   const needsWork = !output ||
+    Boolean(output.operationalActionProposal) ||
     output.proposedActions.some((action) => action.kind === "reply_customer") ||
     output.caseState === "needs_data" ||
     output.caseState === "waiting_for_human";
@@ -1332,6 +1349,29 @@ export function holdingReplyIntegrityIssues(
   return isEmptyHoldingReply
     ? ["Draft jest pustym potwierdzeniem przyjęcia, mimo że właściwe działanie operacyjne nie zostało jeszcze wykonane. Pokaż BOK tylko konkretny krok, a klientowi odpowiedz po jego potwierdzeniu."]
     : [];
+}
+
+/** Tylko uwierzytelniony snapshot sprawy klienta wymaga pakietu plan + odpowiedź. */
+function hasNativeCustomerContext(messages: readonly StoredMessage[]): boolean {
+  return messages.some((message) => message.role === "context"
+    && message.authorId === "masterlink-native-context"
+    && /<customer_activity\b[^>]*direction="incoming"[^>]*author_kind="customer"/.test(message.content));
+}
+
+/** Brak draftu musi wejść w tę samą pętlę korekty co zła treść draftu. */
+export function operationalCustomerDraftIssues(
+  messages: readonly StoredMessage[],
+  output: AgentTurnOutput,
+): string[] {
+  if (!output.operationalActionProposal || !hasNativeCustomerContext(messages)) return [];
+  const drafts = output.proposedActions.filter((action) => action.kind === "reply_customer");
+  return drafts.length === 1 ? [] : [
+    "Plan dla sprawy klienta wymaga jednej pełnej odpowiedzi reply_customer do akceptacji. "
+      + "Przygotuj ją teraz na podstawie sprawdzonych faktów, w języku klienta. "
+      + "Opisz proponowane działanie w czasie przyszłym, bez twierdzenia, że zostało wykonane. "
+      + "Nie zastępuj szkicu pytaniem o decyzję BOK. Jeżeli dowody nie pozwalają proponować działania, "
+      + "wycofaj tę propozycję i wskaż rzeczywiście brakującą informację.",
+  ];
 }
 
 export function customerDraftStateIssues(output: AgentTurnOutput): string[] {
