@@ -12,7 +12,7 @@ test("decision capability ma przypiętą tożsamość pipeline'u v2", () => {
   assert.equal(NATIVE_BOK_ATTACHMENT_POLICY_VERSION, "authenticated-source-evidence-v2");
   assert.equal(
     NATIVE_BOK_DECISION_PIPELINE_HASH,
-    "42cc1247ebf440a60d03a236d378ee195035802a5b513d96eda94cd56d9c86ab",
+    "2745af18b14d489bc660b767d49011dd39bee6ddbc508ec3830d6b1c99187822",
   );
 });
 

@@ -152,9 +152,9 @@ export function nativeBokDaktelaSourceSnapshotHash(
  * the independently authenticated current source; changed mail/bytes do not match.
  */
 export function previousPipelineSourceSnapshotHash(source: NativeBokDaktelaDecisionSource): string | undefined {
-  if (source.pipelineHash !== NATIVE_BOK_DECISION_PIPELINE_HASH || source.attachments.length > 10) return undefined;
+  if (source.pipelineHash !== NATIVE_BOK_DECISION_PIPELINE_HASH || source.attachments.length > 20) return undefined;
   return nativeBokDaktelaSourceSnapshotHash({ ...source,
-    pipelineHash: "b04ac3893fdc9b3b0e0638cd8b0b99a257285d2627199fab32b86182ba15ef2b",
+    pipelineHash: "42cc1247ebf440a60d03a236d378ee195035802a5b513d96eda94cd56d9c86ab",
   });
 }
 

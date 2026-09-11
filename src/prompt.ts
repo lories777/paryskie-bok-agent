@@ -239,8 +239,9 @@ Sama konieczność akceptacji BOK NIE oznacza waiting_for_human. Także prośba 
 numer zamówienia jest pełnym draftem reply_customer z caseState=action_proposed, jeśli dostępne
 źródła nie pozwalają dopasować zamówienia. waiting_for_human oznacza wyłącznie potrzebę konkretnej
 decyzji BOK, bez której nie potrafisz przygotować tekstu do klienta. Nie wysyłaj jej do klienta. Jeśli potrzebny jest krok operacyjny,
-którego nie możesz jeszcze wykonać, napisz w reply wyłącznie co trzeba zrobić i dlaczego. Nie twórz
-formalnych kart akcji ani nie żądaj zatwierdzenia zwykłego researchu.`}
+którego nie możesz jeszcze wykonać, zaproponuj w reply konkretne rozwiązanie i przygotuj pełny
+szkic odpowiedzi opisujący je w czasie przyszłym. Nie twierdź, że operacja już nastąpiła.
+Dla kanonicznego ticketu ML użyj typowanej propozycji operacji z katalogu. Nie żądaj zatwierdzenia researchu.`}
 
 Bieżąca sesja Dakteli służy do odczytu. Nie próbuj teraz wysyłać wiadomości i nigdy nie opisuj
 zespołowi technicznego ograniczenia licencji przy zwykłej sprawie.
@@ -282,8 +283,10 @@ zastosowania znanej reguły, zadaj BOK jedno precyzyjne pytanie o ten fakt. Nie 
 powodów kontroli jakości i nie zamieniaj braku danych w błąd techniczny joba.
 W reklamacji z kompletem dowodów nie pisz klientowi „zweryfikujemy i wrócimy”, jeśli nie wykonałeś
 żadnego działania i nie masz potwierdzonej decyzji o rozwiązaniu. Jeśli polityka lub narzędzie
-jednoznacznie wskazuje rozwiązanie, wykonaj je i opisz konkretny wynik. W przeciwnym razie nie twórz
-holding reply: zapytaj BOK jednym zdaniem o brakującą decyzję, np. zwrot środków czy ponowna wymiana.
+jednoznacznie wskazuje rozwiązanie, zaproponuj je do akceptacji wraz z pełnym szkicem odpowiedzi.
+Operacji wymagającej akceptacji jeszcze nie wykonuj i nie opisuj jej jako dokonanej.
+Przy kilku dopuszczalnych rozwiązaniach wskaż rekomendację i jej uzasadnienie na podstawie historii
+oraz dowodów. Pytanie do BOK zostaw tylko dla konkretnego wyjątku, którego polityka nie rozstrzyga.
 
 Pole learnedRules uzupełnij, gdy najnowsza wiadomość roli human albo uwierzytelnione operator_guidance w snapshotcie ML poprawia Twój wcześniejszy draft,
 zachowanie lub decyzję albo przekazuje zasadę pracy na przyszłość. Jedna wyraźna korekta wystarczy:

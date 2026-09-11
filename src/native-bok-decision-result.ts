@@ -230,16 +230,16 @@ export const nativeBokDecisionResultV4Schema = z.object({
   const customerReady = result.customerReply !== null;
   const actionReady = approvedAction !== null;
   if (result.state === "ready") {
-    if (customerReady === actionReady) {
+    if (!customerReady && !actionReady) {
       issue.addIssue({ code: "custom", path: ["state"], message: "ready_decision_not_exclusive" });
     }
     if (
-      (result.readyKind === "customer_reply") !== customerReady
+      (result.readyKind === "customer_reply") !== (customerReady && !actionReady)
       || (result.readyKind === "operational_action") !== actionReady
     ) {
       issue.addIssue({ code: "custom", path: ["readyKind"], message: "ready_kind_mismatch" });
     }
-    const expectedReason = customerReady ? "reviewed_reply_ready" : "reviewed_action_ready";
+    const expectedReason = actionReady ? "reviewed_action_ready" : "reviewed_reply_ready";
     if (result.reasonCodes.length !== 1 || result.reasonCodes[0] !== expectedReason) {
       issue.addIssue({ code: "custom", path: ["reasonCodes"], message: "ready_reason_invalid" });
     }
@@ -364,15 +364,16 @@ export function buildNativeBokDecisionResultV4(
     replyActions,
     input.source.externalTicketId,
   );
-  const customerReady = customerReasons.length === 1
-    && customerReasons[0] === "reviewed_reply_ready";
   const approvedAction = approvedSharedAgentOperationalAction(input.operationalAction);
-  const exclusiveReady = Number(customerReady) + Number(Boolean(approvedAction)) === 1;
+  const customerReady = customerReasons.length === 1
+    && customerReasons[0] === "reviewed_reply_ready"
+    && (!input.output.operationalActionProposal || Boolean(approvedAction));
+  const exclusiveReady = customerReady || Boolean(approvedAction);
   const state = exclusiveReady ? "ready" as const : "blocked" as const;
   const readyKind = state === "ready"
-    ? customerReady ? "customer_reply" as const : "operational_action" as const
+    ? approvedAction ? "operational_action" as const : "customer_reply" as const
     : null;
-  const action = readyKind === "customer_reply" ? replyActions[0]! : undefined;
+  const action = customerReady ? replyActions[0]! : undefined;
   const customerReply = action && action.qualityReview?.verdict !== "blocked"
     ? {
         externalTicketId: input.source.externalTicketId,
