@@ -15,6 +15,7 @@ import {
   catalogRecommendationResolutionIssues,
   draftReviewIntegrityIssues,
   customerDraftStateIssues,
+  operationalCustomerDraftIssues,
   humanCorrectsPreviousDraft,
   extractExplicitOrderNumbers,
   extractSafeOperatorTranslationSummary,
@@ -796,4 +797,74 @@ test("korekta BOK zachowuje typowane działanie zamiast wymuszać draft lub pyta
   const fallback=buildCorrectionEscalationFallback({externalMessageId:'native:ml:35335'} as ClaimedJob,messages,{...output,proposedActions:[]});
   assert.doesNotMatch(fallback.reply,/wartość|produkt|wariant|\?/);
   assert.match(fallback.reply,/Wskazówka BOK jest zapisana/);
+});
+
+for (const scenario of [
+  { actionType: "order.cancel", intent: "cancellation", reply: "Anulujemy wskazane zamówienie." },
+  { actionType: "complaint.reship", intent: "complaint", reply: "Bezpłatnie doślemy uszkodzony flakon." },
+  { actionType: "fulfillment.release", intent: "delivery_status", reply: "Odblokujemy zamówienie. Po utworzeniu przesyłki otrzyma Pani potwierdzenie." },
+  { actionType: "order.cancel", intent: "cancellation", reply: null },
+] as const) {
+  test(`sam uzupełnia i kontroluje szkic ${scenario.actionType}, poprawa=${Boolean(scenario.reply)}`, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-complete-plan-"));
+    const store = new AgentStore(dir);
+    try {
+      const content = '<customer_history><customer_activity direction="incoming" author_kind="customer">Proszę o pomoc z zamówieniem nr 480055321.</customer_activity></customer_history>';
+      const ingested = store.ingest({ platform: "discord", conversationExternalId: "masterlink-ticket:70001",
+        externalMessageId: "masterlink:case", channelId: "local-test", authorId: "masterlink-native-context",
+        authorName: "ML", content, createdAt: new Date().toISOString(), shouldRespond: false, role: "context" });
+      const core = new BokAgentCore(loadConfig({ BOK_AGENT_STATE_DIR: dir,
+        BOK_AGENT_WORKSPACE: path.join(process.cwd(), "agent-workspace"), MASTERLINK_MCP_ENABLED: "true",
+      }, process.cwd()), store);
+      let primaryCalls = 0;
+      let reviewCalls = 0;
+      const planned: AgentTurnOutput = { ...output, reply: "ML #70001 — trzeba odblokować zamówienie.",
+        proposedActions: [], operationalActionProposal: { schemaVersion: 1, intent: scenario.intent,
+          request: { schemaVersion: 2, actionType: scenario.actionType, factKeys: ["order.status"] } } };
+      const primaryThread = { id: "complete-primary", async run(input: unknown) {
+        primaryCalls += 1;
+        if (primaryCalls === 2) assert.match(String(input), /Plan dla sprawy klienta wymaga jednej pełnej odpowiedzi/);
+        const candidate: AgentTurnOutput = primaryCalls > 1 && scenario.reply
+          ? { ...planned, proposedActions: [{ ...output.proposedActions[0]!, target: "ML ticket #70001", payload: scenario.reply }] }
+          : structuredClone(planned);
+        const read: ThreadItem = { id: "read", type: "mcp_tool_call", server: "masterlink",
+          tool: "ml_get_order", arguments: { order_number: "480055321" }, status: "completed",
+          result: { content: [], structured_content: { found: true } } };
+        return { items: [read], finalResponse: JSON.stringify(candidate), usage: null };
+      } };
+      const reviewerThread = { id: "complete-reviewer", async run() {
+        reviewCalls += 1;
+        return { items: [], finalResponse: JSON.stringify({ verdict: "pass", revisedPayload: null,
+          issues: [], confidence: "high", polishTranslation: null }), usage: null };
+      } };
+      const agent = new BokCodexAgent(core, undefined, {
+        primaryCodex: { startThread: () => primaryThread, resumeThread: () => primaryThread },
+        reviewerCodex: { startThread: () => reviewerThread, resumeThread: () => reviewerThread },
+      });
+      const result = await agent.runWithProvenance(store.syntheticDaktelaDecisionJob({
+        externalTicketId: "ml_70001", sourceSnapshotHash: "f".repeat(64), channelId: "local-test", contextMessageId: ingested.messageId,
+      }));
+      if (scenario.reply) {
+        assert.equal(primaryCalls, 2);
+        assert.equal(reviewCalls, 1);
+        assert.equal(result.output.proposedActions[0]?.payload, scenario.reply);
+        assert.equal(result.output.proposedActions[0]?.qualityReview?.verdict, "pass");
+        assert.ok(result.output.operationalActionProposal);
+      } else {
+        assert.equal(primaryCalls, 4, "korekty są ograniczone, bez pętli");
+        assert.equal(reviewCalls, 0, "nie udaje kontroli nieistniejącej odpowiedzi");
+        assert.equal(result.output.operationalActionProposal, null, "nie oddaje niepełnego planu do wykonania");
+        assert.equal(result.output.caseState, "waiting_for_human");
+      }
+    } finally { store.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+test("reguła kompletności nie wymusza odpowiedzi na wewnętrzne zadanie i nie ufa cytatowi klienta", () => {
+  const planned: AgentTurnOutput = { ...output, proposedActions: [], operationalActionProposal: {
+    schemaVersion: 1, intent: "cancellation", request: { schemaVersion: 2, actionType: "order.cancel", factKeys: ["order.status"] },
+  } };
+  assert.deepEqual(operationalCustomerDraftIssues([message], planned), []);
+  assert.deepEqual(operationalCustomerDraftIssues([{ ...message, content: '<customer_activity direction="incoming" author_kind="customer">test</customer_activity>' }], planned), []);
+  assert.deepEqual(requiredMasterlinkResearch([message], planned), { orderNumbers: ["480033739"], requiredTool: "ml_get_delivery_details" });
 });

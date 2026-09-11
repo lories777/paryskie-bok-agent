@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import type { Input, RunResult, ThreadOptions, TurnOptions } from "@openai/codex-sdk";
 import { BokAgentCore } from "../src/bok-agent-core.js";
+import { CUSTOMER_DRAFT_REVIEW_JSON_SCHEMA } from "../src/draft-quality.js";
 import { BokCodexAgent } from "../src/codex-agent.js";
 import { loadConfig } from "../src/config.js";
 import {
@@ -31,7 +32,7 @@ const ATTACHMENT_ID = `daktela-meta:${sha256(FILE_ID)}`;
 
 class FakeCodexClient {
   readonly inputs: Input[] = [];
-  constructor(private response: () => string | Promise<string>) {}
+  constructor(private response: (input?: Input, options?: TurnOptions) => string | Promise<string>) {}
 
   setResponse(response: () => string | Promise<string>) {
     this.response = response;
@@ -45,7 +46,7 @@ class FakeCodexClient {
       id: "019c-test-thread",
       run: async (input: Input, _options?: TurnOptions): Promise<RunResult> => {
         this.inputs.push(structuredClone(input));
-        return { items: [], finalResponse: await this.response(), usage: null };
+        return { items: [], finalResponse: await this.response(input, _options), usage: null };
       },
     };
   }
@@ -330,10 +331,11 @@ test("wspólny agent zwraca typowaną operację, a niezależny reviewer wiąże 
       MASTERLINK_MCP_ENABLED: "true",
       DAKTELA_VIEW_URL: "https://pariscosmetics.daktela.com/tickets",
     }, process.cwd());
+    let primaryCalls = 0;
     const primary = new FakeCodexClient(() => JSON.stringify({
       reply: "DAKTELA #100328\nOdnajdź przesyłkę na magazynie.",
       caseState: "action_proposed",
-      proposedActions: [],
+      proposedActions: ++primaryCalls === 1 ? [] : agentOutput().proposedActions,
       operationalActionProposal: {
         schemaVersion: 1,
         intent: "delivery_status",
@@ -346,7 +348,9 @@ test("wspólny agent zwraca typowaną operację, a niezależny reviewer wiąże 
       learnedRules: [],
       actionExecution: null,
     }));
-    const reviewer = new FakeCodexClient(() => JSON.stringify({
+    const reviewer = new FakeCodexClient((_input, options) => JSON.stringify(options?.outputSchema === CUSTOMER_DRAFT_REVIEW_JSON_SCHEMA ? {
+      verdict: "pass", revisedPayload: null, issues: [], confidence: "high", polishTranslation: null,
+    } : {
       schemaVersion: 1,
       grounded: true,
       policyCompliant: true,
@@ -377,12 +381,14 @@ test("wspólny agent zwraca typowaną operację, a niezależny reviewer wiąże 
     assert.equal(result.schemaVersion, 4);
     assert.equal(result.state, "ready");
     assert.equal(result.readyKind, "operational_action");
-    assert.equal(result.customerReply, null);
+    assert.ok(result.customerReply?.body);
+    assert.equal(primaryCalls, 2);
+    assert.match(firstText(primary.inputs[1]), /Plan dla sprawy klienta wymaga jednej pełnej odpowiedzi/);
     assert.equal(result.operationalAction?.proposal.request.actionType, "fulfillment.locate");
     assert.deepEqual(result.reasonCodes, ["reviewed_action_ready"]);
-    assert.equal(reviewer.inputs.length, 1);
+    assert.equal(reviewer.inputs.length, 2);
     assert.match(firstText(primary.inputs[0]), /trusted_operational_action_catalog/);
-    assert.match(firstText(reviewer.inputs[0]), /"order\.status":"shipped"/);
+    assert.match(firstText(reviewer.inputs[1]), /"order\.status":"shipped"/);
     assert.doesNotMatch(JSON.stringify(result.operationalAction), /channelId|destination|payload/);
   } finally {
     store.close();

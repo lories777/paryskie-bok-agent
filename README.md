@@ -7,6 +7,16 @@ zalogowanej subskrypcji ChatGPT — projekt nie przyjmuje klucza API OpenAI.
 To nie jest autoresponder ostatniej wiadomości. Runtime utrzymuje kontekst sprawy, odróżnia
 obserwowane kanały od kanału poleceń i zapisuje proponowane działania do osobnej kolejki.
 
+## Kontrola kompletności sprawy klienta — 11 września 2026
+
+Wspólny agent sprawdza również brak odpowiedzi, a nie tylko jakość już napisanego tekstu.
+Typowany plan dla uwierzytelnionej sprawy klienta wymaga jednego pełnego szkicu do akceptacji.
+Jeśli model go pominie, sam dostaje korektę i uzupełnia wynik w tej samej pętli kontroli jakości.
+Szkic opisuje przyszłe działanie; stare reguły dla obietnic bez planu nie usuwają go.
+Odczyt ML jest wymagany także przy samym planie i ponownie sprawdzany po korekcie.
+Po wyczerpaniu korekt niepełna propozycja nie przechodzi do wykonania jako gotowy wynik.
+Nie wymusza to odpowiedzi na zadania wewnętrzne ani wiadomości niewymagające działania.
+
 ## Stan operacyjny — 10 września 2026
 
 - Gmail jest źródłem poczty w ML; Daktela jest historycznym źródłem, a jej monitor nie
