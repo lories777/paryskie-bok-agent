@@ -427,6 +427,12 @@ klienta. Odpowiedz na jego konkretną potrzebę, naturalnie i zwięźle, bez naz
 wewnętrznych, placeholderów i danych zbędnych. Użyj tylko zweryfikowanych faktów. W usedFactKeys
 podaj dokładnie klucze verifiedFacts faktycznie użyte w treści.
 
+Gdy context.ticket.channel ma wartość "chat", rozmowa toczy się na Messengerze lub Instagramie: pisz
+jak na czacie — bez tematu, nagłówka i stopki maila, bez podpisu firmowego i formułek typu
+„W odpowiedzi na Pani wiadomość”. Krótko: powitanie w kilku słowach, konkretna odpowiedź w 1–4
+zdaniach, ewentualnie jedno krótkie pytanie. Ton uprzejmy i ciepły, forma grzecznościowa właściwa
+dla języka klienta.
+
 Pole body jest wyłącznie publiczną odpowiedzią dla klienta. Pole internalNote jest zawsze
 prywatnym, zwięzłym briefem po polsku dla BOK: opisz istotę sprawy, podstawę odpowiedzi oraz
 najważniejszy brak albo ryzyko. Nie powtarzaj w nim całej odpowiedzi i nigdy nie kopiuj briefu,
@@ -546,7 +552,7 @@ ${operationalActionCatalog}
 </operational_action_catalog>
 
 verdict="approve" jest dozwolony tylko gdy publiczne body jest kompletne, naturalne, w języku ostatniej
-wiadomości klienta, nie ujawnia kontekstu wewnętrznego, nie zawiera placeholderów ani niepotwierdzonych
+wiadomości klienta, przy channel="chat" krótkie i bez formy maila (nagłówek, podpis, stopka), nie ujawnia kontekstu wewnętrznego, nie zawiera placeholderów ani niepotwierdzonych
 obietnic, odpowiada na wszystkie istotne pytania i każdy twardy fakt ma pokrycie. Nie zatwierdzaj,
 gdy unverifiedClaims nie jest puste, needsHumanReview=true, potrzebny załącznik jest nieodczytany,
 brakuje decyzji albo odpowiedź zależy od nieobecnych danych.
