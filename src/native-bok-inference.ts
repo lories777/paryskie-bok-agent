@@ -130,7 +130,10 @@ export class NativeBokInference {
       this.core.playbook,
     );
     const raw = await this.runner.generate(prompt, signal);
-    return parseGeneratorOutput(raw, context);
+    const draft = parseGeneratorOutput(raw, context);
+    // Czat (Messenger/Instagram): model mimo reguły dopisywał mailowe pożegnanie i podpis zespołu.
+    // Usuwamy je deterministycznie PRZED judge — sędzia ocenia dokładnie tekst, który pójdzie do klienta.
+    return context.ticket.channel === "chat" ? { ...draft, body: bezPodpisuCzatu(draft.body) } : draft;
   }
 
   async judge(
@@ -581,3 +584,18 @@ Zwróć wyłącznie JSON zgodny z przekazanym schematem.
 }
 
 export { buildNativeBokCodexConfigOverrides, buildSharedNativeBokCodexEnvironment };
+
+const POZEGNANIE_CZATU = /^(?:pozdrawiam(?:y)?|serdecznie pozdrawiam(?:y)?|z pozdrowieniami|s pozdravem|s pozdravom|üdvözlettel|üdvözlet|cu stim[aă]|cu drag|toate cele bune|lugupidamisega|parimate soovidega|pagarbiai|su pagarba|mit freundlichen gr[üu](?:ß|ss)en|viele gr[üu](?:ß|ss)e|best regards|kind regards)(?:[\s,.:!-]*$|\s*[,:]\s*\S+(?:\s+\S+){0,6}$)/iu;
+
+/**
+ * Odcina pożegnanie mailowe i podpis z końca odpowiedzi czatowej (ostatnie 3 niepuste linie).
+ * Zostawia tekst bez zmian, gdy pożegnania nie ma albo gdy po odcięciu nic by nie zostało.
+ */
+export function bezPodpisuCzatu(body: string): string {
+  const lines = body.replace(/\s+$/u, "").split("\n");
+  const nonEmpty = lines.map((line, index) => ({ line: line.trim(), index })).filter((item) => item.line.length > 0);
+  const candidate = nonEmpty.slice(-3).find((item) => POZEGNANIE_CZATU.test(item.line));
+  if (!candidate) return body;
+  const kept = lines.slice(0, candidate.index).join("\n").replace(/\s+$/u, "");
+  return kept.length > 0 ? kept : body;
+}
