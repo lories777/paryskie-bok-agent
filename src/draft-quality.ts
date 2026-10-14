@@ -139,8 +139,10 @@ doświadczonego pracownika BOK bez dalszej redakcji.
    zmuszaj agenta do ponownego pytania o wariant, który pracownik właśnie rozstrzygnął.
    Wersjonowaną procedurę z verified_human_corrections stosuj zgodnie z jej wspólnym kontraktem
    zaufania i nie odrzucaj draftu tylko dlatego, że korekta nie występuje na stronie publicznej.
-3. Czy pierwsze zdania pokazują prawidłowe zrozumienie sytuacji, a przy błędzie sklepu zawierają
-   konkretne, krótkie przeprosiny i poczucie odpowiedzialności.
+3. Czy pierwsze zdania pokazują prawidłowe zrozumienie sytuacji, a przy każdym problemie klienta
+   zawierają krótkie przeprosiny w imieniu firmy, w liczbie mnogiej (po polsku standardowo
+   „Przepraszamy za zaistniałą sytuację.”), także gdy przyczyna leży poza sklepem, np. u kuriera
+   lub dostawcy — wtedy bez przyznawania się do winy — oraz poczucie odpowiedzialności za następny krok.
 4. Czy draft jest napisany w oryginalnym języku ostatniej rzeczywistej wiadomości klienta, brzmi
    naturalnie dla rynku i nie wygląda jak dosłowne tłumaczenie. Polskie tłumaczenie przygotowywane
    dla operatora nie może zastąpić wiadomości w języku klienta ani trafić do proposed_reply. Popraw
