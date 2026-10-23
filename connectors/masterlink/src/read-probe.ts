@@ -1,22 +1,25 @@
 import { loadConfig } from './config.js';
-import { PostgresReadRepository } from './masterlink/read-repository.js';
+import { HttpMasterLinkApi } from './masterlink/http-client.js';
+import { createReadRepository } from './runtime.js';
 
 /**
- * Sonda gotowości dla runtime BOK: wyłącznie `SELECT 1` na bazie READ ONLY.
- * Bez logowania do API MasterLink (sonda chodzi co minutę) i bez audytu.
- * Kod wyjścia 0 = odczyt działa; 1 = źródło niedostępne. Sekretów nie wypisuje.
+ * Sonda gotowości dla runtime BOK: jeden odczyt przez skonfigurowany backend.
+ * `db`: `SELECT 1` na bazie READ ONLY. `api`: logowanie, `GET /api/auth/me`, wylogowanie.
+ * Bez audytu i bez zapisów. Kod wyjścia 0 = odczyt działa; 1 = źródło niedostępne.
+ * Sekretów nie wypisuje.
  */
 async function main(): Promise<void> {
-  const repository = new PostgresReadRepository(loadConfig());
+  const config = loadConfig();
+  const repository = createReadRepository(config, new HttpMasterLinkApi(config));
   try {
     await repository.ping();
-    process.stdout.write('OK: odczyt bazy MasterLink działa. Nie wykonano zapisu.\n');
+    process.stdout.write(`OK: odczyt MasterLink (${config.readBackend}) działa. Nie wykonano zapisu.\n`);
   } finally {
     await repository.close();
   }
 }
 
 main().catch(() => {
-  process.stderr.write('ERROR: odczyt bazy MasterLink niedostępny. Sekrety nie zostały wypisane.\n');
+  process.stderr.write('ERROR: odczyt MasterLink niedostępny. Sekrety nie zostały wypisane.\n');
   process.exit(1);
 });

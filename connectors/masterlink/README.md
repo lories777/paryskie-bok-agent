@@ -71,7 +71,8 @@ ${EDITOR:-vi} ~/.config/paryskie-bok-agent/masterlink.env
 Wymagane są:
 
 - `ML_API_BASE_URL`, `ML_USERNAME`, `ML_PASSWORD` — istniejące konto BOK/maszynowe w API;
-- `ML_READ_DATABASE_URL` — połączenie do tej samej bazy, używane wyłącznie do dokładnego rozwiązywania numerów, e-maili, telefonów, trackingów i external ID;
+- `ML_READ_BACKEND` — `db` (domyślnie) albo `api`. W trybie `api` numery, e-maile, telefony, trackingi i external ID rozwiązuje `GET /api/orders?q=` + dokładne porównanie na `GET /api/orders/:id` (rola `bok`, wyłącznie GET); `ML_READ_DATABASE_URL` nie jest wtedy wymagany. Różnica względem `db`: tracking zapisany wyłącznie w `shipments` (a nie na zamówieniu) i external ID spoza pól przeszukiwanych przez `q` mogą nie zostać znalezione;
+- `ML_READ_DATABASE_URL` — w trybie `db` połączenie do tej samej bazy, używane wyłącznie do dokładnego rozwiązywania numerów, e-maili, telefonów, trackingów i external ID;
 - `ML_DB_SSL_CA_FILE` — opcjonalny certyfikat CA przy bezpośrednim TLS do DB; przy tunelu SSH `ML_DB_SSL=false`;
 - `ML_AUDIT_HASH_KEY` — niezależny losowy sekret HMAC, minimum 32 znaki;
 - ścieżki audytu i idempotencji.
@@ -107,12 +108,30 @@ cd /home/oliwer/workspace/paryskie-bok-agent
 ML_ENV_FILE="$HOME/.config/paryskie-bok-agent/masterlink.env" npm run smoke
 ```
 
-Runtime BOK sam uruchamia `dist/read-probe.js` (tylko `SELECT 1` na bazie READ ONLY, bez
-logowania do API) z pętli gotowości: co minutę, gdy odczyt działa, i co 15 s, gdy nie działa.
+Runtime BOK sam uruchamia `dist/read-probe.js` (backend `db`: tylko `SELECT 1` na bazie READ ONLY;
+backend `api`: logowanie, `GET /api/auth/me`, wylogowanie) z pętli gotowości: co minutę, gdy odczyt działa, i co 15 s, gdy nie działa.
 Dopóki sonda nie przejdzie, BOK zgłasza ML `decisionCapability.ready=false`
 (`components.masterlinkRead=false`), więc ML nie wydziela analiz, które i tak padłyby na
 researchu. W logu usługi: `masterlink_read_unavailable decision_capability_paused` oraz
 `masterlink_read_recovered`. Po zmianie connectora zbuduj go: `npm run build` w tym katalogu.
+
+### Stan od 23.10.2026: odczyt przez API, powrót na bazę jedną komendą
+
+Produkcja ML przeszła 22.10 z Railway na rufusa (`83.168.88.179:5440`, baza `masterlink`,
+TLS z własnym CA, certyfikat z SAN `IP:83.168.88.179`). `pg_hba` rufusa nie wpuszcza VPS-a BOK
+(`212.127.78.15`), więc produkcyjny env ma `ML_READ_BACKEND=api`. Po otrzymaniu od zespołu ML
+roli tylko do odczytu i `ca.crt`:
+
+```bash
+cd /home/oliwer/workspace/paryskie-bok-agent/connectors/masterlink
+node bin/switch-masterlink-read-db.mjs --password-file <plik-z-hasłem> --ca-file <ca.crt>
+# opcjonalnie: --user ml_odczyt --host 83.168.88.179 --port 5440 --database masterlink
+```
+
+Skrypt testuje nowe dane sondą na kopii env i dopiero po udanym `SELECT 1` podmienia
+`ML_READ_BACKEND=db`, `ML_READ_DATABASE_URL`, `ML_DB_SSL=true` i `ML_DB_SSL_CA_FILE`
+(CA ląduje w `config/rufus-ml-prod-db-ca.pem`), zostawiając kopię env. Restart nie jest
+potrzebny. Powrót: `node bin/switch-masterlink-read-db.mjs --to-api`.
 
 Przed zmianą flagi na `true`:
 

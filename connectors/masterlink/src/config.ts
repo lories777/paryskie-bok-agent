@@ -9,7 +9,9 @@ const envSchema = z.object({
   ML_API_BASE_URL: z.url().transform((value) => value.replace(/\/+$/, '')),
   ML_USERNAME: z.string().min(1),
   ML_PASSWORD: z.string().min(1),
-  ML_READ_DATABASE_URL: z.string().min(1),
+  /** `db` = PostgreSQL READ ONLY; `api` = te same odczyty przez API ML (rola bok). */
+  ML_READ_BACKEND: z.enum(['db', 'api']).default('db'),
+  ML_READ_DATABASE_URL: z.string().min(1).optional(),
   ML_DB_SSL: bool.default(true),
   ML_DB_SSL_CA_FILE: z.string().min(1).optional(),
   ML_TIMEOUT_MS: z.coerce.number().int().min(500).max(30_000).default(5_000),
@@ -25,6 +27,7 @@ export interface AppConfig {
   apiBaseUrl: string;
   username: string;
   password: string;
+  readBackend: 'db' | 'api';
   databaseUrl: string;
   databaseSsl: boolean;
   databaseSslCa: string | undefined;
@@ -58,11 +61,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error(`Nieprawidłowa konfiguracja connectora: ${[...new Set(fields)].join(', ')}`);
   }
   const value = parsed.data;
+  if (value.ML_READ_BACKEND === 'db' && !value.ML_READ_DATABASE_URL) {
+    throw new Error('Nieprawidłowa konfiguracja connectora: ML_READ_DATABASE_URL');
+  }
   return {
     apiBaseUrl: value.ML_API_BASE_URL,
     username: value.ML_USERNAME,
     password: value.ML_PASSWORD,
-    databaseUrl: value.ML_READ_DATABASE_URL,
+    readBackend: value.ML_READ_BACKEND,
+    databaseUrl: value.ML_READ_DATABASE_URL ?? '',
     databaseSsl: value.ML_DB_SSL,
     databaseSslCa: value.ML_DB_SSL_CA_FILE
       ? readFileSync(resolve(value.ML_DB_SSL_CA_FILE), 'utf8')

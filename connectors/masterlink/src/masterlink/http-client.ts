@@ -141,6 +141,22 @@ export class HttpMasterLinkApi implements MasterLinkApi {
     await this.request('GET', '/api/auth/me');
   }
 
+  /** Zamyka sesję po krótkim procesie (sonda), żeby nie zostawiać sesji co minutę. */
+  async logout(): Promise<void> {
+    const cookie = this.cookie;
+    this.cookie = null;
+    if (!cookie) return;
+    try {
+      await this.fetchFn(`${this.config.apiBaseUrl}/api/auth/logout`, {
+        method: 'POST',
+        headers: { accept: 'application/json', cookie },
+        signal: AbortSignal.timeout(this.config.timeoutMs),
+      });
+    } catch {
+      // Sesja i tak wygaśnie po stronie ML.
+    }
+  }
+
   async getOrderDetail(id: string): Promise<Record<string, unknown>> {
     const value = await this.request('GET', `/api/orders/${encodeURIComponent(id)}`);
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
