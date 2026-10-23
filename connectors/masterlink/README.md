@@ -107,6 +107,13 @@ cd /home/oliwer/workspace/paryskie-bok-agent
 ML_ENV_FILE="$HOME/.config/paryskie-bok-agent/masterlink.env" npm run smoke
 ```
 
+Runtime BOK sam uruchamia `dist/read-probe.js` (tylko `SELECT 1` na bazie READ ONLY, bez
+logowania do API) z pętli gotowości: co minutę, gdy odczyt działa, i co 15 s, gdy nie działa.
+Dopóki sonda nie przejdzie, BOK zgłasza ML `decisionCapability.ready=false`
+(`components.masterlinkRead=false`), więc ML nie wydziela analiz, które i tak padłyby na
+researchu. W logu usługi: `masterlink_read_unavailable decision_capability_paused` oraz
+`masterlink_read_recovered`. Po zmianie connectora zbuduj go: `npm run build` w tym katalogu.
+
 Przed zmianą flagi na `true`:
 
 1. wykonaj każdą planowaną akcję z `dry_run=true`;

@@ -782,3 +782,73 @@ test("source filenames bind to the exact ML privacy transformation", () => {
     assert.throws(() => nativeBokDaktelaDecisionRequestV2Schema.parse(request), /context_attachment_source_mismatch/);
   }
 });
+
+test("niedostępny odczyt MasterLink wstrzymuje gotowość decyzji, zamiast deklarować ją z samej flagi", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bok-ml-probe-readiness-"));
+  const store = new AgentStore(dir);
+  try {
+    const config = loadConfig({
+      BOK_AGENT_STATE_DIR: dir,
+      BOK_AGENT_WORKSPACE: path.join(process.cwd(), "agent-workspace"),
+      MASTERLINK_MCP_ENABLED: "true",
+      DAKTELA_VIEW_URL: "https://pariscosmetics.daktela.com/tickets",
+    }, process.cwd());
+    const primary = new FakeCodexClient(() => JSON.stringify(agentOutput()));
+    const agent = new BokCodexAgent(new BokAgentCore(config, store), undefined, {
+      primaryCodex: primary,
+      reviewerCodex: new FakeCodexClient(() => JSON.stringify({
+        verdict: "pass", revisedPayload: null, issues: [], confidence: "high", polishTranslation: null,
+      })),
+    });
+    let healthy = false;
+    let probes = 0;
+    let clock = 0;
+    const logs: string[] = [];
+    const engine = new NativeBokDaktelaDecisionEngine(
+      agent,
+      new DaktelaReadSession(config, new FakeDaktelaPort()),
+      new NativeBokAttachmentRenderer(new ReadyPdfPort()),
+      undefined,
+      { check: async () => { probes += 1; return healthy; } },
+      () => clock,
+      (code) => logs.push(code),
+    );
+    assert.equal(await engine.verifyDaktelaReadiness(), true);
+    assert.equal(engine.decisionCapabilityStatus().ready, false, "bez udanej sondy ML nie wolno deklarować gotowości");
+
+    assert.equal(await engine.verifyMasterlinkReadiness(), false);
+    const paused = engine.decisionCapabilityStatus();
+    assert.equal(paused.ready, false);
+    assert.equal(paused.components.masterlinkRead, false);
+    assert.deepEqual(logs, ["masterlink_read_unavailable decision_capability_paused"]);
+    const source = decisionSource();
+    await assert.rejects(engine.decide({
+      context: decisionContext(source),
+      knowledgeSnapshot: structuredClone(NATIVE_BOK_KNOWLEDGE),
+      source,
+    }, new AbortController().signal), (error: unknown) =>
+      error instanceof Error && error.message === "decision_capability_unavailable");
+    assert.equal(primary.inputs.length, 0, "niedostępny ML nie może kosztować tury modelu");
+
+    // Niezdrowy stan sprawdzamy przy każdym ticku; po powrocie ML gotowość wraca sama.
+    healthy = true;
+    clock += 1_000;
+    assert.equal(await engine.verifyMasterlinkReadiness(), true);
+    assert.equal(engine.decisionCapabilityStatus().ready, true);
+    assert.deepEqual(logs.at(-1), "masterlink_read_recovered");
+
+    // Zdrowy wynik trzymamy minutę, żeby nie stawiać procesu sondy co 15 s.
+    const probesWhenHealthy = probes;
+    clock += 30_000;
+    assert.equal(await engine.verifyMasterlinkReadiness(), true);
+    assert.equal(probes, probesWhenHealthy);
+    clock += 31_000;
+    healthy = false;
+    assert.equal(await engine.verifyMasterlinkReadiness(), false);
+    assert.equal(probes, probesWhenHealthy + 1);
+    assert.equal(engine.decisionCapabilityStatus().ready, false);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

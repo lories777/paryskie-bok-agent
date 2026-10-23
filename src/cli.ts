@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import "dotenv/config";
 import { MasterlinkReadSession } from "./masterlink-read-session.js";
+import { ConnectorMasterlinkReadProbe } from "./masterlink-read-probe.js";
 import { BokAgentCore } from "./bok-agent-core.js";
 import { BokCodexAgent } from "./codex-agent.js";
 import { assertLiveConfig, assertNativeBokApiConfig, loadConfig } from "./config.js";
@@ -72,7 +73,13 @@ async function main(): Promise<void> {
       const core = new BokAgentCore(config, store);
       const agent = new BokCodexAgent(core, masterlink);
       const daktelaReadSession = new DaktelaReadSession(config);
-      const decisionEngine = new NativeBokDaktelaDecisionEngine(agent, daktelaReadSession, undefined, new MasterlinkReadSession(config));
+      const decisionEngine = new NativeBokDaktelaDecisionEngine(
+        agent,
+        daktelaReadSession,
+        undefined,
+        new MasterlinkReadSession(config),
+        new ConnectorMasterlinkReadProbe(config.masterlinkMcpProjectDir, config.masterlinkMcpEnvFile),
+      );
       const operationalDispatcher = new NativeOperationalActionDispatcher(
         config,
         store,

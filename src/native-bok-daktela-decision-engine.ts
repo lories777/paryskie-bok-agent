@@ -1,4 +1,5 @@
 import { MasterlinkReadSession } from "./masterlink-read-session.js";
+import type { MasterlinkReadProbe } from "./masterlink-read-probe.js";
 import { masterlinkPromptFileName } from "./masterlink-prompt-file-name.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -66,6 +67,9 @@ export interface NativeBokDaktelaReadinessLoopOptions {
   readonly sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }
 
+/** Zdrowy odczyt ML sprawdzamy co minutę; niezdrowy przy każdym ticku pętli gotowości. */
+const MASTERLINK_PROBE_HEALTHY_INTERVAL_MS = 60_000;
+
 export class NativeBokDaktelaDecisionEngineError extends Error {
   constructor(readonly code:
     | "decision_capability_unavailable"
@@ -87,7 +91,18 @@ export class NativeBokDaktelaDecisionEngine {
     readonly readSession: DaktelaReadSession,
     readonly renderer: NativeBokAttachmentRenderer = new NativeBokAttachmentRenderer(),
     readonly mailReadSession?: MasterlinkReadSession,
+    /**
+     * Bez sondy gotowość odczytu ML wynika z samej flagi konfiguracji. Z sondą: dopiero
+     * udany odczyt bazy. Inaczej ML wydziela zadania, które i tak padną na researchu
+     * (każde po pełnej turze modelu), aż wyczerpią limit prób.
+     */
+    readonly masterlinkProbe?: MasterlinkReadProbe,
+    private readonly now: () => number = Date.now,
+    private readonly log: (code: string) => void = (code) => console.warn(`[bok-native-decision] ${code}`),
   ) {}
+
+  private masterlinkReadHealthy: boolean | undefined;
+  private masterlinkProbedAt = Number.NEGATIVE_INFINITY;
 
   runtimeStatus(): NativeBokRuntimeStatus {
     return this.agent.nativeInference.runtimeStatus();
@@ -98,7 +113,8 @@ export class NativeBokDaktelaDecisionEngine {
       sharedEngine: true,
       daktelaRead: this.readSession.configurationReady() && this.readSession.identityVerified(),
       mailRead: this.mailReadSession?.identityVerified() ?? false,
-      masterlinkRead: this.agent.core.config.masterlinkMcpEnabled,
+      masterlinkRead: this.agent.core.config.masterlinkMcpEnabled
+        && (this.masterlinkProbe ? this.masterlinkReadHealthy === true : true),
       attachmentEvidence: this.renderer.ready(),
       independentJudge: true,
     });
@@ -117,6 +133,27 @@ export class NativeBokDaktelaDecisionEngine {
     }
   }
 
+  /** Odświeża gotowość odczytu ML; zdrowy wynik trzymamy minutę, niezdrowy sprawdzamy od razu. */
+  async verifyMasterlinkReadiness(signal?: AbortSignal): Promise<boolean> {
+    if (!this.masterlinkProbe || !this.agent.core.config.masterlinkMcpEnabled) {
+      return this.agent.core.config.masterlinkMcpEnabled;
+    }
+    const now = this.now();
+    if (this.masterlinkReadHealthy === true && now - this.masterlinkProbedAt < MASTERLINK_PROBE_HEALTHY_INTERVAL_MS) {
+      return true;
+    }
+    const healthy = await this.masterlinkProbe.check(signal);
+    if (signal?.aborted) return this.masterlinkReadHealthy === true;
+    this.masterlinkProbedAt = now;
+    if (healthy !== this.masterlinkReadHealthy) {
+      // Tylko kod przejścia: przyczynę (sieć, pg_hba, hasło) pokazuje ręczny smoke connectora.
+      if (!healthy) this.log("masterlink_read_unavailable decision_capability_paused");
+      else if (this.masterlinkReadHealthy === false) this.log("masterlink_read_recovered");
+    }
+    this.masterlinkReadHealthy = healthy;
+    return healthy;
+  }
+
   async runReadinessForever(
     signal: AbortSignal,
     options: NativeBokDaktelaReadinessLoopOptions = {},
@@ -126,6 +163,7 @@ export class NativeBokDaktelaDecisionEngine {
       throw new Error("decision_readiness_interval_invalid");
     }
     const sleep = options.sleep ?? abortableSleep;
+    await this.verifyMasterlinkReadiness(signal);
     while (!signal.aborted) {
       try {
         await sleep(intervalMs, signal);
@@ -135,6 +173,7 @@ export class NativeBokDaktelaDecisionEngine {
       }
       if (signal.aborted) return;
       await this.verifyDaktelaReadiness();
+      await this.verifyMasterlinkReadiness(signal);
     }
   }
 
